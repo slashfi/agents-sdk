@@ -123,6 +123,8 @@ export interface ToolContext extends CoreContext {
 
 /**
  * Context for the onInvoke hook.
+ *
+ * @experimental The onInvoke hook is not yet implemented.
  */
 export interface InvokeContext extends CoreContext {
   /** The prompt/message that triggered this invocation */
@@ -138,6 +140,8 @@ export interface InvokeContext extends CoreContext {
 
 /**
  * Context for the onTick hook (heartbeat/scheduled).
+ *
+ * @experimental The onTick hook is not yet implemented.
  */
 export interface TickContext extends CoreContext {
   /** Timestamp of this tick */
@@ -149,6 +153,8 @@ export interface TickContext extends CoreContext {
 
 /**
  * Context for the onStep hook (after each LLM step).
+ *
+ * @experimental The onStep hook is not yet implemented.
  */
 export interface StepContext extends CoreContext {
   /** Sequence number in the branch */
@@ -163,6 +169,8 @@ export interface StepContext extends CoreContext {
 
 /**
  * Context for the onMessage hook (external message arrived).
+ *
+ * @experimental The onMessage hook is not yet implemented.
  */
 export interface MessageContext extends CoreContext {
   /** The message content */
@@ -182,6 +190,8 @@ export interface MessageContext extends CoreContext {
 
 /**
  * Context for the onLearn hook.
+ *
+ * @experimental The onLearn hook is not yet implemented.
  */
 export interface LearnContext extends CoreContext {
   /** Content to internalize */
@@ -223,35 +233,50 @@ export interface ToolSelectionContext extends CoreContext {
  * Agent runtime hooks.
  *
  * All hooks are optional. Agents without a runtime use default behavior.
+ *
+ * Currently supported:
+ * - `selectTools` - dynamic tool filtering
+ *
+ * Other hooks are defined for future use but not yet wired up.
  */
 export interface AgentRuntime {
   /**
    * Called when the agent is invoked (new session or message).
    * Use for setup, context hydration, routing decisions.
+   *
+   * @experimental Not yet implemented in the agent runtime.
    */
   onInvoke?: (ctx: InvokeContext) => Promise<void>;
 
   /**
    * Called periodically for background work.
    * Use for polling, cleanup, proactive actions.
+   *
+   * @experimental Not yet implemented in the agent runtime.
    */
   onTick?: (ctx: TickContext) => Promise<void>;
 
   /**
    * Called after each LLM step completes.
    * Use for logging, metrics, side effects.
+   *
+   * @experimental Not yet implemented in the agent runtime.
    */
   onStep?: (ctx: StepContext) => Promise<void>;
 
   /**
    * Called when an external message arrives.
    * Use for routing, filtering, pre-processing.
+   *
+   * @experimental Not yet implemented in the agent runtime.
    */
   onMessage?: (ctx: MessageContext) => Promise<void>;
 
   /**
    * Called when learning new information.
    * Use for memory management, knowledge updates.
+   *
+   * @experimental Not yet implemented in the agent runtime.
    */
   onLearn?: (ctx: LearnContext) => Promise<void>;
 
@@ -263,11 +288,15 @@ export interface AgentRuntime {
 
   /**
    * Called once when the agent starts.
+   *
+   * @experimental Not yet implemented in the agent runtime.
    */
   onStart?: () => Promise<void>;
 
   /**
    * Called once when the agent shuts down.
+   *
+   * @experimental Not yet implemented in the agent runtime.
    */
   onStop?: () => Promise<void>;
 }
