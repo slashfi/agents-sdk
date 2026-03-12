@@ -203,6 +203,72 @@ const agent = defineAgent({
 });
 ```
 
+## Filesystem Convention
+
+Organize agents using the filesystem convention:
+
+```
+src/agents/
+├── @my-agent/
+│   ├── entrypoint.md      # System prompt
+│   ├── agent.config.ts    # Configuration
+│   ├── greet.tool.ts      # Tool (exports greetTool)
+│   └── echo.tool.ts       # Tool (exports echoTool)
+└── @another-agent/
+    └── ...
+```
+
+### Build Script
+
+Use `buildAgents` to generate the registry at build time:
+
+```typescript
+// scripts/build-agents.ts
+import { buildAgents } from '@slashfi/agents-sdk';
+
+const result = await buildAgents({
+  agentsDir: './src/agents',
+  outFile: './src/agents/_generated-registry.ts',
+});
+
+console.log(`Built ${result.agentCount} agents: ${result.agents.join(', ')}`);
+```
+
+Run before TypeScript compilation:
+
+```bash
+bun scripts/build-agents.ts && bun run build
+```
+
+### File Conventions
+
+**entrypoint.md** - System prompt for the agent (markdown)
+
+**agent.config.ts** - Agent configuration:
+```typescript
+import type { AgentConfig } from '@slashfi/agents-sdk';
+
+const config: AgentConfig = {
+  name: 'My Agent',
+  description: 'Does things',
+  supportedActions: ['execute_tool', 'describe_tools', 'load'],
+};
+
+export default config;
+```
+
+**{name}.tool.ts** - Tool definition (exports `{name}Tool`):
+```typescript
+import { defineTool } from '@slashfi/agents-sdk';
+
+export const greetTool = defineTool({
+  name: 'greet',
+  description: 'Greet a user',
+  inputSchema: { ... },
+  execute: async (input) => ({ message: `Hello!` }),
+});
+```
+
 ## License
 
 MIT

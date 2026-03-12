@@ -92,3 +92,7 @@ export type { AgentRegistry, AgentRegistryOptions } from "./registry.js";
 // Server
 export { createAgentServer } from "./server.js";
 export type { AgentServer, AgentServerOptions } from "./server.js";
+
+// Build
+export { buildAgents } from "./build.js";
+export type { BuildAgentsOptions, BuildAgentsResult } from "./build.js";
