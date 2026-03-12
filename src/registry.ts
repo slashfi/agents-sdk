@@ -10,6 +10,7 @@ import type {
   CallAgentDescribeToolsResponse,
   CallAgentErrorResponse,
   CallAgentExecuteToolResponse,
+  CallAgentLearnResponse,
   CallAgentLoadResponse,
   CallAgentRequest,
   CallAgentResponse,
@@ -226,6 +227,22 @@ export function createAgentRegistry(
       switch (request.action) {
         case "invoke":
         case "ask": {
+          // Get runtime if available
+          const runtime = agent.runtime?.();
+
+          // Call onInvoke hook if defined
+          if (runtime?.onInvoke) {
+            await runtime.onInvoke({
+              tenantId: "default",
+              agentPath: request.path,
+              prompt: request.prompt,
+              sessionId: request.sessionId,
+              callerId: request.callerId ?? "unknown",
+              callerType: request.callerType ?? "system",
+              metadata: request.metadata,
+            });
+          }
+
           // These actions require an LLM runtime which this SDK doesn't provide
           // Users can implement their own invoke/ask handlers or use a full runtime
           return {
@@ -339,6 +356,34 @@ export function createAgentRegistry(
               tools: toolSchemas,
             },
           } as CallAgentLoadResponse;
+        }
+
+        case "learn": {
+          // Get runtime if available
+          const runtime = agent.runtime?.();
+
+          // Call onLearn hook if defined
+          if (runtime?.onLearn) {
+            await runtime.onLearn({
+              tenantId: "default",
+              agentPath: request.path,
+              content: request.content,
+              scope: request.scope ?? "session",
+              category: request.category,
+              callerId: request.callerId ?? "unknown",
+            });
+
+            return {
+              success: true,
+              action: "stored",
+            } as CallAgentLearnResponse;
+          }
+
+          // No runtime or no onLearn hook - ignore
+          return {
+            success: true,
+            action: "ignored",
+          } as CallAgentLearnResponse;
         }
 
         default: {
