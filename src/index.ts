@@ -1,7 +1,8 @@
 /**
  * Agents SDK
  *
- * SDK for building AI agents with tool definitions and JSON-RPC servers.
+ * SDK for building AI agents with tool definitions, JSON-RPC servers,
+ * and built-in OAuth2 authentication.
  *
  * @example
  * ```typescript
@@ -9,7 +10,8 @@
  *   defineAgent,
  *   defineTool,
  *   createAgentRegistry,
- *   createAgentServer
+ *   createAgentServer,
+ *   createAuthAgent,
  * } from '@slashfi/agents-sdk';
  *
  * // Define a tool
@@ -33,11 +35,12 @@
  *   tools: [greet]
  * });
  *
- * // Create registry and register agent
+ * // Create registry with auth
  * const registry = createAgentRegistry();
+ * registry.register(createAuthAgent({ rootKey: process.env.ROOT_KEY! }));
  * registry.register(agent);
  *
- * // Start HTTP server
+ * // Start server - auth auto-detected
  * const server = createAgentServer(registry, { port: 3000 });
  * await server.start();
  * ```
@@ -92,6 +95,16 @@ export type { AgentRegistry, AgentRegistryOptions } from "./registry.js";
 // Server
 export { createAgentServer } from "./server.js";
 export type { AgentServer, AgentServerOptions } from "./server.js";
+
+// Auth
+export { createAuthAgent, createMemoryAuthStore } from "./auth.js";
+export type {
+  AuthClient,
+  AuthIdentity,
+  AuthStore,
+  AuthToken,
+  CreateAuthAgentOptions,
+} from "./auth.js";
 
 // Build
 export { buildAgents } from "./build.js";

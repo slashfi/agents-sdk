@@ -123,10 +123,10 @@ export function createAgentRegistry(
       case "public":
         return true;
       case "internal":
-        // Only agents in the same registry can access
-        return callerType === "agent" && callerId
-          ? agents.has(callerId)
-          : false;
+        // Authenticated callers (agents or users with a callerId) can access
+        return (
+          callerType === "agent" || (callerType != null && callerId != null)
+        );
       case "private":
         // Only self can access
         return callerId === agent.path;
@@ -162,9 +162,9 @@ export function createAgentRegistry(
       case "public":
         return true;
       case "internal":
-        return callerType === "agent" && callerId
-          ? agents.has(callerId)
-          : false;
+        return (
+          callerType === "agent" || (callerType != null && callerId != null)
+        );
       case "private":
         return callerId === agent.path;
       default:
