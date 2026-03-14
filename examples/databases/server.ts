@@ -1,36 +1,22 @@
 /**
- * Database Agent Server Example
+ * Database Agent Server
  *
- * Full lifecycle example showing:
- * - @auth agent with OAuth2 client_credentials
- * - @databases agent with query tools
- * - Discovery → Registration → Auth → Usage flow
+ * Production-ready agent server with:
+ * - @auth agent (OAuth2 client_credentials, Postgres-backed)
+ * - @databases agent (real Postgres queries via Drizzle)
+ * - Auto-migration and seeding on startup
  *
- * Run with: ROOT_KEY=rk_my_secret_key bun examples/databases/server.ts
+ * Environment variables:
+ *   DATABASE_URL - Postgres connection string (required)
+ *   ROOT_KEY     - Root key for admin operations (required)
+ *   PORT         - Server port (default: 3000)
  *
- * Then try:
- *   # 1. Discover (unauthenticated)
- *   curl localhost:3000/list | jq
- *
- *   # 2. Create client (admin)
- *   curl -X POST localhost:3000/call \
- *     -H "Authorization: Bearer rk_my_secret_key" \
- *     -H "Content-Type: application/json" \
- *     -d '{"action":"execute_tool","path":"@auth","tool":"create_client","params":{"name":"my-agent","scopes":["databases:read","databases:write"]}}'
- *
- *   # 3. Get token
- *   curl -X POST localhost:3000/oauth/token \
- *     -d "grant_type=client_credentials&client_id=<ID>&client_secret=<SECRET>"
- *
- *   # 4. Discover (authenticated)
- *   curl -H "Authorization: Bearer <TOKEN>" localhost:3000/list | jq
- *
- *   # 5. Query
- *   curl -X POST localhost:3000/call \
- *     -H "Authorization: Bearer <TOKEN>" \
- *     -H "Content-Type: application/json" \
- *     -d '{"action":"execute_tool","path":"@databases","tool":"query","params":{"sql":"SELECT * FROM users"}}'
+ * Run: DATABASE_URL=postgres://... ROOT_KEY=rk_xxx bun examples/databases/server.ts
  */
+
+import postgres from "postgres";
+import { drizzle } from "drizzle-orm/postgres-js";
+import { sql } from "drizzle-orm";
 
 import {
   defineAgent,
@@ -41,139 +27,123 @@ import {
 } from "../../src/index.js";
 import type { ToolContext } from "../../src/index.js";
 
+import * as schema from "./db/schema.js";
+import { createPostgresAuthStore } from "./db/store.js";
+import { seed } from "./db/seed.js";
+
 // ============================================
-// Mock Database
+// Config
 // ============================================
 
-interface MockDB {
-  tables: Map<string, { columns: string[]; rows: Record<string, unknown>[] }>;
-  connected: boolean;
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) {
+  console.error("ERROR: DATABASE_URL is required");
+  process.exit(1);
 }
 
-function createMockDB(): MockDB {
-  const db: MockDB = {
-    tables: new Map(),
-    connected: false,
-  };
-
-  // Seed some data
-  db.tables.set("users", {
-    columns: ["id", "name", "email", "created_at"],
-    rows: [
-      { id: 1, name: "Alice", email: "alice@example.com", created_at: "2025-01-15" },
-      { id: 2, name: "Bob", email: "bob@example.com", created_at: "2025-02-20" },
-      { id: 3, name: "Charlie", email: "charlie@example.com", created_at: "2025-03-10" },
-    ],
-  });
-
-  db.tables.set("orders", {
-    columns: ["id", "user_id", "amount", "status"],
-    rows: [
-      { id: 101, user_id: 1, amount: 99.99, status: "completed" },
-      { id: 102, user_id: 2, amount: 149.50, status: "pending" },
-      { id: 103, user_id: 1, amount: 29.99, status: "completed" },
-      { id: 104, user_id: 3, amount: 200.00, status: "cancelled" },
-    ],
-  });
-
-  db.tables.set("products", {
-    columns: ["id", "name", "price", "category"],
-    rows: [
-      { id: 1, name: "Widget", price: 29.99, category: "tools" },
-      { id: 2, name: "Gadget", price: 99.99, category: "electronics" },
-      { id: 3, name: "Thingamajig", price: 149.50, category: "electronics" },
-    ],
-  });
-
-  return db;
+const ROOT_KEY = process.env.ROOT_KEY;
+if (!ROOT_KEY) {
+  console.error("ERROR: ROOT_KEY is required");
+  process.exit(1);
 }
 
-// Simple SQL parser for the mock (handles basic SELECT/INSERT/UPDATE/DELETE)
-function executeMockSQL(db: MockDB, sql: string): { rows: Record<string, unknown>[]; rowCount: number; command: string } {
-  if (!db.connected) throw new Error("Database not connected");
-
-  const normalized = sql.trim().toUpperCase();
-
-  if (normalized.startsWith("SELECT")) {
-    // Extract table name from "FROM <table>"
-    const fromMatch = sql.match(/FROM\s+(\w+)/i);
-    if (!fromMatch) throw new Error(`Cannot parse table from: ${sql}`);
-    const tableName = fromMatch[1].toLowerCase();
-    const table = db.tables.get(tableName);
-    if (!table) throw new Error(`Table not found: ${tableName}`);
-
-    // Simple WHERE support
-    let rows = [...table.rows];
-    const whereMatch = sql.match(/WHERE\s+(.+?)(?:ORDER|LIMIT|$)/i);
-    if (whereMatch) {
-      const condition = whereMatch[1].trim();
-      const eqMatch = condition.match(/(\w+)\s*=\s*['"]?([^'"\s]+)['"]?/i);
-      if (eqMatch) {
-        const [, col, val] = eqMatch;
-        rows = rows.filter((r) => String(r[col]) === val);
-      }
-    }
-
-    // Simple LIMIT
-    const limitMatch = sql.match(/LIMIT\s+(\d+)/i);
-    if (limitMatch) {
-      rows = rows.slice(0, Number.parseInt(limitMatch[1]));
-    }
-
-    return { rows, rowCount: rows.length, command: "SELECT" };
-  }
-
-  if (normalized.startsWith("INSERT")) {
-    return { rows: [], rowCount: 1, command: "INSERT" };
-  }
-
-  if (normalized.startsWith("UPDATE")) {
-    return { rows: [], rowCount: 1, command: "UPDATE" };
-  }
-
-  if (normalized.startsWith("DELETE")) {
-    return { rows: [], rowCount: 1, command: "DELETE" };
-  }
-
-  throw new Error(`Unsupported SQL command: ${sql}`);
-}
+const PORT = Number.parseInt(process.env.PORT ?? "3000", 10);
 
 // ============================================
-// @databases Agent Definition
+// Database Setup
 // ============================================
 
-const mockDB = createMockDB();
+console.log("[db] Connecting to Postgres...");
+const client = postgres(DATABASE_URL);
+const db = drizzle(client);
+
+// Run migrations (create tables if they don't exist)
+console.log("[db] Running migrations...");
+await db.execute(sql`
+  CREATE TABLE IF NOT EXISTS auth_clients (
+    client_id TEXT PRIMARY KEY,
+    client_secret_hash TEXT NOT NULL,
+    name TEXT NOT NULL,
+    scopes TEXT[] NOT NULL DEFAULT '{}',
+    self_registered BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS auth_tokens (
+    token TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES auth_clients(client_id) ON DELETE CASCADE,
+    scopes TEXT[] NOT NULL DEFAULT '{}',
+    issued_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    expires_at TIMESTAMP NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS orders (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    amount NUMERIC(10, 2) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT NOW() NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS products (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    price NUMERIC(10, 2) NOT NULL,
+    category VARCHAR(50) NOT NULL
+  );
+`);
+console.log("[db] Migrations complete.");
+
+// Seed demo data
+await seed(db);
+
+// ============================================
+// @databases Agent
+// ============================================
 
 const queryTool = defineTool({
   name: "query",
-  description: "Execute a SQL query against the database",
+  description: "Execute a read-only SQL query against the database",
   inputSchema: {
     type: "object",
     properties: {
-      sql: { type: "string", description: "SQL query to execute" },
+      sql: { type: "string", description: "SQL SELECT query to execute" },
     },
     required: ["sql"],
   },
   execute: async (input: { sql: string }, ctx: ToolContext) => {
+    const normalized = input.sql.trim().toUpperCase();
+    if (!normalized.startsWith("SELECT")) {
+      throw new Error("Only SELECT queries are allowed via the query tool. Use execute_mutation for writes.");
+    }
+
     console.log(`[${ctx.callerId}] query: ${input.sql}`);
-    const result = executeMockSQL(mockDB, input.sql);
+    const result = await client.unsafe(input.sql);
     return {
-      rows: result.rows,
-      rowCount: result.rowCount,
-      command: result.command,
+      rows: result,
+      rowCount: result.length,
     };
   },
 });
 
 const listTablesTool = defineTool({
   name: "list_tables",
-  description: "List all available tables",
+  description: "List all available tables in the database",
   inputSchema: { type: "object", properties: {} },
   execute: async (_input: unknown, ctx: ToolContext) => {
     console.log(`[${ctx.callerId}] list_tables`);
-    if (!mockDB.connected) throw new Error("Database not connected");
+    const result = await client.unsafe(
+      "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
+    );
     return {
-      tables: Array.from(mockDB.tables.keys()),
+      tables: result.map((r: { table_name: string }) => r.table_name),
     };
   },
 });
@@ -190,13 +160,28 @@ const describeTableTool = defineTool({
   },
   execute: async (input: { table: string }, ctx: ToolContext) => {
     console.log(`[${ctx.callerId}] describe_table: ${input.table}`);
-    if (!mockDB.connected) throw new Error("Database not connected");
-    const table = mockDB.tables.get(input.table);
-    if (!table) throw new Error(`Table not found: ${input.table}`);
+    const columns = await client.unsafe(
+      "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position",
+      [input.table]
+    );
+
+    if (columns.length === 0) {
+      throw new Error(`Table not found: ${input.table}`);
+    }
+
+    const count = await client.unsafe(
+      `SELECT COUNT(*) as count FROM "${input.table}"`
+    );
+
     return {
       table: input.table,
-      columns: table.columns,
-      rowCount: table.rows.length,
+      columns: columns.map((c: { column_name: string; data_type: string; is_nullable: string; column_default: string | null }) => ({
+        name: c.column_name,
+        type: c.data_type,
+        nullable: c.is_nullable === "YES",
+        default: c.column_default,
+      })),
+      rowCount: Number(count[0].count),
     };
   },
 });
@@ -212,68 +197,56 @@ const executeMutationTool = defineTool({
     required: ["sql"],
   },
   execute: async (input: { sql: string }, ctx: ToolContext) => {
-    // Check scope
     const scopes = (ctx as ToolContext & { metadata?: { scopes?: string[] } }).metadata?.scopes ?? [];
     if (!scopes.includes("databases:write") && !scopes.includes("*")) {
       throw new Error("Insufficient scope: requires databases:write");
     }
 
-    console.log(`[${ctx.callerId}] execute_mutation: ${input.sql}`);
-    const result = executeMockSQL(mockDB, input.sql);
+    const normalized = input.sql.trim().toUpperCase();
+    if (normalized.startsWith("SELECT")) {
+      throw new Error("Use the query tool for SELECT statements.");
+    }
+
+    // Block dangerous operations
+    if (normalized.startsWith("DROP") || normalized.startsWith("TRUNCATE") || normalized.startsWith("ALTER")) {
+      throw new Error("DDL operations (DROP, TRUNCATE, ALTER) are not allowed.");
+    }
+
+    console.log(`[${ctx.callerId}] mutation: ${input.sql}`);
+    const result = await client.unsafe(input.sql);
     return {
-      rowCount: result.rowCount,
-      command: result.command,
+      rowCount: result.count ?? 0,
+      command: normalized.split(" ")[0],
     };
   },
 });
 
 const databasesAgent = defineAgent({
   path: "@databases",
-  entrypoint: "Database query agent. Provides SQL access to connected databases.",
+  entrypoint: "Database query agent. Provides SQL access to a Postgres database.",
   config: {
     name: "Databases",
-    description: "Query and manage databases",
+    description: "Query and manage a Postgres database",
     supportedActions: ["execute_tool", "describe_tools", "load"],
   },
   tools: [queryTool, listTablesTool, describeTableTool, executeMutationTool],
   visibility: "internal",
-  runtime: () => ({
-    onStart: async () => {
-      console.log("[@databases] Connecting to database...");
-      mockDB.connected = true;
-      console.log("[@databases] Connected. Tables:", Array.from(mockDB.tables.keys()).join(", "));
-    },
-    onStop: async () => {
-      console.log("[@databases] Closing database connections...");
-      mockDB.connected = false;
-      console.log("[@databases] Disconnected.");
-    },
-    selectTools: async (ctx) => {
-      // Dynamic tool filtering based on caller scopes
-      const scopes = (ctx as unknown as { metadata?: { scopes?: string[] } }).metadata?.scopes ?? [];
-      const hasWrite = scopes.includes("databases:write") || scopes.includes("*");
-
-      const tools = ["query", "list_tables", "describe_table"];
-      if (hasWrite) tools.push("execute_mutation");
-      return tools;
-    },
-  }),
 });
 
 // ============================================
 // Server Setup
 // ============================================
 
-const ROOT_KEY = process.env.ROOT_KEY ?? "rk_default_dev_key";
-
 const registry = createAgentRegistry();
 
-// Register @auth (built-in)
+// Register @auth with Postgres-backed store
+const authStore = createPostgresAuthStore(db);
 registry.register(
   createAuthAgent({
     rootKey: ROOT_KEY,
-    allowRegistration: false, // closed system - admin creates clients
+    allowRegistration: false,
     tokenTtl: 3600,
+    store: authStore,
   }),
 );
 
@@ -282,27 +255,24 @@ registry.register(databasesAgent);
 
 // Start server
 const server = createAgentServer(registry, {
-  port: 3000,
+  port: PORT,
   hostname: "0.0.0.0",
 });
 
-// Lifecycle: call onStart for agents with runtimes
-const runtime = databasesAgent.runtime?.();
-await runtime?.onStart?.();
-
 await server.start();
-
-console.log(`\nRoot key: ${ROOT_KEY}`);
-console.log("\nTry the full flow:");
-console.log('  1. curl localhost:3000/list | jq');
-console.log(`  2. curl -X POST localhost:3000/call -H "Authorization: Bearer ${ROOT_KEY}" -H "Content-Type: application/json" -d '{"action":"execute_tool","path":"@auth","tool":"create_client","params":{"name":"my-agent","scopes":["databases:read","databases:write"]}}'`);
-console.log('  3. Use the clientId/clientSecret from step 2 to get a token');
-console.log('  4. Use the token to query @databases');
+console.log(`\nRoot key: ${ROOT_KEY.slice(0, 6)}...`);
 
 // Graceful shutdown
 process.on("SIGINT", async () => {
   console.log("\nShutting down...");
-  await runtime?.onStop?.();
   await server.stop();
+  await client.end();
+  process.exit(0);
+});
+
+process.on("SIGTERM", async () => {
+  console.log("\nShutting down (SIGTERM)...");
+  await server.stop();
+  await client.end();
   process.exit(0);
 });
