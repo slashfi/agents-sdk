@@ -5,12 +5,24 @@
  * - @auth agent (OAuth2 client_credentials, Postgres-backed)
  * - @notion agent (connect via OAuth + generic Notion API wrapper)
  *
+ * Auth model:
+ * - Server auth: @auth agent handles client_credentials for callers (e.g. atlas-api)
+ * - User auth: per-user Notion OAuth tokens stored in integration_tokens table
+ * - Connect flow returns structured response for platform-specific rendering:
+ *   - OAuth integrations: { type: 'oauth', authUrl: '...' }
+ *   - API key integrations: { type: 'api_key', fields: [...] }
+ *
+ * OAuth callback should live on atlas-api (option B) so it can:
+ * 1. Exchange code for token (by calling remote server)
+ * 2. Update Slack message to show success
+ * 3. Re-invoke the agent to continue the original task
+ *
  * Environment variables:
  *   DATABASE_URL          - Postgres connection string (required)
  *   ROOT_KEY              - Root key for admin operations (required)
  *   NOTION_CLIENT_ID      - Notion OAuth app client ID (required)
  *   NOTION_CLIENT_SECRET  - Notion OAuth app client secret (required)
- *   NOTION_REDIRECT_URI   - OAuth callback URL (required)
+ *   NOTION_REDIRECT_URI   - OAuth callback URL on atlas-api (required)
  *   PORT                  - Server port (default: 3000)
  */
 
@@ -100,29 +112,71 @@ async function storeUserToken(userId: string, data: {
 // @notion tools
 // ============================================
 
+/**
+ * Connect tool — initiates or completes a Notion connection.
+ *
+ * Returns a structured response so the calling platform (Slack, web, etc.)
+ * can render the appropriate UI:
+ *
+ * For OAuth integrations (like Notion):
+ *   { type: 'oauth', authUrl: '...', message: '...' }
+ *   → Platform shows a button/link to the OAuth URL
+ *
+ * For API key integrations (like Datadog):
+ *   { type: 'api_key', fields: [{ name, label, required }], message: '...' }
+ *   → Platform prompts user for the key(s) inline
+ *
+ * The OAuth callback URL should point to atlas-api, which:
+ * 1. Exchanges the code for a token (calling back to this server)
+ * 2. Updates the Slack message to show success
+ * 3. Re-invokes the agent to continue the original task
+ *
+ * The OAuth state param encodes context needed for this:
+ *   { userId, slackChannel, slackMessageTs, branchId, originalPrompt }
+ */
 const connectTool = defineTool({
   name: 'connect',
-  description: 'Connect a Notion account. Returns an OAuth URL to authorize access.',
+  description: 'Connect a Notion account. Returns auth requirements for the calling platform to render.',
   inputSchema: {
     type: 'object',
     properties: {
       userId: { type: 'string', description: 'Atlas user ID to connect for' },
+      state: {
+        type: 'object',
+        description: 'Platform context to thread through OAuth (slackChannel, slackMessageTs, branchId, originalPrompt)',
+        properties: {
+          slackChannel: { type: 'string' },
+          slackMessageTs: { type: 'string' },
+          branchId: { type: 'string' },
+          originalPrompt: { type: 'string' },
+        },
+      },
     },
     required: ['userId'],
   },
-  execute: async (input: { userId: string }, _ctx: ToolContext) => {
+  execute: async (input: { userId: string; state?: Record<string, string> }, _ctx: ToolContext) => {
     const existing = await getUserToken(input.userId);
     if (existing) return { connected: true, message: 'Already connected to Notion.' };
+
+    // Encode user ID + platform context into OAuth state
+    const oauthState = encodeURIComponent(JSON.stringify({
+      userId: input.userId,
+      ...input.state,
+    }));
 
     const params = new URLSearchParams({
       client_id: NOTION_CLIENT_ID,
       redirect_uri: NOTION_REDIRECT_URI,
       response_type: 'code',
       owner: 'user',
-      state: input.userId,
+      state: oauthState,
     });
-    const authUrl = `https://api.notion.com/v1/oauth/authorize?${params}`;
-    return { authUrl, message: 'Open this URL to connect your Notion account.' };
+
+    return {
+      type: 'oauth' as const,
+      authUrl: `https://api.notion.com/v1/oauth/authorize?${params}`,
+      message: 'Connect your Notion account',
+    };
   },
 });
 
@@ -142,6 +196,37 @@ const statusTool = defineTool({
   },
 });
 
+/**
+ * Store token tool — called by atlas-api after OAuth callback.
+ * atlas-api exchanges the code with Notion, then calls this to store the token.
+ */
+const storeTokenTool = defineTool({
+  name: 'store_token',
+  description: 'Store a Notion OAuth token for a user. Called by atlas-api after OAuth callback.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      userId: { type: 'string', description: 'Atlas user ID' },
+      accessToken: { type: 'string', description: 'Notion access token' },
+      workspaceId: { type: 'string', description: 'Notion workspace ID' },
+      workspaceName: { type: 'string', description: 'Notion workspace name' },
+    },
+    required: ['userId', 'accessToken'],
+  },
+  execute: async (input: { userId: string; accessToken: string; workspaceId?: string; workspaceName?: string }, _ctx: ToolContext) => {
+    await storeUserToken(input.userId, {
+      accessToken: input.accessToken,
+      workspaceId: input.workspaceId,
+      workspaceName: input.workspaceName,
+    });
+    return { stored: true };
+  },
+});
+
+/**
+ * Call tool — generic Notion API wrapper.
+ * Supports any Notion REST API endpoint.
+ */
 const callTool = defineTool({
   name: 'call',
   description: 'Make a Notion API call. Supports any Notion REST API endpoint.',
@@ -190,7 +275,7 @@ const callTool = defineTool({
 const notionAgent = defineAgent({
   path: '@notion',
   description: 'Connect and interact with Notion. Supports OAuth connection and any Notion API call.',
-  tools: [connectTool, statusTool, callTool],
+  tools: [connectTool, statusTool, storeTokenTool, callTool],
 });
 
 // ============================================
@@ -201,66 +286,7 @@ const registry = createAgentRegistry();
 registry.register(createAuthAgent({ rootKey: ROOT_KEY, store: createPostgresAuthStore(db) }));
 registry.register(notionAgent);
 
-const server = createAgentServer(registry, {
-  port: PORT,
-  // Handle OAuth callback via onNotFound
-  onNotFound: async (req) => {
-    const url = new URL(req.url);
-
-    // Notion OAuth callback
-    if (url.pathname === '/agents/@notion/callback' && req.method === 'GET') {
-      const code = url.searchParams.get('code');
-      const userId = url.searchParams.get('state');
-
-      if (!code || !userId) {
-        return new Response('Missing code or state parameter', { status: 400 });
-      }
-
-      try {
-        const tokenRes = await fetch('https://api.notion.com/v1/oauth/token', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Basic ${btoa(`${NOTION_CLIENT_ID}:${NOTION_CLIENT_SECRET}`)}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            grant_type: 'authorization_code',
-            code,
-            redirect_uri: NOTION_REDIRECT_URI,
-          }),
-        });
-
-        const tokenData = await tokenRes.json() as {
-          access_token?: string;
-          workspace_id?: string;
-          workspace_name?: string;
-        };
-
-        if (!tokenData.access_token) {
-          console.error('[notion] Token exchange failed:', tokenData);
-          return new Response('Failed to exchange code for token', { status: 500 });
-        }
-
-        await storeUserToken(userId, {
-          accessToken: tokenData.access_token,
-          workspaceId: tokenData.workspace_id,
-          workspaceName: tokenData.workspace_name,
-        });
-
-        console.log(`[notion] Connected user ${userId} to workspace ${tokenData.workspace_name}`);
-        return new Response(
-          '<html><body><h2>Connected to Notion!</h2><p>You can close this tab and return to Slack.</p></body></html>',
-          { status: 200, headers: { 'Content-Type': 'text/html' } },
-        );
-      } catch (err) {
-        console.error('[notion] OAuth callback error:', err);
-        return new Response('Internal error during OAuth', { status: 500 });
-      }
-    }
-
-    return new Response('Not found', { status: 404 });
-  },
-});
+const server = createAgentServer(registry, { port: PORT });
 
 await server.start();
 console.log(`[server] Notion agent server running on :${PORT}`);
