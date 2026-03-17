@@ -1,28 +1,31 @@
 {
   "name": "@slashfi/agents-sdk",
   "version": "0.1.0",
-  "description": "SDK for building AI agents with tool definitions and JSON-RPC servers",
-  "type": "module",
+  "author": "Slash Financial",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/slashfi/agents-sdk.git"
+  },
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "zod": "^3.23.0"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },
+  "description": "SDK for building AI agents with tool definitions and JSON-RPC servers",
   "files": [
     "dist",
     "src"
   ],
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "bun test",
-    "lint": "biome check src/",
-    "lint:fix": "biome check --write src/",
-    "prepublishOnly": "npm run build"
-  },
   "keywords": [
     "ai",
     "agents",
@@ -31,28 +34,20 @@
     "mcp",
     "json-rpc"
   ],
-  "author": "Slash Financial",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/slashfi/agents-sdk.git"
-  },
-  "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
-    "@types/bun": "^1.1.0",
-    "drizzle-kit": "^0.31.9",
-    "typescript": "^5.7.0"
-  },
-  "peerDependencies": {
-    "zod": "^3.23.0"
-  },
   "peerDependenciesMeta": {
     "zod": {
       "optional": true
     }
   },
-  "dependencies": {
-    "drizzle-orm": "^0.45.1",
-    "postgres": "^3.4.8"
-  }
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "bun test",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "prepublishOnly": "npm run build"
+  },
+  "type": "module",
+  "types": "dist/index.d.ts"
 }

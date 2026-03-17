@@ -1,17 +1,23 @@
 FROM oven/bun:1.3 AS base
 WORKDIR /app
 
-# Install dependencies
+# Install SDK dependencies
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
-# Copy source
+# Build SDK
 COPY src/ ./src/
-COPY examples/ ./examples/
 COPY tsconfig.json ./
+
+# Install example dependencies (uses the local SDK + query-builder)
+COPY examples/registry/package.json ./examples/registry/
+RUN cd examples/registry && bun install --production
+
+# Copy example source
+COPY examples/registry/ ./examples/registry/
 
 # Expose port
 EXPOSE 3000
 
-# Start the database agent server
-CMD ["bun", "run", "examples/databases/server.ts"]
+WORKDIR /app/examples/registry
+CMD ["bun", "run", "server.ts"]
