@@ -2,7 +2,7 @@
  * Postgres Auth Store
  *
  * Implements the AuthStore interface using @slashfi/query-builder
- * for inserts/updates, and raw postgres for selects/deletes.
+ * for all database operations.
  */
 import type postgres from "postgres";
 import type { AuthStore, AuthClient, AuthToken } from "@slashfi/agents-sdk";
@@ -57,14 +57,14 @@ function parseScopes(raw: unknown): string[] {
   return [];
 }
 
-function toAuthClient(row: Record<string, any>): AuthClient {
+function rowToAuthClient(row: Record<string, any>): AuthClient {
   return {
-    clientId: row.client_id,
-    clientSecretHash: row.client_secret_hash,
-    name: row.name,
-    scopes: parseScopes(row.scopes),
-    createdAt: new Date(row.created_at).getTime(),
-    selfRegistered: row.self_registered ?? false,
+    clientId: row.auth_client_client_id ?? row.client_id,
+    clientSecretHash: row.auth_client_client_secret_hash ?? row.client_secret_hash,
+    name: row.auth_client_name ?? row.name,
+    scopes: parseScopes(row.auth_client_scopes ?? row.scopes),
+    createdAt: new Date(row.auth_client_created_at ?? row.created_at).getTime(),
+    selfRegistered: row.auth_client_self_registered ?? row.self_registered ?? false,
   };
 }
 
@@ -91,39 +91,40 @@ export function createPostgresAuthStore(
     },
 
     async validateClient(clientId, clientSecret) {
-      const rows = await client.unsafe(
-        `SELECT * FROM auth_clients WHERE client_id = $1 LIMIT 1`,
-        [clientId]
-      );
-      if (rows.length === 0) return null;
+      const result = await db
+        .from(AuthClientEntity)
+        .where((_) => _.auth_client.client_id.equals(clientId))
+        .limit(1);
+
+      const row = result[0];
+      if (!row) return null;
 
       const hash = await hashSecret(clientSecret);
-      if (hash !== rows[0].client_secret_hash) return null;
+      if (hash !== (row.auth_client.client_secret_hash)) return null;
 
-      return toAuthClient(rows[0]);
+      return rowToAuthClient(row.auth_client);
     },
 
     async getClient(clientId) {
-      const rows = await client.unsafe(
-        `SELECT * FROM auth_clients WHERE client_id = $1 LIMIT 1`,
-        [clientId]
-      );
-      if (rows.length === 0) return null;
-      return toAuthClient(rows[0]);
+      const result = await db
+        .from(AuthClientEntity)
+        .where((_) => _.auth_client.client_id.equals(clientId))
+        .limit(1);
+
+      const row = result[0];
+      if (!row) return null;
+
+      return rowToAuthClient(row.auth_client);
     },
 
     async listClients() {
-      const rows = await client.unsafe(
-        `SELECT * FROM auth_clients ORDER BY created_at`
-      );
-      return rows.map(toAuthClient);
+      const result = await db.from(AuthClientEntity).query();
+      return result.result.map((row) => rowToAuthClient(row.auth_client));
     },
 
     async revokeClient(clientId) {
-      await client.unsafe(
-        `DELETE FROM auth_clients WHERE client_id = $1`,
-        [clientId]
-      );
+      // Deletes not yet in QB, use raw SQL (cascade deletes tokens)
+      await client.unsafe(`DELETE FROM auth_clients WHERE client_id = $1`, [clientId]);
       return true;
     },
 
@@ -154,25 +155,26 @@ export function createPostgresAuthStore(
     },
 
     async validateToken(tokenString) {
-      const rows = await client.unsafe(
-        `SELECT * FROM auth_tokens WHERE token = $1 LIMIT 1`,
-        [tokenString]
-      );
+      const result = await db
+        .from(AuthTokenEntity)
+        .where((_) => _.auth_token.token.equals(tokenString))
+        .limit(1);
 
-      if (rows.length === 0) return null;
+      const row = result[0];
+      if (!row) return null;
 
-      const row = rows[0];
-      if (new Date() > new Date(row.expires_at)) {
+      const tok = row.auth_token;
+      if (new Date() > new Date(tok.expires_at)) {
         await client.unsafe(`DELETE FROM auth_tokens WHERE token = $1`, [tokenString]);
         return null;
       }
 
       return {
-        token: row.token,
-        clientId: row.client_id,
-        scopes: parseScopes(row.scopes),
-        issuedAt: new Date(row.issued_at).getTime(),
-        expiresAt: new Date(row.expires_at).getTime(),
+        token: tok.token,
+        clientId: tok.client_id,
+        scopes: parseScopes(tok.scopes),
+        issuedAt: new Date(tok.issued_at).getTime(),
+        expiresAt: new Date(tok.expires_at).getTime(),
       };
     },
 

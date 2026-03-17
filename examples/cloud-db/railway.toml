@@ -3,7 +3,7 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "cd examples/cloud-db && bun run server.ts"
+startCommand = "bun run server.ts"
 healthcheckPath = "/list"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
