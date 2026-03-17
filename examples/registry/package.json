@@ -6,7 +6,7 @@
     "start": "bun server.ts"
   },
   "dependencies": {
-    "@slashfi/agents-sdk": "0.1.0",
+    "@slashfi/agents-sdk": "../..",
     "@slashfi/query-builder": "0.1.0",
     "postgres": "^3.4.8"
   }
