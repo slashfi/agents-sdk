@@ -1,5 +1,5 @@
 {
-  "name": "@slashfi/agents-sdk-registry-example",
+  "name": "@slashfi/agents-sdk-cloud-db-example",
   "private": true,
   "type": "module",
   "scripts": {

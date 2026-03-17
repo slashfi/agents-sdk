@@ -10,14 +10,14 @@ COPY src/ ./src/
 COPY tsconfig.json ./
 
 # Install example dependencies (uses the local SDK + query-builder)
-COPY examples/registry/package.json ./examples/registry/
-RUN cd examples/registry && bun install --production
+COPY examples/cloud-db/package.json ./examples/cloud-db/
+RUN cd examples/cloud-db && bun install --production
 
 # Copy example source
-COPY examples/registry/ ./examples/registry/
+COPY examples/cloud-db/ ./examples/cloud-db/
 
 # Expose port
 EXPOSE 3000
 
-WORKDIR /app/examples/registry
+WORKDIR /app/examples/cloud-db
 CMD ["bun", "run", "server.ts"]
