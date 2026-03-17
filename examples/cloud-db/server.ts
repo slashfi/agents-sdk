@@ -27,7 +27,6 @@ import type { ToolContext } from "@slashfi/agents-sdk";
 
 import { createRegistryDb } from "./db/schema.js";
 import { createPostgresAuthStore } from "./db/store.js";
-import { seed } from "./db/seed.js";
 
 // ============================================
 // Config
@@ -107,7 +106,6 @@ console.log("[db] Migrations complete.");
 const { db, Tenant, Agent, AgentTool } = createRegistryDb(client);
 
 // Seed demo data
-await seed(client);
 
 // ============================================
 // @registry Agent
