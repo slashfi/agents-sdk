@@ -1,10 +1,10 @@
 /**
- * Agent Registry Server
+ * Cloud DB Server
  *
- * Production-ready agent server hosting an agent registry with:
+ * Production-ready agent server for a cloud database with:
  * - @auth agent (OAuth2 client_credentials, Postgres-backed)
  * - @registry agent (query and manage registered agents via @slashfi/query-builder)
- * - Auto-migration and seeding on startup
+ * - Auto-migration on startup
  *
  * Environment variables:
  *   DATABASE_URL - Postgres connection string (required)
@@ -25,7 +25,7 @@ import {
 } from "@slashfi/agents-sdk";
 import type { ToolContext } from "@slashfi/agents-sdk";
 
-import { createRegistryDb } from "./db/schema.js";
+import { createCloudDb } from "./db/schema.js";
 import { createPostgresAuthStore } from "./db/store.js";
 
 // ============================================
@@ -103,9 +103,9 @@ await client.unsafe(`
 console.log("[db] Migrations complete.");
 
 // Initialize query builder
-const { db, Tenant, Agent, AgentTool } = createRegistryDb(client);
+const cloudDb = createCloudDb(client);
+const { db, Tenant, Agent, AgentTool } = cloudDb;
 
-// Seed demo data
 
 // ============================================
 // @registry Agent
@@ -269,7 +269,7 @@ const agentRegistry = createAgentRegistry();
 agentRegistry.register(
   createAuthAgent({
     rootKey: ROOT_KEY,
-    store: createPostgresAuthStore(client),
+    store: createPostgresAuthStore(client, cloudDb),
     allowRegistration: true,
   })
 );

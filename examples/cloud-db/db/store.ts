@@ -1,12 +1,12 @@
 /**
  * Postgres Auth Store
  *
- * Implements the AuthStore interface using raw postgres queries.
- * The auth tables (auth_clients, auth_tokens) are managed separately
- * from the registry schema.
+ * Implements the AuthStore interface using @slashfi/query-builder
+ * for inserts/updates, and raw postgres for selects/deletes.
  */
 import type postgres from "postgres";
 import type { AuthStore, AuthClient, AuthToken } from "@slashfi/agents-sdk";
+import type { CloudDb } from "./schema.js";
 
 function generateId(prefix: string): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -44,78 +44,79 @@ async function hashSecret(secret: string): Promise<string> {
     .join("");
 }
 
-export function createPostgresAuthStore(client: postgres.Sql): AuthStore {
+/** Parse scopes from postgres - handles both TEXT[] and JSON string formats */
+function parseScopes(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function toAuthClient(row: Record<string, any>): AuthClient {
+  return {
+    clientId: row.client_id,
+    clientSecretHash: row.client_secret_hash,
+    name: row.name,
+    scopes: parseScopes(row.scopes),
+    createdAt: new Date(row.created_at).getTime(),
+    selfRegistered: row.self_registered ?? false,
+  };
+}
+
+export function createPostgresAuthStore(
+  client: postgres.Sql,
+  { db, AuthClient: AuthClientEntity, AuthToken: AuthTokenEntity }: CloudDb
+): AuthStore {
   return {
     async createClient(name, scopes, selfRegistered) {
       const clientId = generateId("ag_");
       const clientSecret = generateSecret();
       const secretHash = await hashSecret(clientSecret);
 
-      await client.unsafe(
-        `INSERT INTO auth_clients (client_id, client_secret_hash, name, scopes, self_registered, created_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())`,
-        [clientId, secretHash, name, JSON.stringify(scopes), selfRegistered ?? false]
-      );
+      await db.insert(AuthClientEntity).values({
+        client_id: clientId,
+        client_secret_hash: secretHash,
+        name,
+        scopes: JSON.stringify(scopes),
+        self_registered: selfRegistered ?? false,
+        created_at: new Date(),
+      }).query();
 
       return { clientId, clientSecret };
     },
 
     async validateClient(clientId, clientSecret) {
       const rows = await client.unsafe(
-        `SELECT client_id, client_secret_hash, name, scopes, self_registered, created_at
-         FROM auth_clients WHERE client_id = $1 LIMIT 1`,
+        `SELECT * FROM auth_clients WHERE client_id = $1 LIMIT 1`,
         [clientId]
       );
-
       if (rows.length === 0) return null;
 
-      const row = rows[0];
       const hash = await hashSecret(clientSecret);
-      if (hash !== row.client_secret_hash) return null;
+      if (hash !== rows[0].client_secret_hash) return null;
 
-      return {
-        clientId: row.client_id,
-        clientSecretHash: row.client_secret_hash,
-        name: row.name,
-        scopes: parseScopes(row.scopes),
-        createdAt: new Date(row.created_at).getTime(),
-        selfRegistered: row.self_registered ?? false,
-      };
+      return toAuthClient(rows[0]);
     },
 
     async getClient(clientId) {
       const rows = await client.unsafe(
-        `SELECT client_id, client_secret_hash, name, scopes, self_registered, created_at
-         FROM auth_clients WHERE client_id = $1 LIMIT 1`,
+        `SELECT * FROM auth_clients WHERE client_id = $1 LIMIT 1`,
         [clientId]
       );
-
       if (rows.length === 0) return null;
-
-      const row = rows[0];
-      return {
-        clientId: row.client_id,
-        clientSecretHash: row.client_secret_hash,
-        name: row.name,
-        scopes: parseScopes(row.scopes),
-        createdAt: new Date(row.created_at).getTime(),
-        selfRegistered: row.self_registered ?? false,
-      };
+      return toAuthClient(rows[0]);
     },
 
     async listClients() {
       const rows = await client.unsafe(
-        `SELECT client_id, client_secret_hash, name, scopes, self_registered, created_at
-         FROM auth_clients ORDER BY created_at`
+        `SELECT * FROM auth_clients ORDER BY created_at`
       );
-      return rows.map((row) => ({
-        clientId: row.client_id,
-        clientSecretHash: row.client_secret_hash,
-        name: row.name,
-        scopes: parseScopes(row.scopes),
-        createdAt: new Date(row.created_at).getTime(),
-        selfRegistered: row.self_registered ?? false,
-      }));
+      return rows.map(toAuthClient);
     },
 
     async revokeClient(clientId) {
@@ -133,32 +134,28 @@ export function createPostgresAuthStore(client: postgres.Sql): AuthStore {
       const clientSecret = generateSecret();
       const secretHash = await hashSecret(clientSecret);
 
-      await client.unsafe(
-        `UPDATE auth_clients SET client_secret_hash = $1 WHERE client_id = $2`,
-        [secretHash, clientId]
-      );
+      await db.update(AuthClientEntity)
+        .setFields((_) => [_.auth_client.client_secret_hash])
+        .values({ client_secret_hash: secretHash })
+        .where((_) => _.auth_client.client_id.equals(clientId))
+        .query();
 
       return { clientSecret };
     },
 
     async storeToken(token) {
-      await client.unsafe(
-        `INSERT INTO auth_tokens (token, client_id, scopes, issued_at, expires_at)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          token.token,
-          token.clientId,
-          JSON.stringify(token.scopes),
-          new Date(token.issuedAt).toISOString(),
-          new Date(token.expiresAt).toISOString(),
-        ]
-      );
+      await db.insert(AuthTokenEntity).values({
+        token: token.token,
+        client_id: token.clientId,
+        scopes: JSON.stringify(token.scopes),
+        issued_at: new Date(token.issuedAt),
+        expires_at: new Date(token.expiresAt),
+      }).query();
     },
 
     async validateToken(tokenString) {
       const rows = await client.unsafe(
-        `SELECT token, client_id, scopes, issued_at, expires_at
-         FROM auth_tokens WHERE token = $1 LIMIT 1`,
+        `SELECT * FROM auth_tokens WHERE token = $1 LIMIT 1`,
         [tokenString]
       );
 
@@ -166,10 +163,7 @@ export function createPostgresAuthStore(client: postgres.Sql): AuthStore {
 
       const row = rows[0];
       if (new Date() > new Date(row.expires_at)) {
-        await client.unsafe(
-          `DELETE FROM auth_tokens WHERE token = $1`,
-          [tokenString]
-        );
+        await client.unsafe(`DELETE FROM auth_tokens WHERE token = $1`, [tokenString]);
         return null;
       }
 
@@ -183,24 +177,8 @@ export function createPostgresAuthStore(client: postgres.Sql): AuthStore {
     },
 
     async revokeToken(tokenString) {
-      await client.unsafe(
-        `DELETE FROM auth_tokens WHERE token = $1`,
-        [tokenString]
-      );
+      await client.unsafe(`DELETE FROM auth_tokens WHERE token = $1`, [tokenString]);
       return true;
     },
   };
-}
-
-/** Parse scopes from postgres - handles both TEXT[] and JSON string formats */
-function parseScopes(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw;
-  if (typeof raw === "string") {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return [];
-    }
-  }
-  return [];
 }

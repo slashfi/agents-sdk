@@ -1,7 +1,8 @@
 /**
- * Agent Registry Schema
+ * Cloud DB Schema
  *
- * Defines the tables for a hosted agent registry with auth:
+ * Defines all tables via @slashfi/query-builder:
+ * - auth_clients / auth_tokens: OAuth2 client_credentials auth
  * - tenants: multi-tenant isolation
  * - agents: registered agents with metadata
  * - agent_tools: tools exposed by each agent
@@ -11,13 +12,9 @@ import { createDb, createDbDiscriminator } from "@slashfi/query-builder";
 import type { SqlString } from "@slashfi/query-builder/lib/sql-string/index.js";
 import type postgres from "postgres";
 
-// ============================================
-// Database Setup
-// ============================================
+const discriminator = createDbDiscriminator("cloud-db");
 
-const discriminator = createDbDiscriminator("registry");
-
-export function createRegistryDb(client: postgres.Sql) {
+export function createCloudDb(client: postgres.Sql) {
   const db = createDb({
     discriminator,
     query: async (_queryName: string, sql: SqlString) => {
@@ -30,6 +27,60 @@ export function createRegistryDb(client: postgres.Sql) {
       queryBuilderIndexes: {} as any,
     }),
   });
+
+  // ============================================
+  // Auth Tables
+  // ============================================
+
+  interface AuthClientSchema {
+    client_id: string;
+    client_secret_hash: string;
+    name: string;
+    scopes: string;
+    self_registered: boolean;
+    created_at: Date;
+  }
+
+  class AuthClient {
+    static readonly Table = db
+      .buildTableFromSchema<AuthClientSchema>()
+      .columns({
+        client_id: (_) => _.varchar(),
+        client_secret_hash: (_) => _.varchar(),
+        name: (_) => _.varchar(),
+        scopes: (_) => _.varchar(),
+        self_registered: (_) => _.boolean(),
+        created_at: (_) => _.timestamp(),
+      })
+      .primaryKey("client_id")
+      .tableName("auth_clients")
+      .defaultAlias("auth_client")
+      .build();
+  }
+
+  interface AuthTokenSchema {
+    token: string;
+    client_id: string;
+    scopes: string;
+    issued_at: Date;
+    expires_at: Date;
+  }
+
+  class AuthToken {
+    static readonly Table = db
+      .buildTableFromSchema<AuthTokenSchema>()
+      .columns({
+        token: (_) => _.varchar(),
+        client_id: (_) => _.varchar(),
+        scopes: (_) => _.varchar(),
+        issued_at: (_) => _.timestamp(),
+        expires_at: (_) => _.timestamp(),
+      })
+      .primaryKey("token")
+      .tableName("auth_tokens")
+      .defaultAlias("auth_token")
+      .build();
+  }
 
   // ============================================
   // Tenant Table
@@ -121,11 +172,13 @@ export function createRegistryDb(client: postgres.Sql) {
       .build();
   }
 
+  db.register(AuthClient);
+  db.register(AuthToken);
   db.register(Tenant);
   db.register(Agent);
   db.register(AgentTool);
 
-  return { db, Tenant, Agent, AgentTool };
+  return { db, AuthClient, AuthToken, Tenant, Agent, AgentTool };
 }
 
-export type RegistryDb = ReturnType<typeof createRegistryDb>;
+export type CloudDb = ReturnType<typeof createCloudDb>;
