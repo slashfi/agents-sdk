@@ -99,9 +99,9 @@ export function createPostgresAuthStore(
       if (!row) return null;
 
       const hash = await hashSecret(clientSecret);
-      if (hash !== row.auth_client.client_secret_hash) return null;
+      if (hash !== row.client_secret_hash) return null;
 
-      return rowToAuthClient(row.auth_client);
+      return rowToAuthClient(row);
     },
 
     async getClient(clientId) {
@@ -113,12 +113,12 @@ export function createPostgresAuthStore(
       const row = result[0];
       if (!row) return null;
 
-      return rowToAuthClient(row.auth_client);
+      return rowToAuthClient(row);
     },
 
     async listClients() {
       const result = await db.from(AuthClientEntity).query();
-      return result.result.map((row) => rowToAuthClient(row.auth_client));
+      return result.result.map((row) => rowToAuthClient(row));
     },
 
     async revokeClient(clientId) {
@@ -161,7 +161,7 @@ export function createPostgresAuthStore(
       const row = result[0];
       if (!row) return null;
 
-      const tok = row.auth_token;
+      const tok = row;
       if (new Date() > new Date(tok.expires_at)) {
         await client.unsafe(`DELETE FROM auth_tokens WHERE token = $1`, [tokenString]);
         return null;
