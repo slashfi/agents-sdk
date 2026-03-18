@@ -20,7 +20,15 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - run: bun install
+      # Remove workspaces before install to avoid resolving example deps
+      # (examples depend on this package which isn't published yet)
+      - run: |
+          node -e "
+            const pkg = require('./package.json');
+            delete pkg.workspaces;
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          "
+          bun install
 
       - run: bun run build
 
