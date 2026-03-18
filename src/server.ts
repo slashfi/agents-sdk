@@ -28,6 +28,7 @@
 import type { AuthStore } from "./auth.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
+import { verifyJwt } from "./jwt.js";
 
 // ============================================
 // Server Types
@@ -176,6 +177,38 @@ async function resolveAuth(
     return { callerId: "root", callerType: "system", scopes: ["*"], isRoot: true };
   }
 
+  // Try JWT verification first (stateless)
+  // JWT is signed with the client's secret hash
+  // Decode payload to get client_id, look up client, verify signature
+  const parts = credential.split(".");
+  if (parts.length === 3) {
+    // Looks like a JWT - decode payload to get client_id
+    try {
+      const payloadB64 = parts[1];
+      const padded = payloadB64.replace(/-/g, "+").replace(/_/g, "/");
+      const payload = JSON.parse(atob(padded)) as { sub?: string; name?: string; scopes?: string[]; exp?: number };
+
+      if (payload.sub) {
+        // Look up client to get the signing secret (secret hash)
+        const client = await authConfig.store.getClient(payload.sub);
+        if (client) {
+          const verified = await verifyJwt(credential, client.clientSecretHash);
+          if (verified) {
+            return {
+              callerId: verified.name || client.name,
+              callerType: "agent",
+              scopes: verified.scopes,
+              isRoot: false,
+            };
+          }
+        }
+      }
+    } catch {
+      // Not a valid JWT, fall through to legacy token validation
+    }
+  }
+
+  // Legacy: opaque token validation (backwards compat)
   const token = await authConfig.store.validateToken(credential);
   if (!token) return null;
 

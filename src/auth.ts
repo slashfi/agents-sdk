@@ -26,6 +26,7 @@
 
 import { defineAgent, defineTool } from "./define.js";
 import type { AgentDefinition, ToolContext, ToolDefinition } from "./types.js";
+import { signJwt } from "./jwt.js";
 
 // ============================================
 // Auth Types
@@ -126,15 +127,7 @@ function generateSecret(): string {
   return secret;
 }
 
-function generateToken(): string {
-  const chars =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let token = "at_";
-  for (let i = 0; i < 48; i++) {
-    token += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return token;
-}
+
 
 /** Simple hash for storing secrets (not for production - use bcrypt/argon2) */
 async function hashSecret(secret: string): Promise<string> {
@@ -308,18 +301,20 @@ export function createAuthAgent(
         throw new Error("Invalid client credentials");
       }
 
-      const token: AuthToken = {
-        token: generateToken(),
-        clientId: client.clientId,
-        scopes: client.scopes,
-        issuedAt: Date.now(),
-        expiresAt: Date.now() + tokenTtl * 1000,
-      };
-
-      await store.storeToken(token);
+      const now = Math.floor(Date.now() / 1000);
+      const jwt = await signJwt(
+        {
+          sub: client.clientId,
+          name: client.name,
+          scopes: client.scopes,
+          iat: now,
+          exp: now + tokenTtl,
+        },
+        client.clientSecretHash,
+      );
 
       return {
-        accessToken: token.token,
+        accessToken: jwt,
         tokenType: "bearer",
         expiresIn: tokenTtl,
         scopes: client.scopes,
