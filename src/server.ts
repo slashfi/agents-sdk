@@ -308,6 +308,7 @@ export function createAgentServer(
           const result = await handleToolCall(name, args ?? {}, auth);
           return jsonRpcSuccess(request.id, result);
         } catch (err) {
+      console.error("[server] Request error:", err);
           return jsonRpcSuccess(
             request.id,
             mcpResult(
@@ -527,6 +528,7 @@ export function createAgentServer(
 
       return addCors(jsonResponse({ jsonrpc: "2.0", id: null, error: { code: -32601, message: `Not found: ${req.method} ${path}` } }, 404));
     } catch (err) {
+      console.error("[server] Request error:", err);
       return addCors(
         jsonResponse(
           { jsonrpc: "2.0", id: null, error: { code: -32603, message: "Internal error" } },
