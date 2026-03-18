@@ -7,7 +7,7 @@
     "migration:generate": "qb generate"
   },
   "dependencies": {
-    "@slashfi/agents-sdk": "../..",
+    "@slashfi/agents-sdk": "0.1.0",
     "@slashfi/query-builder": "0.1.0",
     "postgres": "^3.4.8"
   }

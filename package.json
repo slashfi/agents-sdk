@@ -50,5 +50,8 @@
     "prepublishOnly": "npm run build"
   },
   "type": "module",
-  "types": "dist/index.d.ts"
+  "types": "dist/index.d.ts",
+  "workspaces": [
+    "examples/*"
+  ]
 }
