@@ -1,0 +1,493 @@
+/**
+ * Auth Agent
+ *
+ * Built-in agent that provides OAuth2 client_credentials authentication.
+ * Register it into any agent registry to enable auth.
+ *
+ * Features:
+ * - Client credentials management (create, rotate, revoke)
+ * - OAuth2 client_credentials token exchange
+ * - JWT access tokens with scopes
+ * - Pluggable AuthStore interface (in-memory default)
+ * - Root key for admin operations
+ *
+ * @example
+ * ```typescript
+ * import { createAgentRegistry, createAgentServer, createAuthAgent } from '@slashfi/agents-sdk';
+ *
+ * const registry = createAgentRegistry();
+ * registry.register(createAuthAgent({ rootKey: process.env.ROOT_KEY }));
+ * registry.register(myAgent);
+ *
+ * const server = createAgentServer(registry, { port: 3000 });
+ * await server.start();
+ * ```
+ */
+
+import { defineAgent, defineTool } from "./define.js";
+import type { AgentDefinition, ToolContext, ToolDefinition } from "./types.js";
+
+// ============================================
+// Auth Types
+// ============================================
+
+/** Registered client */
+export interface AuthClient {
+  clientId: string;
+  clientSecretHash: string;
+  name: string;
+  scopes: string[];
+  createdAt: number;
+  /** If true, this client was created via self-registration */
+  selfRegistered?: boolean;
+}
+
+/** Issued token metadata */
+export interface AuthToken {
+  token: string;
+  clientId: string;
+  scopes: string[];
+  expiresAt: number;
+  issuedAt: number;
+}
+
+/** Resolved identity from a token or root key */
+export interface AuthIdentity {
+  clientId: string;
+  name: string;
+  scopes: string[];
+  isRoot: boolean;
+}
+
+// ============================================
+// Auth Store Interface
+// ============================================
+
+/**
+ * Pluggable storage for auth state.
+ * Implement this interface to use Postgres, Redis, SQLite, etc.
+ */
+export interface AuthStore {
+  /** Create a new client. Returns the raw (unhashed) secret. */
+  createClient(
+    name: string,
+    scopes: string[],
+    selfRegistered?: boolean,
+  ): Promise<{ clientId: string; clientSecret: string }>;
+
+  /** Validate client credentials. Returns client if valid, null otherwise. */
+  validateClient(
+    clientId: string,
+    clientSecret: string,
+  ): Promise<AuthClient | null>;
+
+  /** Get client by ID. */
+  getClient(clientId: string): Promise<AuthClient | null>;
+
+  /** List all clients. */
+  listClients(): Promise<AuthClient[]>;
+
+  /** Revoke a client (delete). */
+  revokeClient(clientId: string): Promise<boolean>;
+
+  /** Rotate a client's secret. Returns new raw secret. */
+  rotateSecret(clientId: string): Promise<{ clientSecret: string } | null>;
+
+  /** Store a token. */
+  storeToken(token: AuthToken): Promise<void>;
+
+  /** Validate and retrieve a token. Returns null if invalid/expired. */
+  validateToken(tokenString: string): Promise<AuthToken | null>;
+
+  /** Revoke a specific token. */
+  revokeToken(tokenString: string): Promise<boolean>;
+}
+
+// ============================================
+// In-Memory Auth Store
+// ============================================
+
+function generateId(prefix: string): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let id = prefix;
+  for (let i = 0; i < 24; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
+}
+
+function generateSecret(): string {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let secret = "sk_";
+  for (let i = 0; i < 40; i++) {
+    secret += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return secret;
+}
+
+function generateToken(): string {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let token = "at_";
+  for (let i = 0; i < 48; i++) {
+    token += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return token;
+}
+
+/** Simple hash for storing secrets (not for production - use bcrypt/argon2) */
+async function hashSecret(secret: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(secret);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Create an in-memory auth store.
+ * Suitable for development and testing. Use a persistent store for production.
+ */
+export function createMemoryAuthStore(): AuthStore {
+  const clients = new Map<string, AuthClient>();
+  const tokens = new Map<string, AuthToken>();
+
+  return {
+    async createClient(name, scopes, selfRegistered) {
+      const clientId = generateId("ag_");
+      const clientSecret = generateSecret();
+      const secretHash = await hashSecret(clientSecret);
+
+      clients.set(clientId, {
+        clientId,
+        clientSecretHash: secretHash,
+        name,
+        scopes,
+        createdAt: Date.now(),
+        selfRegistered,
+      });
+
+      return { clientId, clientSecret };
+    },
+
+    async validateClient(clientId, clientSecret) {
+      const client = clients.get(clientId);
+      if (!client) return null;
+      const hash = await hashSecret(clientSecret);
+      return hash === client.clientSecretHash ? client : null;
+    },
+
+    async getClient(clientId) {
+      return clients.get(clientId) ?? null;
+    },
+
+    async listClients() {
+      return Array.from(clients.values());
+    },
+
+    async revokeClient(clientId) {
+      // Also revoke all tokens for this client
+      for (const [tokenStr, token] of tokens) {
+        if (token.clientId === clientId) {
+          tokens.delete(tokenStr);
+        }
+      }
+      return clients.delete(clientId);
+    },
+
+    async rotateSecret(clientId) {
+      const client = clients.get(clientId);
+      if (!client) return null;
+      const clientSecret = generateSecret();
+      client.clientSecretHash = await hashSecret(clientSecret);
+      return { clientSecret };
+    },
+
+    async storeToken(token) {
+      tokens.set(token.token, token);
+    },
+
+    async validateToken(tokenString) {
+      const token = tokens.get(tokenString);
+      if (!token) return null;
+      if (Date.now() > token.expiresAt) {
+        tokens.delete(tokenString);
+        return null;
+      }
+      return token;
+    },
+
+    async revokeToken(tokenString) {
+      return tokens.delete(tokenString);
+    },
+  };
+}
+
+// ============================================
+// Auth Agent Options
+// ============================================
+
+export interface CreateAuthAgentOptions {
+  /** Root key for admin operations. Required. */
+  rootKey: string;
+
+  /** Allow self-registration via public `register` tool. Default: false */
+  allowRegistration?: boolean;
+
+  /** Max scopes that self-registered clients can request. Default: [] (no limit) */
+  registrationScopes?: string[];
+
+  /** Token TTL in seconds. Default: 3600 (1 hour) */
+  tokenTtl?: number;
+
+  /** Custom auth store. Default: in-memory */
+  store?: AuthStore;
+}
+
+// ============================================
+// Create Auth Agent
+// ============================================
+
+/**
+ * Create the built-in `@auth` agent.
+ *
+ * Provides OAuth2 client_credentials authentication as agent tools.
+ * The server auto-detects this agent and wires up token validation.
+ */
+export function createAuthAgent(
+  options: CreateAuthAgentOptions,
+): AgentDefinition & {
+  __authStore: AuthStore;
+  __rootKey: string;
+  __tokenTtl: number;
+} {
+  const {
+    rootKey,
+    allowRegistration = false,
+    registrationScopes,
+    tokenTtl = 3600,
+    store = createMemoryAuthStore(),
+  } = options;
+
+  // --- Public Tools ---
+
+  const tokenTool = defineTool({
+    name: "token",
+    description:
+      "Exchange client credentials for an access token (OAuth2 client_credentials grant)",
+    visibility: "public",
+    inputSchema: {
+      type: "object",
+      properties: {
+        grantType: {
+          type: "string",
+          enum: ["client_credentials"],
+          description: "Grant type. Must be 'client_credentials'.",
+        },
+        clientId: { type: "string", description: "Client ID" },
+        clientSecret: { type: "string", description: "Client secret" },
+      },
+      required: ["grantType", "clientId", "clientSecret"],
+    },
+    execute: async (input: {
+      grantType: string;
+      clientId: string;
+      clientSecret: string;
+    }) => {
+      if (input.grantType !== "client_credentials") {
+        throw new Error("Unsupported grant type. Use 'client_credentials'.");
+      }
+
+      const client = await store.validateClient(
+        input.clientId,
+        input.clientSecret,
+      );
+      if (!client) {
+        throw new Error("Invalid client credentials");
+      }
+
+      const token: AuthToken = {
+        token: generateToken(),
+        clientId: client.clientId,
+        scopes: client.scopes,
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + tokenTtl * 1000,
+      };
+
+      await store.storeToken(token);
+
+      return {
+        accessToken: token.token,
+        tokenType: "bearer",
+        expiresIn: tokenTtl,
+        scopes: client.scopes,
+      };
+    },
+  });
+
+  const whoamiTool = defineTool({
+    name: "whoami",
+    description: "Introspect the current authentication context",
+    visibility: "public",
+    inputSchema: { type: "object", properties: {} },
+    execute: async (_input: unknown, ctx: ToolContext) => {
+      return {
+        callerId: ctx.callerId,
+        callerType: ctx.callerType,
+        scopes: (ctx as ToolContext & { scopes?: string[] }).scopes ?? [],
+        isRoot: ctx.callerId === "root",
+      };
+    },
+  });
+
+  // --- Optional Public Tool ---
+
+  const registerTool = defineTool({
+    name: "register",
+    description: "Register a new agent client (self-service)",
+    visibility: "public",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Name for this client" },
+        scopes: {
+          type: "array",
+          items: { type: "string" },
+          description: "Requested scopes",
+        },
+      },
+      required: ["name"],
+    },
+    execute: async (input: { name: string; scopes?: string[] }) => {
+      let scopes = input.scopes ?? [];
+
+      // If registration scopes are restricted, filter
+      if (registrationScopes && registrationScopes.length > 0) {
+        scopes = scopes.filter((s) => registrationScopes.includes(s));
+      }
+
+      const { clientId, clientSecret } = await store.createClient(
+        input.name,
+        scopes,
+        true,
+      );
+
+      return { clientId, clientSecret, scopes };
+    },
+  });
+
+  // --- Private Tools (root key only) ---
+
+  const createClientTool = defineTool({
+    name: "create_client",
+    description: "Create a new client with specific scopes (admin only)",
+    visibility: "private",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Client name" },
+        scopes: {
+          type: "array",
+          items: { type: "string" },
+          description: "Scopes to grant",
+        },
+      },
+      required: ["name", "scopes"],
+    },
+    execute: async (input: { name: string; scopes: string[] }) => {
+      const { clientId, clientSecret } = await store.createClient(
+        input.name,
+        input.scopes,
+      );
+      return { clientId, clientSecret, scopes: input.scopes };
+    },
+  });
+
+  const listClientsTool = defineTool({
+    name: "list_clients",
+    description: "List all registered clients (admin only)",
+    visibility: "private",
+    inputSchema: { type: "object", properties: {} },
+    execute: async () => {
+      const clients = await store.listClients();
+      return {
+        clients: clients.map((c) => ({
+          clientId: c.clientId,
+          name: c.name,
+          scopes: c.scopes,
+          createdAt: c.createdAt,
+          selfRegistered: c.selfRegistered ?? false,
+        })),
+      };
+    },
+  });
+
+  const revokeClientTool = defineTool({
+    name: "revoke_client",
+    description: "Revoke a client and all its tokens (admin only)",
+    visibility: "private",
+    inputSchema: {
+      type: "object",
+      properties: {
+        clientId: { type: "string", description: "Client ID to revoke" },
+      },
+      required: ["clientId"],
+    },
+    execute: async (input: { clientId: string }) => {
+      const revoked = await store.revokeClient(input.clientId);
+      return { revoked };
+    },
+  });
+
+  const rotateSecretTool = defineTool({
+    name: "rotate_secret",
+    description: "Rotate a client's secret (admin only)",
+    visibility: "private",
+    inputSchema: {
+      type: "object",
+      properties: {
+        clientId: { type: "string", description: "Client ID to rotate" },
+      },
+      required: ["clientId"],
+    },
+    execute: async (input: { clientId: string }) => {
+      const result = await store.rotateSecret(input.clientId);
+      if (!result) throw new Error(`Client not found: ${input.clientId}`);
+      return { clientId: input.clientId, clientSecret: result.clientSecret };
+    },
+  });
+
+  // --- Assemble tools ---
+
+  const tools = [
+    tokenTool,
+    whoamiTool,
+    ...(allowRegistration ? [registerTool] : []),
+    createClientTool,
+    listClientsTool,
+    revokeClientTool,
+    rotateSecretTool,
+  ];
+
+  const agent = defineAgent({
+    path: "@auth",
+    entrypoint:
+      "Authentication agent. Provides OAuth2 client_credentials authentication for the agent network.",
+    config: {
+      name: "Auth",
+      description: "Built-in authentication agent",
+      supportedActions: ["execute_tool", "describe_tools", "load"],
+    },
+    tools: tools as ToolDefinition<ToolContext>[],
+    visibility: "public",
+  });
+
+  // Attach store and config for server integration
+  return Object.assign(agent, {
+    __authStore: store,
+    __rootKey: rootKey,
+    __tokenTtl: tokenTtl,
+  });
+}

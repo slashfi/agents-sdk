@@ -7,6 +7,7 @@
 import type {
   AgentConfig,
   AgentDefinition,
+  AgentRuntime,
   JsonSchema,
   ToolContext,
   ToolDefinition,
@@ -100,6 +101,12 @@ export interface DefineAgentOptions<
   /** Tools provided by this agent */
   tools?: ToolDefinition<TContext, unknown, unknown>[];
 
+  /**
+   * Runtime hooks factory.
+   * Called once to create the runtime for this agent.
+   */
+  runtime?: () => AgentRuntime;
+
   /** Visibility level */
   visibility?: Visibility;
 
@@ -119,7 +126,15 @@ export interface DefineAgentOptions<
  *     name: 'My Agent',
  *     description: 'A helpful agent'
  *   },
- *   tools: [greet, echo]
+ *   tools: [greet, echo],
+ *   runtime: () => ({
+ *     onInvoke: async (ctx) => {
+ *       console.log(`Invoked with: ${ctx.prompt}`);
+ *     },
+ *     onTick: async (ctx) => {
+ *       console.log(`Tick at ${ctx.timestamp}`);
+ *     }
+ *   })
  * });
  * ```
  */
@@ -131,6 +146,7 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
     entrypoint: options.entrypoint,
     config: options.config,
     tools: options.tools ?? [],
+    runtime: options.runtime,
     visibility: options.visibility,
     allowedCallers: options.allowedCallers,
   };

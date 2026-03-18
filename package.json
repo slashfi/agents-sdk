@@ -1,42 +1,12 @@
 {
   "name": "@slashfi/agents-sdk",
   "version": "0.1.0",
-  "description": "SDK for building AI agents with tool definitions and JSON-RPC servers",
-  "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
-  "files": [
-    "dist",
-    "src"
-  ],
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "bun test",
-    "lint": "biome check src/",
-    "lint:fix": "biome check --write src/",
-    "prepublishOnly": "npm run build"
-  },
-  "keywords": [
-    "ai",
-    "agents",
-    "llm",
-    "tools",
-    "mcp",
-    "json-rpc"
-  ],
   "author": "Slash Financial",
-  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/slashfi/agents-sdk.git"
   },
+  "main": "dist/index.js",
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/bun": "^1.1.0",
@@ -45,9 +15,43 @@
   "peerDependencies": {
     "zod": "^3.23.0"
   },
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "description": "SDK for building AI agents with tool definitions and JSON-RPC servers",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "ai",
+    "agents",
+    "llm",
+    "tools",
+    "mcp",
+    "json-rpc"
+  ],
+  "license": "MIT",
   "peerDependenciesMeta": {
     "zod": {
       "optional": true
     }
-  }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "bun test",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "prepublishOnly": "npm run build"
+  },
+  "type": "module",
+  "types": "dist/index.d.ts",
+  "workspaces": [
+    "examples/*"
+  ]
 }
