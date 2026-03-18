@@ -477,6 +477,7 @@ export function createAuthAgent(
       "Authentication agent. Provides OAuth2 client_credentials authentication for the agent network.",
     config: {
       name: "Auth",
+      visibility: "public",
       description: "Built-in authentication agent",
       supportedActions: ["execute_tool", "describe_tools", "load"],
     },

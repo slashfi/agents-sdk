@@ -189,7 +189,7 @@ async function resolveAuth(
 }
 
 function canSeeAgent(agent: AgentDefinition, auth: ResolvedAuth | null): boolean {
-  const visibility = (agent.config?.visibility ?? "internal") as Visibility;
+  const visibility = ((agent as any).visibility ?? agent.config?.visibility ?? "internal") as Visibility;
   if (auth?.isRoot) return true;
   if (visibility === "public") return true;
   if (visibility === "internal" && auth) return true;
