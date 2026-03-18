@@ -4,11 +4,19 @@
   "type": "module",
   "scripts": {
     "start": "bun server.ts",
-    "migration:generate": "qb generate"
+    "migrate": "bun run-migrations.ts",
+    "migrate:generate": "node node_modules/@slashfi/query-builder/lib/cli/index.js generate"
   },
   "dependencies": {
     "@slashfi/agents-sdk": "0.1.0",
     "@slashfi/query-builder": "0.1.0",
     "postgres": "^3.4.8"
+  },
+  "devDependencies": {
+    "@swc-node/register": "^1.10.10",
+    "@swc/core": "^1.11.22",
+    "glob": "^11.0.2",
+    "chalk": "^5.4.1",
+    "cmd-ts": "^0.13.0"
   }
 }

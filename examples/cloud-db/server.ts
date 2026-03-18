@@ -4,7 +4,8 @@
  * Production-ready agent server for a cloud database with:
  * - @auth agent (OAuth2 client_credentials, Postgres-backed)
  * - @registry agent (query and manage registered agents via @slashfi/query-builder)
- * - Auto-migration on startup
+ *
+ * Migrations are handled separately via `qb generate` and run in CI.
  *
  * Environment variables:
  *   DATABASE_URL - Postgres connection string (required)
@@ -25,7 +26,7 @@ import {
 } from "@slashfi/agents-sdk";
 import type { ToolContext } from "@slashfi/agents-sdk";
 
-import { createCloudDb } from "./db/schema.js";
+import { connectDb, db, Tenant, Agent, AgentTool } from "./db/schema.js";
 import { createPostgresAuthStore } from "./db/store.js";
 
 // ============================================
@@ -52,60 +53,8 @@ const PORT = Number.parseInt(process.env.PORT ?? "3000", 10);
 
 console.log("[db] Connecting to Postgres...");
 const client = postgres(DATABASE_URL);
-
-// Run migrations (create tables if they don't exist)
-console.log("[db] Running migrations...");
-await client.unsafe(`
-  CREATE TABLE IF NOT EXISTS auth_clients (
-    client_id TEXT PRIMARY KEY,
-    client_secret_hash TEXT NOT NULL,
-    name TEXT NOT NULL,
-    scopes TEXT NOT NULL DEFAULT '[]',
-    self_registered BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT NOW() NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS auth_tokens (
-    token TEXT PRIMARY KEY,
-    client_id TEXT NOT NULL REFERENCES auth_clients(client_id) ON DELETE CASCADE,
-    scopes TEXT NOT NULL DEFAULT '[]',
-    issued_at TIMESTAMP DEFAULT NOW() NOT NULL,
-    expires_at TIMESTAMP NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS tenants (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    plan TEXT NOT NULL DEFAULT 'free',
-    created_at TIMESTAMP DEFAULT NOW() NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS agents (
-    id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL REFERENCES tenants(id),
-    name TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    version TEXT NOT NULL DEFAULT '0.1.0',
-    status TEXT NOT NULL DEFAULT 'active',
-    endpoint_url TEXT,
-    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
-    updated_at TIMESTAMP DEFAULT NOW() NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS agent_tools (
-    id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    input_schema TEXT NOT NULL DEFAULT '{}'
-  );
-`);
-console.log("[db] Migrations complete.");
-
-// Initialize query builder
-const cloudDb = createCloudDb(client);
-const { db, Tenant, Agent, AgentTool } = cloudDb;
-
+connectDb(client);
+console.log("[db] Connected.");
 
 // ============================================
 // @registry Agent
@@ -124,7 +73,6 @@ const listAgentsTool = defineTool({
   execute: async (input: { tenant_id?: string; status?: string }, ctx: ToolContext) => {
     console.log(`[${ctx.callerId}] list_agents`);
 
-    // Build query with optional filters
     const conditions: string[] = [];
     const params: string[] = [];
     if (input.tenant_id) {
@@ -246,7 +194,6 @@ const queryTool = defineTool({
     if (!normalized.startsWith("SELECT")) {
       throw new Error("Only SELECT queries are allowed via the query tool.");
     }
-
     console.log(`[${ctx.callerId}] query: ${input.sql}`);
     const result = await client.unsafe(input.sql);
     return { rows: result, rowCount: result.length };
@@ -265,22 +212,19 @@ const registryAgent = defineAgent({
 
 const agentRegistry = createAgentRegistry();
 
-// Register @auth with Postgres-backed store
 agentRegistry.register(
   createAuthAgent({
     rootKey: ROOT_KEY,
-    store: createPostgresAuthStore(client, cloudDb),
+    store: createPostgresAuthStore(client),
     allowRegistration: true,
   })
 );
 
-// Register @registry
 agentRegistry.register(registryAgent);
 
 console.log(`[server] Starting on port ${PORT}...`);
 const server = createAgentServer(agentRegistry, { port: PORT, hostname: "0.0.0.0" });
 await server.start();
-console.log(`[server] Agent registry running at http://localhost:${PORT}`);
 console.log(`[server] Agents: ${agentRegistry.list().map((a) => `@${a.path}`).join(", ")}`);
 console.log(`[server] Root key: ${ROOT_KEY.substring(0, 6)}...`);
 

@@ -5,8 +5,8 @@
  * for all database operations.
  */
 import type postgres from "postgres";
-import type { AuthStore, AuthClient, AuthToken } from "@slashfi/agents-sdk";
-import type { CloudDb } from "./schema.js";
+import type { AuthStore, AuthClient as AuthClientType, AuthToken as AuthTokenType } from "@slashfi/agents-sdk";
+import { db, AuthClient as AuthClientEntity, AuthToken as AuthTokenEntity } from "./schema.js";
 
 function generateId(prefix: string): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -57,20 +57,19 @@ function parseScopes(raw: unknown): string[] {
   return [];
 }
 
-function rowToAuthClient(row: Record<string, any>): AuthClient {
+function rowToAuthClient(row: Record<string, any>): AuthClientType {
   return {
-    clientId: row.auth_client_client_id ?? row.client_id,
-    clientSecretHash: row.auth_client_client_secret_hash ?? row.client_secret_hash,
-    name: row.auth_client_name ?? row.name,
-    scopes: parseScopes(row.auth_client_scopes ?? row.scopes),
-    createdAt: new Date(row.auth_client_created_at ?? row.created_at).getTime(),
-    selfRegistered: row.auth_client_self_registered ?? row.self_registered ?? false,
+    clientId: row.client_id,
+    clientSecretHash: row.client_secret_hash,
+    name: row.name,
+    scopes: parseScopes(row.scopes),
+    createdAt: new Date(row.created_at).getTime(),
+    selfRegistered: row.self_registered ?? false,
   };
 }
 
 export function createPostgresAuthStore(
   client: postgres.Sql,
-  { db, AuthClient: AuthClientEntity, AuthToken: AuthTokenEntity }: CloudDb
 ): AuthStore {
   return {
     async createClient(name, scopes, selfRegistered) {
@@ -100,7 +99,7 @@ export function createPostgresAuthStore(
       if (!row) return null;
 
       const hash = await hashSecret(clientSecret);
-      if (hash !== (row.auth_client.client_secret_hash)) return null;
+      if (hash !== row.auth_client.client_secret_hash) return null;
 
       return rowToAuthClient(row.auth_client);
     },
@@ -123,7 +122,6 @@ export function createPostgresAuthStore(
     },
 
     async revokeClient(clientId) {
-      // Deletes not yet in QB, use raw SQL (cascade deletes tokens)
       await client.unsafe(`DELETE FROM auth_clients WHERE client_id = $1`, [clientId]);
       return true;
     },
