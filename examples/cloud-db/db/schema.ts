@@ -1,14 +1,11 @@
 /**
  * Cloud DB Schema
  *
- * Defines all tables via @slashfi/query-builder.
  * Entity classes are top-level exports so `qb generate` can discover them.
  *
  * Tables:
  * - auth_clients / auth_tokens: OAuth2 client_credentials auth
- * - tenants: multi-tenant isolation
- * - agents: registered agents with metadata
- * - agent_tools: tools exposed by each agent
+ * - connections: database connections (postgres, cockroachdb, snowflake)
  */
 
 import { createDb, createDbDiscriminator } from "@slashfi/query-builder";
@@ -17,8 +14,6 @@ import type postgres from "postgres";
 
 const discriminator = createDbDiscriminator("cloud-db");
 
-// Placeholder db instance for schema definition.
-// The real query function is wired up at runtime via `connectDb()`.
 let queryFn: (queryName: string, sql: SqlString) => Promise<Record<string, any>[]> =
   async () => { throw new Error("DB not connected. Call connectDb() first."); };
 
@@ -30,10 +25,6 @@ const db = createDb({
   }),
 });
 
-/**
- * Wire the query-builder to a live postgres connection.
- * Call this once at server startup before any queries.
- */
 export function connectDb(client: postgres.Sql) {
   queryFn = async (_queryName: string, sql: SqlString) => {
     const query = sql.getQuery();
@@ -102,101 +93,71 @@ export class AuthToken {
 }
 
 // ============================================
-// Tenant Table
+// Connections Table
 // ============================================
 
-interface TenantSchema {
+interface ConnectionSchema {
   id: string;
+  owner_id: string;
   name: string;
-  plan: string;
-  created_at: Date;
-}
-
-export class Tenant {
-  static readonly Table = db
-    .buildTableFromSchema<TenantSchema>()
-    .columns({
-      id: (_) => _.varchar(),
-      name: (_) => _.varchar(),
-      plan: (_) => _.varchar(),
-      created_at: (_) => _.timestamp(),
-    })
-    .primaryKey("id")
-    .tableName("tenants")
-    .introspect({ columns: "enforce" })
-    .defaultAlias("tenant")
-    .build();
-}
-
-// ============================================
-// Agent Table
-// ============================================
-
-interface AgentSchema {
-  id: string;
-  tenant_id: string;
-  name: string;
-  description: string;
-  version: string;
+  type: string;
+  config_encrypted: string;
   status: string;
-  endpoint_url: string | undefined;
   created_at: Date;
   updated_at: Date;
 }
 
-export class Agent {
+export class Connection {
   static readonly Table = db
-    .buildTableFromSchema<AgentSchema>()
+    .buildTableFromSchema<ConnectionSchema>()
     .columns({
       id: (_) => _.varchar(),
-      tenant_id: (_) => _.varchar(),
+      owner_id: (_) => _.varchar(),
       name: (_) => _.varchar(),
-      description: (_) => _.varchar(),
-      version: (_) => _.varchar(),
+      type: (_) => _.varchar(),
+      config_encrypted: (_) => _.varchar(),
       status: (_) => _.varchar(),
-      endpoint_url: (_) => _.varchar({ isNullable: true }),
       created_at: (_) => _.timestamp(),
       updated_at: (_) => _.timestamp(),
     })
     .primaryKey("id")
-    .tableName("agents")
+    .tableName("connections")
     .introspect({ columns: "enforce" })
-    .defaultAlias("agent")
+    .defaultAlias("connection")
     .build();
 }
 
+
 // ============================================
-// Agent Tool Table
+// Secrets Table
 // ============================================
 
-interface AgentToolSchema {
+interface SecretSchema {
   id: string;
-  agent_id: string;
-  name: string;
-  description: string;
-  input_schema: string;
+  owner_id: string;
+  value_encrypted: string;
+  created_at: Date;
+  expires_at: Date | undefined;
 }
 
-export class AgentTool {
+export class Secret {
   static readonly Table = db
-    .buildTableFromSchema<AgentToolSchema>()
+    .buildTableFromSchema<SecretSchema>()
     .columns({
       id: (_) => _.varchar(),
-      agent_id: (_) => _.varchar(),
-      name: (_) => _.varchar(),
-      description: (_) => _.varchar(),
-      input_schema: (_) => _.varchar(),
+      owner_id: (_) => _.varchar(),
+      value_encrypted: (_) => _.varchar(),
+      created_at: (_) => _.timestamp(),
+      expires_at: (_) => _.timestamp({ isNullable: true }),
     })
     .primaryKey("id")
-    .tableName("agent_tools")
+    .tableName("secrets")
     .introspect({ columns: "enforce" })
-    .defaultAlias("agent_tool")
+    .defaultAlias("secret")
     .build();
 }
-
 // Register all entities
 db.register(AuthClient);
 db.register(AuthToken);
-db.register(Tenant);
-db.register(Agent);
-db.register(AgentTool);
+db.register(Connection);
+db.register(Secret);

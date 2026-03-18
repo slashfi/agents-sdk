@@ -29,6 +29,7 @@ import type { AuthStore } from "./auth.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 import { verifyJwt } from "./jwt.js";
+import { type SecretStore, createInMemorySecretStore, processSecretParams } from "./secrets.js";
 
 // ============================================
 // Server Types
@@ -47,6 +48,9 @@ export interface AgentServerOptions {
   serverName?: string;
   /** Server version reported in MCP initialize (default: '1.0.0') */
   serverVersion?: string;
+
+  /** Secret store for handling secret: refs in tool params */
+  secretStore?: SecretStore;
 }
 
 export interface AgentServer {
@@ -297,6 +301,7 @@ export function createAgentServer(
     cors = true,
     serverName = "agents-sdk",
     serverVersion = "1.0.0",
+    secretStore = createInMemorySecretStore(),
   } = options;
 
   let serverInstance: ReturnType<typeof Bun.serve> | null = null;
@@ -384,6 +389,22 @@ export function createAgentServer(
         }
         if (auth?.isRoot) {
           req.callerType = "system";
+        }
+
+        // Process secret params: resolve refs, store raw secrets
+        if ((req as any).params && secretStore) {
+          const ownerId = auth?.callerId ?? "anonymous";
+          // Find the tool schema to check for secret: true fields
+          const agent = registry.get(req.path);
+          const tool = agent?.tools.find((t) => t.name === (req as any).tool);
+          const schema = tool?.inputSchema as any;
+          const { resolved } = await processSecretParams(
+            (req as any).params as Record<string, unknown>,
+            schema,
+            secretStore,
+            ownerId,
+          );
+          (req as any).params = resolved;
         }
 
         const result = await registry.call(req);

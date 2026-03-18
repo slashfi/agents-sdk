@@ -8,7 +8,7 @@
     "migrate:generate": "node node_modules/@slashfi/query-builder/lib/cli/index.js generate"
   },
   "dependencies": {
-    "@slashfi/agents-sdk": "0.3.0",
+    "@slashfi/agents-sdk": "0.4.0",
     "@slashfi/query-builder": "0.1.0",
     "postgres": "^3.4.8"
   },

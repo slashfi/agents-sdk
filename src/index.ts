@@ -109,3 +109,11 @@ export type {
 // Build
 export { buildAgents } from "./build.js";
 export type { BuildAgentsOptions, BuildAgentsResult } from "./build.js";
+
+// Secrets
+export { createInMemorySecretStore, isSecretRef, processSecretParams } from "./secrets.js";
+export type { SecretStore } from "./secrets.js";
+
+// JWT
+export { signJwt, verifyJwt } from "./jwt.js";
+export type { JwtPayload } from "./jwt.js";
