@@ -279,6 +279,7 @@ agentRegistry.register(registryAgent);
 
 console.log(`[server] Starting on port ${PORT}...`);
 const server = createAgentServer(agentRegistry, { port: PORT, hostname: "0.0.0.0" });
+await server.start();
 console.log(`[server] Agent registry running at http://localhost:${PORT}`);
 console.log(`[server] Agents: ${agentRegistry.list().map((a) => `@${a.name}`).join(", ")}`);
 console.log(`[server] Root key: ${ROOT_KEY.substring(0, 6)}...`);
