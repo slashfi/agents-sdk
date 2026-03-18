@@ -20,10 +20,6 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # Strip workspaces so bun doesn't try to resolve example deps
-      - name: Prepare package
-        run: node -e "let p=JSON.parse(require('fs').readFileSync('package.json','utf8')); delete p.workspaces; require('fs').writeFileSync('package.json', JSON.stringify(p,null,2))"
-
       - run: bun install
 
       - run: bun run build
