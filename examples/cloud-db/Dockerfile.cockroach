@@ -1,0 +1,7 @@
+FROM cockroachdb/cockroach:latest
+
+COPY cockroach-init.sh /cockroach-init.sh
+RUN chmod +x /cockroach-init.sh
+
+EXPOSE 26257 8080
+CMD ["/cockroach-init.sh"]
