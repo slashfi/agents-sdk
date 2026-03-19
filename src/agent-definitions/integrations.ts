@@ -750,7 +750,7 @@ export function createIntegrationsAgent(
       required: ["provider"],
     },
     execute: async (
-      input: { provider: string; userId?: string; state?: string },
+      input: { provider: string; userId?: string; state?: string; redirectUrl?: string },
       ctx: ToolContext,
     ) => {
       const config = await store.getProvider(input.provider);
@@ -784,7 +784,7 @@ export function createIntegrationsAgent(
         redirect_uri: redirectUri,
         response_type: "code",
         ...(scopeStr ? { scope: scopeStr } : {}),
-        state: input.state ?? JSON.stringify({ userId, providerId: config.id }),
+        state: input.state ?? JSON.stringify({ userId, providerId: config.id, redirectUrl: input.redirectUrl ?? "/" }),
         ...(oauth.authUrlExtraParams ?? {}),
       });
 

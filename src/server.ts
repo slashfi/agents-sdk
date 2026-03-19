@@ -646,6 +646,64 @@ export function createAgentServer(
       }
 
 
+      // GET /integrations/callback/:provider - OAuth callback
+      if (path.startsWith("/integrations/callback/") && req.method === "GET") {
+        const provider = path.split("/integrations/callback/")[1]?.split("?")[0];
+        if (!provider) {
+          return addCors(jsonResponse({ error: "Missing provider" }, 400));
+        }
+
+        const url = new URL(req.url);
+        const code = url.searchParams.get("code");
+        const state = url.searchParams.get("state");
+        const oauthError = url.searchParams.get("error");
+        const errorDescription = url.searchParams.get("error_description");
+
+        if (oauthError) {
+          return new Response(
+            `<html><body><h1>Authorization Failed</h1><p>${errorDescription ?? oauthError}</p></body></html>`,
+            { status: 400, headers: { "Content-Type": "text/html", ...corsHeaders() } },
+          );
+        }
+
+        if (!code) {
+          return addCors(jsonResponse({ error: "Missing authorization code" }, 400));
+        }
+
+        // Call handle_oauth_callback tool on @integrations
+        try {
+          await registry.call({
+            action: "execute_tool",
+            path: "@integrations",
+            tool: "handle_oauth_callback",
+            params: { provider, code, state: state ?? undefined },
+            context: {
+              tenantId: "default",
+              agentPath: "@integrations",
+              callerId: "oauth_callback",
+              callerType: "system",
+            },
+          } as any);
+
+          // Parse redirect URL from state
+          let redirectUrl = "/";
+          if (state) {
+            try {
+              const parsed = JSON.parse(state);
+              if (parsed.redirectUrl) redirectUrl = parsed.redirectUrl;
+            } catch {}
+          }
+
+          const sep = redirectUrl.includes("?") ? "&" : "?";
+          return Response.redirect(`${redirectUrl}${sep}connected=${provider}`, 302);
+        } catch (err) {
+          return new Response(
+            `<html><body><h1>Connection Failed</h1><p>${err instanceof Error ? err.message : String(err)}</p></body></html>`,
+            { status: 500, headers: { "Content-Type": "text/html", ...corsHeaders() } },
+          );
+        }
+      }
+
       // POST /secrets/collect - Submit collected secrets and auto-forward to tool
       if (path === "/secrets/collect" && req.method === "POST") {
         const body = (await req.json()) as {
