@@ -317,6 +317,12 @@ function getToolDefinitions() {
             description:
               "Natural language search query (e.g. 'send a message', 'database query')",
           },
+          agents: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Optional list of agent paths to search within (e.g. ['@notifications', '@db']). Searches all agents if omitted.",
+          },
           limit: {
             type: "number",
             description: "Maximum number of results to return (default: 10)",
@@ -478,13 +484,20 @@ export function createAgentServer(
       }
 
       case "search_agent_tools": {
-        const { query, limit: resultLimit } = args as {
+        const { query, agents: agentFilter, limit: resultLimit } = args as {
           query: string;
+          agents?: string[];
           limit?: number;
         };
 
         const agents = registry.list();
-        const visible = agents.filter((agent) => canSeeAgent(agent, auth));
+        const visible = agents.filter((agent) => {
+          if (!canSeeAgent(agent, auth)) return false;
+          if (agentFilter && agentFilter.length > 0) {
+            return agentFilter.includes(agent.path);
+          }
+          return true;
+        });
 
         // Build search documents from all visible tools
         const documents: (BM25Document & {
