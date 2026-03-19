@@ -24,6 +24,7 @@
  */
 
 import { defineAgent, defineTool } from "../define.js";
+import { pendingCollections, generateCollectionToken } from "../server.js";
 import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 
 // ============================================
@@ -1040,6 +1041,124 @@ export function createIntegrationsAgent(
     },
   });
 
+  // ---- collect_secrets ----
+  const collectSecretsTool = defineTool({
+    name: "collect_secrets",
+    description:
+      "Collect secrets and missing fields for a tool via a secure form. " +
+      "Pass the target agent + tool + any params you already have. " +
+      "Returns a form spec with fields the user needs to fill in. " +
+      "Secrets bypass the LLM entirely. On form submission, the server auto-calls the target tool.",
+    visibility: "public" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        agent: { type: "string", description: "Target agent path (e.g. '@db-connections')" },
+        tool: { type: "string", description: "Target tool name (e.g. 'add_connection')" },
+        params: { type: "object", description: "Partial params already collected" },
+        registry: { type: "string", description: "Remote registry URL. Omit for local." },
+      },
+      required: ["agent", "tool"],
+    },
+    execute: async (
+      input: { agent: string; tool: string; params?: Record<string, unknown>; registry?: string },
+      ctx: ToolContext,
+    ) => {
+      // Fetch tool schema from registry
+      let toolSchema: { name: string; inputSchema?: any; description?: string } | null = null;
+      const registryUrl = input.registry;
+
+      if (!registryUrl) {
+        return { error: "Registry URL required for now. Pass registry param." };
+      }
+
+      const res = await fetch(registryUrl + "/mcp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1,
+          method: "tools/call",
+          params: {
+            name: "call_agent",
+            arguments: { request: { action: "describe_tools", path: input.agent } },
+          },
+        }),
+      });
+      const data = (await res.json()) as any;
+      const parsed = JSON.parse(data?.result?.content?.[0]?.text ?? "{}");
+      const tools = parsed?.tools ?? parsed?.result?.tools ?? [];
+      toolSchema = tools.find((t: any) => t.name === input.tool) ?? null;
+
+      if (!toolSchema?.inputSchema) {
+        return { error: `Tool '${input.tool}' not found on '${input.agent}'` };
+      }
+
+      const schema = toolSchema.inputSchema;
+      const properties = schema.properties ?? {};
+      const requiredFields = new Set<string>(schema.required ?? []);
+      const providedParams = input.params ?? {};
+
+      // Compute fields: secret fields always, required fields if not provided
+      const fields: Array<{
+        name: string; type: string; description: string; secret: boolean; required: boolean;
+      }> = [];
+
+      for (const [name, def] of Object.entries(properties) as [string, any][]) {
+        const isSecret = def.secret === true;
+        const isRequired = requiredFields.has(name);
+        const isProvided = name in providedParams;
+        if (isSecret || (isRequired && !isProvided)) {
+          fields.push({
+            name,
+            type: def.type ?? "string",
+            description: def.description ?? name,
+            secret: isSecret,
+            required: isRequired,
+          });
+        }
+      }
+
+      if (fields.length === 0) {
+        return { message: "All fields provided. Call the tool directly.", canCallDirectly: true };
+      }
+
+      // Register pending collection
+      const token = generateCollectionToken();
+      pendingCollections.set(token, {
+        params: providedParams as Record<string, unknown>,
+        agent: input.agent,
+        tool: input.tool,
+        auth: {
+          callerId: ctx.callerId,
+          callerType: ctx.callerType as "agent" | "user" | "system",
+          scopes: [],
+          isRoot: false,
+        },
+        fields: fields.map((f) => ({
+          name: f.name, description: f.description, secret: f.secret, required: f.required,
+        })),
+        createdAt: Date.now(),
+      });
+
+      // Build callback URL from callbackBaseUrl
+      const baseUrl = callbackBaseUrl?.replace(/\/integrations\/callback$/, "") ?? "";
+
+      return {
+        formSpec: {
+          fields,
+          callbackUrl: `${baseUrl}/secrets/collect`,
+          callbackToken: token,
+          expiresIn: 600,
+          context: {
+            agent: input.agent,
+            tool: input.tool,
+            description: toolSchema.description,
+          },
+        },
+      };
+    },
+  });
+
   return defineAgent({
     path: "@integrations",
     entrypoint:
@@ -1058,6 +1177,7 @@ export function createIntegrationsAgent(
       connectTool,
       callTool,
       callbackTool,
+      collectSecretsTool,
     ] as ToolDefinition[],
   });
 }

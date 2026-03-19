@@ -102,6 +102,36 @@ interface ResolvedAuth {
   isRoot: boolean;
 }
 
+
+// ============================================
+// Secrets Collection (one-time tokens)
+// ============================================
+
+export interface PendingCollection {
+  /** Partial params already provided by agent */
+  params: Record<string, unknown>;
+  /** Target agent + tool to call after collection */
+  agent: string;
+  tool: string;
+  /** Auth context from original request */
+  auth: ResolvedAuth | null;
+  /** Fields the form needs to collect */
+  fields: Array<{ name: string; description?: string; secret: boolean; required: boolean }>;
+  /** Created timestamp for expiry */
+  createdAt: number;
+}
+
+export const pendingCollections = new Map<string, PendingCollection>();
+
+export function generateCollectionToken(): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let token = "sc_";
+  for (let i = 0; i < 32; i++) {
+    token += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return token;
+}
+
 // ============================================
 // Helpers
 // ============================================
@@ -613,6 +643,68 @@ export function createAgentServer(
             })),
           }),
         );
+      }
+
+
+      // POST /secrets/collect - Submit collected secrets and auto-forward to tool
+      if (path === "/secrets/collect" && req.method === "POST") {
+        const body = (await req.json()) as {
+          token: string;
+          values: Record<string, string>;
+        };
+
+        const pending = pendingCollections.get(body.token);
+        if (!pending) {
+          return addCors(
+            jsonResponse({ error: "Invalid or expired collection token" }, 400),
+          );
+        }
+
+        // One-time use
+        pendingCollections.delete(body.token);
+
+        // Check expiry (10 min)
+        if (Date.now() - pending.createdAt > 10 * 60 * 1000) {
+          return addCors(
+            jsonResponse({ error: "Collection token expired" }, 400),
+          );
+        }
+
+        // Encrypt secret values and store as refs
+        const mergedParams = { ...pending.params };
+        for (const [fieldName, value] of Object.entries(body.values)) {
+          const fieldDef = pending.fields.find((f) => f.name === fieldName);
+          if (fieldDef?.secret && secretStore) {
+            // Store encrypted, get ref
+            const ownerId = pending.auth?.callerId ?? "anonymous";
+            const secretId = await secretStore.store(value, ownerId);
+            mergedParams[fieldName] = `secret:${secretId}`;
+          } else {
+            mergedParams[fieldName] = value;
+          }
+        }
+
+        // Auto-forward to the target tool
+        const callRequest = {
+          action: "execute_tool" as const,
+          path: pending.agent,
+          tool: pending.tool,
+          params: mergedParams,
+        };
+
+        const toolCtx = {
+          tenantId: "default",
+          agentPath: pending.agent,
+          callerId: pending.auth?.callerId ?? "anonymous",
+          callerType: pending.auth?.callerType ?? ("system" as const),
+        };
+
+        const result = await registry.call({
+          ...callRequest,
+          context: toolCtx,
+        } as any);
+
+        return addCors(jsonResponse({ success: true, result }));
       }
 
       return addCors(
