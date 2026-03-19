@@ -572,14 +572,23 @@ export function createAgentServer(
       },
     } as any);
 
-    // Extract the result - token tool returns { accessToken, tokenType, expiresIn, scopes }
-    const parsed = typeof tokenResult === "string" ? JSON.parse(tokenResult) : tokenResult;
+    // Extract the result - registry.call returns { success, result: { accessToken, tokenType, expiresIn, scopes } }
+    const callResponse = tokenResult as any;
+    if (!callResponse.success) {
+      return jsonResponse({ error: "token_generation_failed", error_description: callResponse.error ?? "Unknown error" }, 500);
+    }
+    const tokenData = callResponse.result;
+
+    // accessToken may be wrapped as { $agent_type: "secret", value: "<jwt>" }
+    const accessToken = tokenData.accessToken?.$agent_type === "secret"
+      ? tokenData.accessToken.value
+      : tokenData.accessToken;
 
     return jsonResponse({
-      access_token: parsed.accessToken?.$agent_type === "secret" ? parsed.accessToken.value : parsed.accessToken,
-      token_type: parsed.tokenType ?? "Bearer",
-      expires_in: parsed.expiresIn ?? authConfig.tokenTtl,
-      scope: Array.isArray(parsed.scopes) ? parsed.scopes.join(" ") : (client.scopes.join(" ")),
+      access_token: accessToken,
+      token_type: tokenData.tokenType ?? "Bearer",
+      expires_in: tokenData.expiresIn ?? authConfig.tokenTtl,
+      scope: Array.isArray(tokenData.scopes) ? tokenData.scopes.join(" ") : client.scopes.join(" "),
     });
   }
 
