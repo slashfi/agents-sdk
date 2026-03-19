@@ -42,6 +42,7 @@ export { db };
 
 interface AuthClientSchema {
   client_id: string;
+  tenant_id: string | undefined;
   client_secret_hash: string;
   name: string;
   scopes: string;
@@ -54,6 +55,7 @@ export class AuthClient {
     .buildTableFromSchema<AuthClientSchema>()
     .columns({
       client_id: (_) => _.varchar(),
+      tenant_id: (_) => _.varchar({ isNullable: true }),
       client_secret_hash: (_) => _.varchar(),
       name: (_) => _.varchar(),
       scopes: (_) => _.varchar(),
@@ -89,6 +91,32 @@ export class AuthToken {
     .tableName("auth_tokens")
     .introspect({ columns: "enforce" })
     .defaultAlias("auth_token")
+    .build();
+}
+
+
+// ============================================
+// Tenants Table
+// ============================================
+
+interface TenantSchema {
+  id: string;
+  name: string;
+  created_at: Date;
+}
+
+export class Tenant {
+  static readonly Table = db
+    .buildTableFromSchema<TenantSchema>()
+    .columns({
+      id: (_) => _.varchar(),
+      name: (_) => _.varchar(),
+      created_at: (_) => _.timestamp(),
+    })
+    .primaryKey("id")
+    .tableName("tenants")
+    .introspect({ columns: "enforce" })
+    .defaultAlias("tenant")
     .build();
 }
 
@@ -134,10 +162,8 @@ export class Connection {
 
 interface SecretSchema {
   id: string;
-  owner_id: string;
   value_encrypted: string;
   created_at: Date;
-  expires_at: Date | undefined;
 }
 
 export class Secret {
@@ -145,19 +171,47 @@ export class Secret {
     .buildTableFromSchema<SecretSchema>()
     .columns({
       id: (_) => _.varchar(),
-      owner_id: (_) => _.varchar(),
       value_encrypted: (_) => _.varchar(),
       created_at: (_) => _.timestamp(),
-      expires_at: (_) => _.timestamp({ isNullable: true }),
     })
     .primaryKey("id")
-    .tableName("secrets")
+    .tableName("secret")
     .introspect({ columns: "enforce" })
     .defaultAlias("secret")
     .build();
 }
+
+
+// ============================================
+// Secret Association Table
+// ============================================
+
+interface SecretAssociationSchema {
+  secret_id: string;
+  entity_type: string;
+  entity_id: string;
+  created_at: Date;
+}
+
+export class SecretAssociation {
+  static readonly Table = db
+    .buildTableFromSchema<SecretAssociationSchema>()
+    .columns({
+      secret_id: (_) => _.varchar(),
+      entity_type: (_) => _.varchar(),
+      entity_id: (_) => _.varchar(),
+      created_at: (_) => _.timestamp(),
+    })
+    .primaryKey("secret_id", "entity_type", "entity_id")
+    .tableName("secret_association")
+    .introspect({ columns: "enforce" })
+    .defaultAlias("secret_assoc")
+    .build();
+}
 // Register all entities
+db.register(Tenant);
 db.register(AuthClient);
 db.register(AuthToken);
 db.register(Connection);
 db.register(Secret);
+db.register(SecretAssociation);

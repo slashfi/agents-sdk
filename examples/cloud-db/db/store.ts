@@ -6,7 +6,7 @@
  */
 import type postgres from "postgres";
 import type { AuthStore, AuthClient as AuthClientType, AuthToken as AuthTokenType } from "@slashfi/agents-sdk";
-import { db, AuthClient as AuthClientEntity, AuthToken as AuthTokenEntity } from "./schema.js";
+import { db, Tenant as TenantEntity, AuthClient as AuthClientEntity, AuthToken as AuthTokenEntity } from "./schema.js";
 
 function generateId(prefix: string): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -57,7 +57,7 @@ function parseScopes(raw: unknown): string[] {
   return [];
 }
 
-function rowToAuthClient(row: Record<string, any>): AuthClientType {
+function rowToAuthClient(row: Record<string, any>): AuthClientType & { tenantId?: string } {
   return {
     clientId: row.client_id,
     clientSecretHash: row.client_secret_hash,
@@ -65,6 +65,7 @@ function rowToAuthClient(row: Record<string, any>): AuthClientType {
     scopes: parseScopes(row.scopes),
     createdAt: new Date(row.created_at).getTime(),
     selfRegistered: row.self_registered ?? false,
+    tenantId: row.tenant_id,
   };
 }
 
@@ -72,13 +73,41 @@ export function createPostgresAuthStore(
   client: postgres.Sql,
 ): AuthStore {
   return {
-    async createClient(name, scopes, selfRegistered) {
+    async createTenant(name) {
+      const id = `tenant_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      await db.insert(TenantEntity).values({
+        id,
+        name,
+        created_at: new Date(),
+      }).query();
+      return { tenantId: id };
+    },
+
+    async getTenant(tenantId) {
+      const result = await db.from(TenantEntity)
+        .where((_) => _.tenant.id.equals(tenantId))
+        .limit(1);
+      if (!result[0]) return null;
+      return { id: result[0].id, name: result[0].name, createdAt: new Date(result[0].created_at).getTime() };
+    },
+
+    async listTenants() {
+      const result = await db.from(TenantEntity).query();
+      return result.result.map((row) => ({
+        id: row.tenant.id,
+        name: row.tenant.name,
+        createdAt: new Date(row.tenant.created_at).getTime(),
+      }));
+    },
+
+    async createClient(name, scopes, selfRegistered, tenantId) {
       const clientId = generateId("ag_");
       const clientSecret = generateSecret();
       const secretHash = await hashSecret(clientSecret);
 
       await db.insert(AuthClientEntity).values({
         client_id: clientId,
+        tenant_id: tenantId,
         client_secret_hash: secretHash,
         name,
         scopes: JSON.stringify(scopes),

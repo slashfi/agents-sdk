@@ -97,23 +97,28 @@ export { createAgentServer } from "./server.js";
 export type { AgentServer, AgentServerOptions } from "./server.js";
 
 // Auth
-export { createAuthAgent, createMemoryAuthStore } from "./auth.js";
+export { createAuthAgent, createMemoryAuthStore } from "./agent-definitions/auth.js";
 export type {
   AuthClient,
   AuthIdentity,
   AuthStore,
   AuthToken,
   CreateAuthAgentOptions,
-} from "./auth.js";
+} from "./agent-definitions/auth.js";
 
 // Build
 export { buildAgents } from "./build.js";
 export type { BuildAgentsOptions, BuildAgentsResult } from "./build.js";
 
 // Secrets
-export { createInMemorySecretStore, isSecretRef, processSecretParams } from "./secrets.js";
-export type { SecretStore } from "./secrets.js";
+export { createSecretsAgent, createInMemorySecretStore, isSecretRef, processSecretParams } from "./agent-definitions/secrets.js";
+export type { SecretStore, SecretsAgentOptions } from "./agent-definitions/secrets.js";
+
+// Crypto
+export { encryptSecret, decryptSecret } from "./crypto.js";
 
 // JWT
 export { signJwt, verifyJwt } from "./jwt.js";
 export type { JwtPayload } from "./jwt.js";
+
+// Postgres Secret Store

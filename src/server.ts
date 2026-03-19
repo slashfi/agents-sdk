@@ -25,11 +25,11 @@
  * - Recognizes the root key for admin access
  */
 
-import type { AuthStore } from "./auth.js";
+import type { AuthStore } from "./agent-definitions/auth.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 import { verifyJwt } from "./jwt.js";
-import { type SecretStore, createInMemorySecretStore, processSecretParams } from "./secrets.js";
+import { type SecretStore, processSecretParams } from "./agent-definitions/secrets.js";
 
 // ============================================
 // Server Types
@@ -301,7 +301,7 @@ export function createAgentServer(
     cors = true,
     serverName = "agents-sdk",
     serverVersion = "1.0.0",
-    secretStore = createInMemorySecretStore(),
+    secretStore,
   } = options;
 
   let serverInstance: ReturnType<typeof Bun.serve> | null = null;

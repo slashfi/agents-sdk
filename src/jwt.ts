@@ -54,6 +54,8 @@ export interface JwtPayload {
   sub: string;
   /** Client name */
   name: string;
+  /** Tenant ID */
+  tenantId?: string;
   /** Scopes */
   scopes: string[];
   /** Issued at (unix seconds) */

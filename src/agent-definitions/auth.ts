@@ -24,9 +24,9 @@
  * ```
  */
 
-import { defineAgent, defineTool } from "./define.js";
-import type { AgentDefinition, ToolContext, ToolDefinition } from "./types.js";
-import { signJwt } from "./jwt.js";
+import { defineAgent, defineTool } from "../define.js";
+import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
+import { signJwt } from "../jwt.js";
 
 // ============================================
 // Auth Types
@@ -35,6 +35,7 @@ import { signJwt } from "./jwt.js";
 /** Registered client */
 export interface AuthClient {
   clientId: string;
+  tenantId?: string;
   clientSecretHash: string;
   name: string;
   scopes: string[];
@@ -68,12 +69,32 @@ export interface AuthIdentity {
  * Pluggable storage for auth state.
  * Implement this interface to use Postgres, Redis, SQLite, etc.
  */
+
+/**
+ * Tenant - organizational unit for multi-tenant isolation.
+ */
+export interface AuthTenant {
+  id: string;
+  name: string;
+  createdAt: number;
+}
+
 export interface AuthStore {
+  /** Create a tenant. */
+  createTenant(name: string): Promise<{ tenantId: string }>;
+
+  /** Get tenant by ID. */
+  getTenant(tenantId: string): Promise<AuthTenant | null>;
+
+  /** List tenants. */
+  listTenants(): Promise<AuthTenant[]>;
+
   /** Create a new client. Returns the raw (unhashed) secret. */
   createClient(
     name: string,
     scopes: string[],
     selfRegistered?: boolean,
+    tenantId?: string,
   ): Promise<{ clientId: string; clientSecret: string }>;
 
   /** Validate client credentials. Returns client if valid, null otherwise. */
@@ -102,6 +123,23 @@ export interface AuthStore {
 
   /** Revoke a specific token. */
   revokeToken(tokenString: string): Promise<boolean>;
+
+  /** Register a user under a tenant. Returns a refresh token. */
+  registerUser?(
+    tenantId: string,
+    userId: string,
+    clientId: string,
+  ): Promise<{ refreshToken: string }>;
+
+  /** Validate a refresh token. Returns user info. */
+  validateRefreshToken?(
+    refreshToken: string,
+  ): Promise<{ tenantId: string; userId: string; clientId: string } | null>;
+
+  /** Rotate a refresh token. */
+  rotateRefreshToken?(
+    oldToken: string,
+  ): Promise<{ refreshToken: string; tenantId: string; userId: string; clientId: string } | null>;
 }
 
 // ============================================
@@ -144,17 +182,33 @@ async function hashSecret(secret: string): Promise<string> {
  * Suitable for development and testing. Use a persistent store for production.
  */
 export function createMemoryAuthStore(): AuthStore {
+  const tenants = new Map<string, AuthTenant>();
   const clients = new Map<string, AuthClient>();
   const tokens = new Map<string, AuthToken>();
 
   return {
-    async createClient(name, scopes, selfRegistered) {
+    async createTenant(name) {
+      const id = `tenant_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      tenants.set(id, { id, name, createdAt: Date.now() });
+      return { tenantId: id };
+    },
+
+    async getTenant(tenantId) {
+      return tenants.get(tenantId) ?? null;
+    },
+
+    async listTenants() {
+      return Array.from(tenants.values());
+    },
+
+    async createClient(name, scopes, selfRegistered, tenantId) {
       const clientId = generateId("ag_");
       const clientSecret = generateSecret();
       const secretHash = await hashSecret(clientSecret);
 
       clients.set(clientId, {
         clientId,
+        tenantId,
         clientSecretHash: secretHash,
         name,
         scopes,
@@ -195,7 +249,7 @@ export function createMemoryAuthStore(): AuthStore {
       if (!client) return null;
       const clientSecret = generateSecret();
       client.clientSecretHash = await hashSecret(clientSecret);
-      return { clientSecret };
+      return { clientSecret: { $agent_type: "secret", value: clientSecret } } as any;
     },
 
     async storeToken(token) {
@@ -266,6 +320,24 @@ export function createAuthAgent(
 
   // --- Public Tools ---
 
+
+  const createTenantTool = defineTool({
+    name: "create_tenant",
+    description: "Create a new tenant (organizational unit). All clients and resources are scoped to a tenant.",
+    visibility: "public" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string" as const, description: "Tenant name" },
+      },
+      required: ["name"],
+    },
+    execute: async (input: { name: string }) => {
+      const result = await store.createTenant(input.name);
+      return { tenantId: result.tenantId, name: input.name };
+    },
+  });
+
   const tokenTool = defineTool({
     name: "token",
     description:
@@ -286,16 +358,36 @@ export function createAuthAgent(
     },
     execute: async (input: {
       grantType: string;
-      clientId: string;
-      clientSecret: string;
+      clientId?: string;
+      clientSecret?: string;
+      userId?: string;
+      refreshToken?: string;
     }) => {
+      if (input.grantType === "refresh_token") {
+        if (!input.refreshToken) throw new Error("refreshToken is required for refresh_token grant");
+        if (!store.rotateRefreshToken) throw new Error("Refresh tokens not supported by this store");
+        const result = await store.rotateRefreshToken(input.refreshToken);
+        if (!result) throw new Error("Invalid or expired refresh token");
+        const now = Math.floor(Date.now() / 1000);
+        const jwt = await signJwt(
+          { sub: result.clientId, name: result.userId, tenantId: result.tenantId, scopes: [], iat: now, exp: now + tokenTtl },
+          (await store.getClient(result.clientId))?.clientSecretHash ?? "",
+        );
+        return {
+          accessToken: { $agent_type: "secret", value: jwt },
+          refreshToken: { $agent_type: "secret", value: result.refreshToken },
+          tokenType: "bearer",
+          expiresIn: tokenTtl,
+        } as any;
+      }
+
       if (input.grantType !== "client_credentials") {
-        throw new Error("Unsupported grant type. Use 'client_credentials'.");
+        throw new Error("Unsupported grant type. Use 'client_credentials' or 'refresh_token'.");
       }
 
       const client = await store.validateClient(
-        input.clientId,
-        input.clientSecret,
+        input.clientId!,
+        input.clientSecret!,
       );
       if (!client) {
         throw new Error("Invalid client credentials");
@@ -306,6 +398,7 @@ export function createAuthAgent(
         {
           sub: client.clientId,
           name: client.name,
+          tenantId: client.tenantId,
           scopes: client.scopes,
           iat: now,
           exp: now + tokenTtl,
@@ -314,13 +407,14 @@ export function createAuthAgent(
       );
 
       return {
-        accessToken: jwt,
+        accessToken: { $agent_type: "secret", value: jwt },
         tokenType: "bearer",
         expiresIn: tokenTtl,
         scopes: client.scopes,
       };
     },
   });
+
 
   const whoamiTool = defineTool({
     name: "whoami",
@@ -355,7 +449,7 @@ export function createAuthAgent(
       },
       required: ["name"],
     },
-    execute: async (input: { name: string; scopes?: string[] }) => {
+    execute: async (input: { name: string; tenantId: string; scopes?: string[] }) => {
       let scopes = input.scopes ?? [];
 
       // If registration scopes are restricted, filter
@@ -367,9 +461,10 @@ export function createAuthAgent(
         input.name,
         scopes,
         true,
+        input.tenantId,
       );
 
-      return { clientId, clientSecret, scopes };
+      return { clientId, clientSecret: { $agent_type: "secret", value: clientSecret }, scopes } as any;
     },
   });
 
@@ -457,6 +552,7 @@ export function createAuthAgent(
   // --- Assemble tools ---
 
   const tools = [
+    createTenantTool,
     tokenTool,
     whoamiTool,
     ...(allowRegistration ? [registerTool] : []),
