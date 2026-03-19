@@ -97,7 +97,7 @@ export { createAgentServer } from "./server.js";
 export type { AgentServer, AgentServerOptions } from "./server.js";
 
 // Auth
-export { createAuthAgent, createMemoryAuthStore } from "./auth.js";
+export { createAuthAgent } from "./auth.js";
 export type {
   AuthClient,
   AuthIdentity,
@@ -113,7 +113,6 @@ export type { BuildAgentsOptions, BuildAgentsResult } from "./build.js";
 // Secrets
 export {
   createSecretsAgent,
-  createInMemorySecretStore,
   isSecretRef,
   processSecretParams,
 } from "./secrets.js";
@@ -129,6 +128,12 @@ export type { JwtPayload } from "./jwt.js";
 // Postgres Secret Store
 export { createPostgresSecretStore } from "./postgres-secret-store.js";
 export type { PostgresSecretStoreOptions } from "./postgres-secret-store.js";
+
+// Testing utilities (re-exported for backward compatibility, prefer '@slashfi/agents-sdk/testing')
+/** @deprecated Import from '@slashfi/agents-sdk/testing' instead */
+export { createMemoryAuthStore } from "./auth.js";
+/** @deprecated Import from '@slashfi/agents-sdk/testing' instead */
+export { createInMemorySecretStore } from "./secrets.js";
 
 // BM25 Search
 export { createBM25Index } from "./bm25.js";
