@@ -122,5 +122,3 @@ export { signJwt, verifyJwt } from "./jwt.js";
 export type { JwtPayload } from "./jwt.js";
 
 // Postgres Secret Store
-export { createPostgresSecretStore } from "./postgres-secret-store.js";
-export type { PostgresSecretStoreOptions } from "./postgres-secret-store.js";
