@@ -195,7 +195,7 @@ export function createMemoryAuthStore(): AuthStore {
       if (!client) return null;
       const clientSecret = generateSecret();
       client.clientSecretHash = await hashSecret(clientSecret);
-      return { clientSecret };
+      return { clientSecret: { $agent_type: "secret", value: clientSecret } } as any;
     },
 
     async storeToken(token) {
@@ -314,13 +314,14 @@ export function createAuthAgent(
       );
 
       return {
-        accessToken: jwt,
+        accessToken: { $agent_type: "secret", value: jwt },
         tokenType: "bearer",
         expiresIn: tokenTtl,
         scopes: client.scopes,
       };
     },
   });
+
 
   const whoamiTool = defineTool({
     name: "whoami",
@@ -369,7 +370,7 @@ export function createAuthAgent(
         true,
       );
 
-      return { clientId, clientSecret, scopes };
+      return { clientId, clientSecret: { $agent_type: "secret", value: clientSecret }, scopes } as any;
     },
   });
 

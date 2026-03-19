@@ -134,10 +134,8 @@ export class Connection {
 
 interface SecretSchema {
   id: string;
-  owner_id: string;
   value_encrypted: string;
   created_at: Date;
-  expires_at: Date | undefined;
 }
 
 export class Secret {
@@ -145,15 +143,41 @@ export class Secret {
     .buildTableFromSchema<SecretSchema>()
     .columns({
       id: (_) => _.varchar(),
-      owner_id: (_) => _.varchar(),
       value_encrypted: (_) => _.varchar(),
       created_at: (_) => _.timestamp(),
-      expires_at: (_) => _.timestamp({ isNullable: true }),
     })
     .primaryKey("id")
-    .tableName("secrets")
+    .tableName("secret")
     .introspect({ columns: "enforce" })
     .defaultAlias("secret")
+    .build();
+}
+
+
+// ============================================
+// Secret Association Table
+// ============================================
+
+interface SecretAssociationSchema {
+  secret_id: string;
+  entity_type: string;
+  entity_id: string;
+  created_at: Date;
+}
+
+export class SecretAssociation {
+  static readonly Table = db
+    .buildTableFromSchema<SecretAssociationSchema>()
+    .columns({
+      secret_id: (_) => _.varchar(),
+      entity_type: (_) => _.varchar(),
+      entity_id: (_) => _.varchar(),
+      created_at: (_) => _.timestamp(),
+    })
+    .primaryKey("secret_id", "entity_type", "entity_id")
+    .tableName("secret_association")
+    .introspect({ columns: "enforce" })
+    .defaultAlias("secret_assoc")
     .build();
 }
 // Register all entities
@@ -161,3 +185,4 @@ db.register(AuthClient);
 db.register(AuthToken);
 db.register(Connection);
 db.register(Secret);
+db.register(SecretAssociation);

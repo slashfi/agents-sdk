@@ -111,9 +111,16 @@ export { buildAgents } from "./build.js";
 export type { BuildAgentsOptions, BuildAgentsResult } from "./build.js";
 
 // Secrets
-export { createInMemorySecretStore, isSecretRef, processSecretParams } from "./secrets.js";
-export type { SecretStore } from "./secrets.js";
+export { createSecretsAgent, createInMemorySecretStore, isSecretRef, processSecretParams } from "./secrets.js";
+export type { SecretStore, SecretsAgentOptions } from "./secrets.js";
+
+// Crypto
+export { encryptSecret, decryptSecret } from "./crypto.js";
 
 // JWT
 export { signJwt, verifyJwt } from "./jwt.js";
 export type { JwtPayload } from "./jwt.js";
+
+// Postgres Secret Store
+export { createPostgresSecretStore } from "./postgres-secret-store.js";
+export type { PostgresSecretStoreOptions } from "./postgres-secret-store.js";
