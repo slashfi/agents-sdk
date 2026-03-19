@@ -26,10 +26,13 @@
  */
 
 import type { AuthStore } from "./agent-definitions/auth.js";
+import {
+  type SecretStore,
+  processSecretParams,
+} from "./agent-definitions/secrets.js";
+import { verifyJwt } from "./jwt.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
-import { verifyJwt } from "./jwt.js";
-import { type SecretStore, processSecretParams } from "./agent-definitions/secrets.js";
 
 // ============================================
 // Server Types
@@ -129,7 +132,11 @@ function jsonRpcError(
   message: string,
   data?: unknown,
 ): JsonRpcResponse {
-  return { jsonrpc: "2.0", id, error: { code, message, ...(data !== undefined && { data }) } };
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: { code, message, ...(data !== undefined && { data }) },
+  };
 }
 
 /** Wrap a value as MCP tool result content */
@@ -138,7 +145,8 @@ function mcpResult(value: unknown, isError = false) {
     content: [
       {
         type: "text",
-        text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+        text:
+          typeof value === "string" ? value : JSON.stringify(value, null, 2),
       },
     ],
     ...(isError && { isError: true }),
@@ -178,7 +186,12 @@ async function resolveAuth(
   if (scheme?.toLowerCase() !== "bearer" || !credential) return null;
 
   if (credential === authConfig.rootKey) {
-    return { callerId: "root", callerType: "system", scopes: ["*"], isRoot: true };
+    return {
+      callerId: "root",
+      callerType: "system",
+      scopes: ["*"],
+      isRoot: true,
+    };
   }
 
   // Try JWT verification first (stateless)
@@ -190,7 +203,12 @@ async function resolveAuth(
     try {
       const payloadB64 = parts[1];
       const padded = payloadB64.replace(/-/g, "+").replace(/_/g, "/");
-      const payload = JSON.parse(atob(padded)) as { sub?: string; name?: string; scopes?: string[]; exp?: number };
+      const payload = JSON.parse(atob(padded)) as {
+        sub?: string;
+        name?: string;
+        scopes?: string[];
+        exp?: number;
+      };
 
       if (payload.sub) {
         // Look up client to get the signing secret (secret hash)
@@ -225,8 +243,13 @@ async function resolveAuth(
   };
 }
 
-function canSeeAgent(agent: AgentDefinition, auth: ResolvedAuth | null): boolean {
-  const visibility = ((agent as any).visibility ?? agent.config?.visibility ?? "internal") as Visibility;
+function canSeeAgent(
+  agent: AgentDefinition,
+  auth: ResolvedAuth | null,
+): boolean {
+  const visibility = ((agent as any).visibility ??
+    agent.config?.visibility ??
+    "internal") as Visibility;
   if (auth?.isRoot) return true;
   if (visibility === "public") return true;
   if (visibility === "internal" && auth) return true;
@@ -346,7 +369,7 @@ export function createAgentServer(
           const result = await handleToolCall(name, args ?? {}, auth);
           return jsonRpcSuccess(request.id, result);
         } catch (err) {
-      console.error("[server] Request error:", err);
+          console.error("[server] Request error:", err);
           return jsonRpcSuccess(
             request.id,
             mcpResult(
@@ -469,22 +492,34 @@ export function createAgentServer(
 
     if (grantType !== "client_credentials") {
       return jsonResponse(
-        { error: "unsupported_grant_type", error_description: "Only client_credentials is supported" },
+        {
+          error: "unsupported_grant_type",
+          error_description: "Only client_credentials is supported",
+        },
         400,
       );
     }
 
     if (!clientId || !clientSecret) {
       return jsonResponse(
-        { error: "invalid_request", error_description: "Missing client_id or client_secret" },
+        {
+          error: "invalid_request",
+          error_description: "Missing client_id or client_secret",
+        },
         400,
       );
     }
 
-    const client = await authConfig.store.validateClient(clientId, clientSecret);
+    const client = await authConfig.store.validateClient(
+      clientId,
+      clientSecret,
+    );
     if (!client) {
       return jsonResponse(
-        { error: "invalid_client", error_description: "Invalid client credentials" },
+        {
+          error: "invalid_client",
+          error_description: "Invalid client credentials",
+        },
         401,
       );
     }
@@ -580,12 +615,28 @@ export function createAgentServer(
         );
       }
 
-      return addCors(jsonResponse({ jsonrpc: "2.0", id: null, error: { code: -32601, message: `Not found: ${req.method} ${path}` } }, 404));
+      return addCors(
+        jsonResponse(
+          {
+            jsonrpc: "2.0",
+            id: null,
+            error: {
+              code: -32601,
+              message: `Not found: ${req.method} ${path}`,
+            },
+          },
+          404,
+        ),
+      );
     } catch (err) {
       console.error("[server] Request error:", err);
       return addCors(
         jsonResponse(
-          { jsonrpc: "2.0", id: null, error: { code: -32603, message: "Internal error" } },
+          {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32603, message: "Internal error" },
+          },
           500,
         ),
       );
@@ -604,14 +655,14 @@ export function createAgentServer(
       serverUrl = `http://${hostname}:${port}${basePath}`;
 
       console.log(`Agent server running at ${serverUrl}`);
-      console.log(`  POST /     - MCP JSON-RPC endpoint`);
-      console.log(`  POST /mcp  - MCP JSON-RPC endpoint (alias)`);
-      console.log(`  GET  /health - Health check`);
+      console.log("  POST /     - MCP JSON-RPC endpoint");
+      console.log("  POST /mcp  - MCP JSON-RPC endpoint (alias)");
+      console.log("  GET  /health - Health check");
       if (authConfig) {
-        console.log(`  POST /oauth/token - OAuth2 token endpoint`);
+        console.log("  POST /oauth/token - OAuth2 token endpoint");
         console.log("  Auth: enabled");
       }
-      console.log(`  MCP tools: call_agent, list_agents`);
+      console.log("  MCP tools: call_agent, list_agents");
     },
 
     async stop(): Promise<void> {

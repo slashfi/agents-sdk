@@ -18,10 +18,7 @@ function base64UrlDecode(str: string): Uint8Array {
   return Uint8Array.from(binary, (c) => c.charCodeAt(0));
 }
 
-async function hmacSign(
-  data: string,
-  secret: string,
-): Promise<Uint8Array> {
+async function hmacSign(data: string, secret: string): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
     "raw",
     encoder.encode(secret),
@@ -45,7 +42,12 @@ async function hmacVerify(
     false,
     ["verify"],
   );
-  return crypto.subtle.verify("HMAC", key, signature.buffer as ArrayBuffer, encoder.encode(data));
+  return crypto.subtle.verify(
+    "HMAC",
+    key,
+    signature.buffer as ArrayBuffer,
+    encoder.encode(data),
+  );
 }
 
 /** JWT payload for auth tokens */

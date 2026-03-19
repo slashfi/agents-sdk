@@ -43,7 +43,9 @@ export async function encryptSecret(
     key,
     encoder.encode(plaintext),
   );
-  const combined = new Uint8Array(iv.length + new Uint8Array(ciphertext).length);
+  const combined = new Uint8Array(
+    iv.length + new Uint8Array(ciphertext).length,
+  );
   combined.set(iv);
   combined.set(new Uint8Array(ciphertext), iv.length);
   return btoa(String.fromCharCode(...combined));

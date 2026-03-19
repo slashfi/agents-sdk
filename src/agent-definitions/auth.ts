@@ -25,8 +25,8 @@
  */
 
 import { defineAgent, defineTool } from "../define.js";
-import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 import { signJwt } from "../jwt.js";
+import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 
 // ============================================
 // Auth Types
@@ -139,7 +139,12 @@ export interface AuthStore {
   /** Rotate a refresh token. */
   rotateRefreshToken?(
     oldToken: string,
-  ): Promise<{ refreshToken: string; tenantId: string; userId: string; clientId: string } | null>;
+  ): Promise<{
+    refreshToken: string;
+    tenantId: string;
+    userId: string;
+    clientId: string;
+  } | null>;
 }
 
 // ============================================
@@ -164,8 +169,6 @@ function generateSecret(): string {
   }
   return secret;
 }
-
-
 
 /** Simple hash for storing secrets (not for production - use bcrypt/argon2) */
 async function hashSecret(secret: string): Promise<string> {
@@ -249,7 +252,9 @@ export function createMemoryAuthStore(): AuthStore {
       if (!client) return null;
       const clientSecret = generateSecret();
       client.clientSecretHash = await hashSecret(clientSecret);
-      return { clientSecret: { $agent_type: "secret", value: clientSecret } } as any;
+      return {
+        clientSecret: { $agent_type: "secret", value: clientSecret },
+      } as any;
     },
 
     async storeToken(token) {
@@ -320,10 +325,10 @@ export function createAuthAgent(
 
   // --- Public Tools ---
 
-
   const createTenantTool = defineTool({
     name: "create_tenant",
-    description: "Create a new tenant (organizational unit). All clients and resources are scoped to a tenant.",
+    description:
+      "Create a new tenant (organizational unit). All clients and resources are scoped to a tenant.",
     visibility: "public" as const,
     inputSchema: {
       type: "object" as const,
@@ -364,13 +369,22 @@ export function createAuthAgent(
       refreshToken?: string;
     }) => {
       if (input.grantType === "refresh_token") {
-        if (!input.refreshToken) throw new Error("refreshToken is required for refresh_token grant");
-        if (!store.rotateRefreshToken) throw new Error("Refresh tokens not supported by this store");
+        if (!input.refreshToken)
+          throw new Error("refreshToken is required for refresh_token grant");
+        if (!store.rotateRefreshToken)
+          throw new Error("Refresh tokens not supported by this store");
         const result = await store.rotateRefreshToken(input.refreshToken);
         if (!result) throw new Error("Invalid or expired refresh token");
         const now = Math.floor(Date.now() / 1000);
         const jwt = await signJwt(
-          { sub: result.clientId, name: result.userId, tenantId: result.tenantId, scopes: [], iat: now, exp: now + tokenTtl },
+          {
+            sub: result.clientId,
+            name: result.userId,
+            tenantId: result.tenantId,
+            scopes: [],
+            iat: now,
+            exp: now + tokenTtl,
+          },
           (await store.getClient(result.clientId))?.clientSecretHash ?? "",
         );
         return {
@@ -382,7 +396,9 @@ export function createAuthAgent(
       }
 
       if (input.grantType !== "client_credentials") {
-        throw new Error("Unsupported grant type. Use 'client_credentials' or 'refresh_token'.");
+        throw new Error(
+          "Unsupported grant type. Use 'client_credentials' or 'refresh_token'.",
+        );
       }
 
       const client = await store.validateClient(
@@ -414,7 +430,6 @@ export function createAuthAgent(
       };
     },
   });
-
 
   const whoamiTool = defineTool({
     name: "whoami",
@@ -449,7 +464,11 @@ export function createAuthAgent(
       },
       required: ["name"],
     },
-    execute: async (input: { name: string; tenantId: string; scopes?: string[] }) => {
+    execute: async (input: {
+      name: string;
+      tenantId: string;
+      scopes?: string[];
+    }) => {
       let scopes = input.scopes ?? [];
 
       // If registration scopes are restricted, filter
@@ -464,7 +483,11 @@ export function createAuthAgent(
         input.tenantId,
       );
 
-      return { clientId, clientSecret: { $agent_type: "secret", value: clientSecret }, scopes } as any;
+      return {
+        clientId,
+        clientSecret: { $agent_type: "secret", value: clientSecret },
+        scopes,
+      } as any;
     },
   });
 
