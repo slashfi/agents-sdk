@@ -272,8 +272,8 @@ export interface CreateAuthAgentOptions {
   /** Token TTL in seconds. Default: 3600 (1 hour) */
   tokenTtl?: number;
 
-  /** Custom auth store. Default: in-memory */
-  store?: AuthStore;
+  /** Auth store implementation (e.g. createPostgresAuthStore). Required. */
+  store: AuthStore;
 }
 
 // ============================================
@@ -298,7 +298,7 @@ export function createAuthAgent(
     allowRegistration = false,
     registrationScopes,
     tokenTtl = 3600,
-    store = createMemoryAuthStore(),
+    store,
   } = options;
 
   // --- Public Tools ---
