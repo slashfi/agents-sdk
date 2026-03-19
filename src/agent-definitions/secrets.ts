@@ -8,9 +8,9 @@
  * - AES-256-GCM encryption via crypto.ts
  */
 
-import { encryptSecret, decryptSecret } from "./crypto.js";
-import { defineAgent, defineTool } from "./define.js";
-import type { AgentDefinition, ToolContext, ToolDefinition } from "./types.js";
+import { encryptSecret, decryptSecret } from "../crypto.js";
+import { defineAgent, defineTool } from "../define.js";
+import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 
 // ============================================
 // SecretStore Interface

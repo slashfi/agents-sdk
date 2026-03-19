@@ -24,9 +24,9 @@
  * ```
  */
 
-import { defineAgent, defineTool } from "./define.js";
-import type { AgentDefinition, ToolContext, ToolDefinition } from "./types.js";
-import { signJwt } from "./jwt.js";
+import { defineAgent, defineTool } from "../define.js";
+import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
+import { signJwt } from "../jwt.js";
 
 // ============================================
 // Auth Types
