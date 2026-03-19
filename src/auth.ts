@@ -35,6 +35,7 @@ import { signJwt } from "./jwt.js";
 /** Registered client */
 export interface AuthClient {
   clientId: string;
+  tenantId?: string;
   clientSecretHash: string;
   name: string;
   scopes: string[];
@@ -68,12 +69,32 @@ export interface AuthIdentity {
  * Pluggable storage for auth state.
  * Implement this interface to use Postgres, Redis, SQLite, etc.
  */
+
+/**
+ * Tenant - organizational unit for multi-tenant isolation.
+ */
+export interface AuthTenant {
+  id: string;
+  name: string;
+  createdAt: number;
+}
+
 export interface AuthStore {
+  /** Create a tenant. */
+  createTenant(name: string): Promise<{ tenantId: string }>;
+
+  /** Get tenant by ID. */
+  getTenant(tenantId: string): Promise<AuthTenant | null>;
+
+  /** List tenants. */
+  listTenants(): Promise<AuthTenant[]>;
+
   /** Create a new client. Returns the raw (unhashed) secret. */
   createClient(
     name: string,
     scopes: string[],
     selfRegistered?: boolean,
+    tenantId?: string,
   ): Promise<{ clientId: string; clientSecret: string }>;
 
   /** Validate client credentials. Returns client if valid, null otherwise. */
@@ -144,17 +165,33 @@ async function hashSecret(secret: string): Promise<string> {
  * Suitable for development and testing. Use a persistent store for production.
  */
 export function createMemoryAuthStore(): AuthStore {
+  const tenants = new Map<string, AuthTenant>();
   const clients = new Map<string, AuthClient>();
   const tokens = new Map<string, AuthToken>();
 
   return {
-    async createClient(name, scopes, selfRegistered) {
+    async createTenant(name) {
+      const id = `tenant_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      tenants.set(id, { id, name, createdAt: Date.now() });
+      return { tenantId: id };
+    },
+
+    async getTenant(tenantId) {
+      return tenants.get(tenantId) ?? null;
+    },
+
+    async listTenants() {
+      return Array.from(tenants.values());
+    },
+
+    async createClient(name, scopes, selfRegistered, tenantId) {
       const clientId = generateId("ag_");
       const clientSecret = generateSecret();
       const secretHash = await hashSecret(clientSecret);
 
       clients.set(clientId, {
         clientId,
+        tenantId,
         clientSecretHash: secretHash,
         name,
         scopes,
@@ -266,6 +303,24 @@ export function createAuthAgent(
 
   // --- Public Tools ---
 
+
+  const createTenantTool = defineTool({
+    name: "create_tenant",
+    description: "Create a new tenant (organizational unit). All clients and resources are scoped to a tenant.",
+    visibility: "public" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string" as const, description: "Tenant name" },
+      },
+      required: ["name"],
+    },
+    execute: async (input: { name: string }) => {
+      const result = await store.createTenant(input.name);
+      return { tenantId: result.tenantId, name: input.name };
+    },
+  });
+
   const tokenTool = defineTool({
     name: "token",
     description:
@@ -306,6 +361,7 @@ export function createAuthAgent(
         {
           sub: client.clientId,
           name: client.name,
+          tenantId: client.tenantId,
           scopes: client.scopes,
           iat: now,
           exp: now + tokenTtl,
@@ -458,6 +514,7 @@ export function createAuthAgent(
   // --- Assemble tools ---
 
   const tools = [
+    createTenantTool,
     tokenTool,
     whoamiTool,
     ...(allowRegistration ? [registerTool] : []),

@@ -1,14 +1,14 @@
 /**
- * Postgres-backed SecretStore
+ * Postgres-backed SecretStore using @slashfi/query-builder.
  *
- * Stores secrets encrypted with AES-256-GCM in a `secrets` table.
- * Scoped to owner_id (client_id from JWT).
+ * Uses Secret + SecretAssociation QB entities for all operations.
+ * AES-256-GCM encryption via SDK's crypto module.
  */
 
 import type postgres from "postgres";
 import type { SecretStore } from "@slashfi/agents-sdk";
-import { db, Secret } from "./schema.js";
-import { encrypt, decrypt, getEncryptionKey } from "./crypto.js";
+import { encryptSecret, decryptSecret } from "@slashfi/agents-sdk";
+import { db, Secret, SecretAssociation } from "./schema.js";
 
 function randomSecretId(): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -17,52 +17,67 @@ function randomSecretId(): string {
   return id;
 }
 
-export function createPostgresSecretStore(client: postgres.Sql): SecretStore {
-  const encKey = getEncryptionKey();
-
+export function createPostgresSecretStore(
+  client: postgres.Sql,
+  encryptionKey: string,
+): SecretStore {
   return {
     async store(value: string, ownerId: string): Promise<string> {
       const id = randomSecretId();
-      const encrypted = await encrypt(value, encKey);
+      const encrypted = await encryptSecret(value, encryptionKey);
 
       await db.insert(Secret).values({
         id,
-        owner_id: ownerId,
         value_encrypted: encrypted,
         created_at: new Date(),
-        expires_at: undefined,
       }).query();
 
-      return `secret:${id}`;
+      await db.insert(SecretAssociation).values({
+        secret_id: id,
+        entity_type: "owner",
+        entity_id: ownerId,
+        created_at: new Date(),
+      }).query();
+
+      return id;
     },
 
-    async resolve(ref: string, ownerId: string): Promise<string | null> {
-      const id = ref.replace(/^secret:/, "");
+    async resolve(id: string, ownerId: string): Promise<string | null> {
+      // Check association via QB
+      const assocResult = await db.from(SecretAssociation)
+        .where((_) => _.secret_assoc.secret_id.equals(id))
+        .where((_) => _.secret_assoc.entity_id.equals(ownerId))
+        .limit(1);
 
-      const result = await db.from(Secret)
+      if (!assocResult[0]) return null;
+
+      // Get encrypted value
+      const secretResult = await db.from(Secret)
         .where((_) => _.secret.id.equals(id))
         .limit(1);
 
-      const row = result[0];
-      if (!row) return null;
-      if (row.owner_id !== ownerId) return null;
+      if (!secretResult[0]) return null;
 
-      // Check expiration
-      if (row.expires_at && new Date(row.expires_at) < new Date()) {
-        await client.unsafe("DELETE FROM secrets WHERE id = $1", [id]);
-        return null;
-      }
-
-      return decrypt(row.value_encrypted, encKey);
+      return decryptSecret(secretResult[0].value_encrypted, encryptionKey);
     },
 
-    async delete(ref: string, ownerId: string): Promise<boolean> {
-      const id = ref.replace(/^secret:/, "");
+    async delete(id: string, ownerId: string): Promise<boolean> {
+      // QB doesn't support DELETE, use raw SQL
       const result = await client.unsafe(
-        "DELETE FROM secrets WHERE id = $1 AND owner_id = $2",
-        [id, ownerId]
+        `DELETE FROM secret_association WHERE secret_id = $1 AND entity_id = $2`,
+        [id, ownerId],
       );
-      return result.count > 0;
+
+      // If no more associations, delete the secret itself
+      const remaining = await db.from(SecretAssociation)
+        .where((_) => _.secret_assoc.secret_id.equals(id))
+        .limit(1);
+
+      if (!remaining[0]) {
+        await client.unsafe(`DELETE FROM secret WHERE id = $1`, [id]);
+      }
+
+      return (result as any).count > 0;
     },
   };
 }

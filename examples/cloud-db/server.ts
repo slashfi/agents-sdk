@@ -4,10 +4,10 @@ import {
   createAgentServer,
   createAuthAgent,
   createSecretsAgent,
-  createPostgresSecretStore,
 } from "@slashfi/agents-sdk";
 import { connectDb } from "./db/schema.js";
 import { createPostgresAuthStore } from "./db/store.js";
+import { createPostgresSecretStore } from "./db/secret-store.js";
 import { dbConnectionsAgent } from "./agents/db-connections.js";
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -23,10 +23,7 @@ connectDb(client);
 (globalThis as any).__pgClient = client;
 console.log("[db] Connected.");
 
-const secretStore = createPostgresSecretStore({
-  client: client as any,
-  encryptionKey: process.env.ENCRYPTION_KEY!,
-});
+const secretStore = createPostgresSecretStore(client, process.env.ENCRYPTION_KEY!);
 
 const registry = createAgentRegistry();
 registry.register(createAuthAgent({ rootKey: ROOT_KEY, store: createPostgresAuthStore(client), secretStore, allowRegistration: true }));
