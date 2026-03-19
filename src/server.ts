@@ -6,12 +6,13 @@
  *
  * MCP Methods:
  * - initialize       → Protocol handshake
- * - tools/list        → List available MCP tools (call_agent, list_agents)
+ * - tools/list        → List available MCP tools (call_agent, list_agents, search_agent_tools)
  * - tools/call        → Execute an MCP tool
  *
  * MCP Tools exposed:
- * - call_agent   → Execute a tool on a registered agent
- * - list_agents  → List registered agents and their tools
+ * - call_agent          → Execute a tool on a registered agent
+ * - list_agents         → List registered agents and their tools
+ * - search_agent_tools  → Search tools by natural language query (BM25)
  *
  * Additional endpoints:
  * - POST /oauth/token → OAuth2 client_credentials (when @auth registered)
@@ -26,10 +27,11 @@
  */
 
 import type { AuthStore } from "./auth.js";
-import type { AgentRegistry } from "./registry.js";
-import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
+import { type BM25Document, createBM25Index } from "./bm25.js";
 import { verifyJwt } from "./jwt.js";
+import type { AgentRegistry } from "./registry.js";
 import { type SecretStore, processSecretParams } from "./secrets.js";
+import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 
 // ============================================
 // Server Types
@@ -129,7 +131,11 @@ function jsonRpcError(
   message: string,
   data?: unknown,
 ): JsonRpcResponse {
-  return { jsonrpc: "2.0", id, error: { code, message, ...(data !== undefined && { data }) } };
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: { code, message, ...(data !== undefined && { data }) },
+  };
 }
 
 /** Wrap a value as MCP tool result content */
@@ -138,7 +144,8 @@ function mcpResult(value: unknown, isError = false) {
     content: [
       {
         type: "text",
-        text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+        text:
+          typeof value === "string" ? value : JSON.stringify(value, null, 2),
       },
     ],
     ...(isError && { isError: true }),
@@ -178,7 +185,12 @@ async function resolveAuth(
   if (scheme?.toLowerCase() !== "bearer" || !credential) return null;
 
   if (credential === authConfig.rootKey) {
-    return { callerId: "root", callerType: "system", scopes: ["*"], isRoot: true };
+    return {
+      callerId: "root",
+      callerType: "system",
+      scopes: ["*"],
+      isRoot: true,
+    };
   }
 
   // Try JWT verification first (stateless)
@@ -190,7 +202,12 @@ async function resolveAuth(
     try {
       const payloadB64 = parts[1];
       const padded = payloadB64.replace(/-/g, "+").replace(/_/g, "/");
-      const payload = JSON.parse(atob(padded)) as { sub?: string; name?: string; scopes?: string[]; exp?: number };
+      const payload = JSON.parse(atob(padded)) as {
+        sub?: string;
+        name?: string;
+        scopes?: string[];
+        exp?: number;
+      };
 
       if (payload.sub) {
         // Look up client to get the signing secret (secret hash)
@@ -225,8 +242,13 @@ async function resolveAuth(
   };
 }
 
-function canSeeAgent(agent: AgentDefinition, auth: ResolvedAuth | null): boolean {
-  const visibility = ((agent as any).visibility ?? agent.config?.visibility ?? "internal") as Visibility;
+function canSeeAgent(
+  agent: AgentDefinition,
+  auth: ResolvedAuth | null,
+): boolean {
+  const visibility = ((agent as any).visibility ??
+    agent.config?.visibility ??
+    "internal") as Visibility;
   if (auth?.isRoot) return true;
   if (visibility === "public") return true;
   if (visibility === "internal" && auth) return true;
@@ -281,6 +303,26 @@ function getToolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {},
+      },
+    },
+    {
+      name: "search_agent_tools",
+      description:
+        "Search across all registered agent tools using natural language. Returns tools ranked by relevance using BM25 scoring.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Natural language search query (e.g. 'send a message', 'database query')",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum number of results to return (default: 10)",
+          },
+        },
+        required: ["query"],
       },
     },
   ];
@@ -346,7 +388,7 @@ export function createAgentServer(
           const result = await handleToolCall(name, args ?? {}, auth);
           return jsonRpcSuccess(request.id, result);
         } catch (err) {
-      console.error("[server] Request error:", err);
+          console.error("[server] Request error:", err);
           return jsonRpcSuccess(
             request.id,
             mcpResult(
@@ -435,6 +477,91 @@ export function createAgentServer(
         });
       }
 
+      case "search_agent_tools": {
+        const { query, limit: resultLimit } = args as {
+          query: string;
+          limit?: number;
+        };
+
+        const agents = registry.list();
+        const visible = agents.filter((agent) => canSeeAgent(agent, auth));
+
+        // Build search documents from all visible tools
+        const documents: (BM25Document & {
+          agentPath: string;
+          toolName: string;
+          description: string;
+          agentName?: string;
+          agentDescription?: string;
+        })[] = [];
+
+        for (const agent of visible) {
+          const visibleTools = agent.tools.filter((t) => {
+            const tv = t.visibility ?? "internal";
+            if (auth?.isRoot) return true;
+            if (tv === "public") return true;
+            if (tv === "internal" && auth) return true;
+            return false;
+          });
+
+          for (const tool of visibleTools) {
+            // Build searchable text from tool name, description, agent context, and schema
+            const parts = [
+              tool.name,
+              tool.description,
+              agent.config?.name ?? "",
+              agent.config?.description ?? "",
+              agent.path,
+            ];
+
+            // Include property names and descriptions from input schema
+            const schema = tool.inputSchema as any;
+            if (schema?.properties) {
+              for (const [key, prop] of Object.entries(schema.properties)) {
+                parts.push(key);
+                if ((prop as any)?.description) {
+                  parts.push((prop as any).description);
+                }
+              }
+            }
+
+            documents.push({
+              id: `${agent.path}/${tool.name}`,
+              text: parts.join(" "),
+              agentPath: agent.path,
+              toolName: tool.name,
+              description: tool.description,
+              agentName: agent.config?.name,
+              agentDescription: agent.config?.description,
+            });
+          }
+        }
+
+        const index = createBM25Index(documents);
+        const results = index.search(query, resultLimit ?? 10);
+
+        // Map results back to tool details
+        const docMap = new Map(documents.map((d) => [d.id, d]));
+        const matches = results.map((r) => {
+          const doc = docMap.get(r.id)!;
+          return {
+            agentPath: doc.agentPath,
+            tool: doc.toolName,
+            description: doc.description,
+            agentName: doc.agentName,
+            agentDescription: doc.agentDescription,
+            score: Math.round(r.score * 1000) / 1000,
+          };
+        });
+
+        return mcpResult({
+          success: true,
+          query,
+          results: matches,
+          total: matches.length,
+        });
+      }
+
       default:
         throw new Error(`Unknown tool: ${toolName}`);
     }
@@ -469,22 +596,34 @@ export function createAgentServer(
 
     if (grantType !== "client_credentials") {
       return jsonResponse(
-        { error: "unsupported_grant_type", error_description: "Only client_credentials is supported" },
+        {
+          error: "unsupported_grant_type",
+          error_description: "Only client_credentials is supported",
+        },
         400,
       );
     }
 
     if (!clientId || !clientSecret) {
       return jsonResponse(
-        { error: "invalid_request", error_description: "Missing client_id or client_secret" },
+        {
+          error: "invalid_request",
+          error_description: "Missing client_id or client_secret",
+        },
         400,
       );
     }
 
-    const client = await authConfig.store.validateClient(clientId, clientSecret);
+    const client = await authConfig.store.validateClient(
+      clientId,
+      clientSecret,
+    );
     if (!client) {
       return jsonResponse(
-        { error: "invalid_client", error_description: "Invalid client credentials" },
+        {
+          error: "invalid_client",
+          error_description: "Invalid client credentials",
+        },
         401,
       );
     }
@@ -580,12 +719,28 @@ export function createAgentServer(
         );
       }
 
-      return addCors(jsonResponse({ jsonrpc: "2.0", id: null, error: { code: -32601, message: `Not found: ${req.method} ${path}` } }, 404));
+      return addCors(
+        jsonResponse(
+          {
+            jsonrpc: "2.0",
+            id: null,
+            error: {
+              code: -32601,
+              message: `Not found: ${req.method} ${path}`,
+            },
+          },
+          404,
+        ),
+      );
     } catch (err) {
       console.error("[server] Request error:", err);
       return addCors(
         jsonResponse(
-          { jsonrpc: "2.0", id: null, error: { code: -32603, message: "Internal error" } },
+          {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32603, message: "Internal error" },
+          },
           500,
         ),
       );
@@ -611,7 +766,7 @@ export function createAgentServer(
         console.log(`  POST /oauth/token - OAuth2 token endpoint`);
         console.log("  Auth: enabled");
       }
-      console.log(`  MCP tools: call_agent, list_agents`);
+      console.log(`  MCP tools: call_agent, list_agents, search_agent_tools`);
     },
 
     async stop(): Promise<void> {

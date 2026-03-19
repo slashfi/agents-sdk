@@ -111,7 +111,12 @@ export { buildAgents } from "./build.js";
 export type { BuildAgentsOptions, BuildAgentsResult } from "./build.js";
 
 // Secrets
-export { createSecretsAgent, createInMemorySecretStore, isSecretRef, processSecretParams } from "./secrets.js";
+export {
+  createSecretsAgent,
+  createInMemorySecretStore,
+  isSecretRef,
+  processSecretParams,
+} from "./secrets.js";
 export type { SecretStore, SecretsAgentOptions } from "./secrets.js";
 
 // Crypto
@@ -124,3 +129,7 @@ export type { JwtPayload } from "./jwt.js";
 // Postgres Secret Store
 export { createPostgresSecretStore } from "./postgres-secret-store.js";
 export type { PostgresSecretStoreOptions } from "./postgres-secret-store.js";
+
+// BM25 Search
+export { createBM25Index } from "./bm25.js";
+export type { BM25Options, BM25Document, BM25Result } from "./bm25.js";
