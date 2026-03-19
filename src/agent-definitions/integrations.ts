@@ -509,15 +509,7 @@ export interface IntegrationsAgentOptions {
 // Credential Storage Helpers
 // ============================================
 
-/** Secret store key for a provider's client ID */
-function clientIdKey(providerId: string): string {
-  return `integration:${providerId}:client_id`;
-}
 
-/** Secret store key for a provider's client secret */
-function clientSecretKey(providerId: string): string {
-  return `integration:${providerId}:client_secret`;
-}
 
 const SYSTEM_OWNER = "__integrations__";
 
@@ -658,19 +650,21 @@ export function createIntegrationsAgent(
         auth: input.auth,
         api: input.api,
       };
-      await store.upsertProvider(config);
-
-      // Store client credentials encrypted if provided
-      const result: Record<string, unknown> = { success: true, provider: config };
+      // Store client credentials encrypted and save secret IDs
+      const result: Record<string, unknown> = { success: true };
       if (input.clientId) {
-        await secretStore.store(input.clientId, `${SYSTEM_OWNER}:${clientIdKey(config.id)}`);
+        const secretId = await secretStore.store(input.clientId, SYSTEM_OWNER);
+        (config as any)._clientIdSecretId = secretId;
         result.clientIdStored = true;
       }
       if (input.clientSecret) {
-        await secretStore.store(input.clientSecret, `${SYSTEM_OWNER}:${clientSecretKey(config.id)}`);
+        const secretId = await secretStore.store(input.clientSecret, SYSTEM_OWNER);
+        (config as any)._clientSecretSecretId = secretId;
         result.clientSecretStored = true;
       }
 
+      await store.upsertProvider(config);
+      result.provider = config;
       return result;
     },
   });
@@ -769,16 +763,17 @@ export function createIntegrationsAgent(
       const redirectUri = `${callbackBaseUrl}/${config.id}`;
       const userId = input.userId ?? ctx.callerId;
 
-      // Resolve client ID from secret store
-      const storedClientId = await secretStore.resolve(
-        `${SYSTEM_OWNER}:${clientIdKey(config.id)}`, SYSTEM_OWNER
-      );
-      if (!storedClientId) {
+      // Resolve client ID from secret store via config
+      const cidSecretId = (config as any)._clientIdSecretId;
+      if (!cidSecretId) {
         return {
           error: `No client credentials stored for '${config.id}'. Use setup_integration with clientId and clientSecret params first.`,
         };
       }
-      const clientId = storedClientId;
+      const clientId = await secretStore.resolve(cidSecretId, SYSTEM_OWNER);
+      if (!clientId) {
+        return { error: `Could not resolve client ID for '${config.id}'.` };
+      }
 
       const separator = oauth.scopeSeparator ?? " ";
       const scopeStr = oauth.scopes.join(separator);
@@ -870,17 +865,16 @@ export function createIntegrationsAgent(
         connection.refreshToken
       ) {
         try {
-          const storedCId = await secretStore.resolve(
-            `${SYSTEM_OWNER}:${clientIdKey(config.id)}`, SYSTEM_OWNER
-          );
-          const storedCSec = await secretStore.resolve(
-            `${SYSTEM_OWNER}:${clientSecretKey(config.id)}`, SYSTEM_OWNER
-          );
-          if (!storedCId || !storedCSec) {
+          const rCidId = (config as any)._clientIdSecretId;
+          const rCsecId = (config as any)._clientSecretSecretId;
+          if (!rCidId || !rCsecId) {
             throw new Error("No client credentials stored. Re-run setup_integration with clientId/clientSecret.");
           }
-          const clientId = storedCId;
-          const clientSecret = storedCSec;
+          const clientId = await secretStore.resolve(rCidId, SYSTEM_OWNER);
+          const clientSecret = await secretStore.resolve(rCsecId, SYSTEM_OWNER);
+          if (!clientId || !clientSecret) {
+            throw new Error("Failed to resolve client credentials from secret store.");
+          }
 
           const refreshed = await refreshAccessToken(
             config,
@@ -1001,18 +995,17 @@ export function createIntegrationsAgent(
         } catch {}
       }
 
-      // Resolve client credentials from secret store
-      const storedCbClientId = await secretStore.resolve(
-        `${SYSTEM_OWNER}:${clientIdKey(config.id)}`, SYSTEM_OWNER
-      );
-      const storedCbClientSecret = await secretStore.resolve(
-        `${SYSTEM_OWNER}:${clientSecretKey(config.id)}`, SYSTEM_OWNER
-      );
-      if (!storedCbClientId || !storedCbClientSecret) {
+      // Resolve client credentials from secret store via config
+      const cbCidId = (config as any)._clientIdSecretId;
+      const cbCsecId = (config as any)._clientSecretSecretId;
+      if (!cbCidId || !cbCsecId) {
         return { error: "No client credentials stored for this provider." };
       }
-      const clientId = storedCbClientId;
-      const clientSecret = storedCbClientSecret;
+      const clientId = await secretStore.resolve(cbCidId, SYSTEM_OWNER);
+      const clientSecret = await secretStore.resolve(cbCsecId, SYSTEM_OWNER);
+      if (!clientId || !clientSecret) {
+        return { error: "Failed to resolve client credentials." };
+      }
 
       const redirectUri = `${callbackBaseUrl}/${config.id}`;
       const result = await exchangeCodeForToken(
