@@ -48,20 +48,12 @@ registry.register(createAuthAgent({
 registry.register(createSecretsAgent({ store: secretStore }));
 
 // @integrations — provider configs, OAuth flows, API calling
+// Client credentials are stored encrypted via secretStore at runtime
+// (no env vars needed — use setup_integration with clientId/clientSecret)
 registry.register(createIntegrationsAgent({
   store: integrationStore,
   secretStore,
   callbackBaseUrl: CALLBACK_BASE_URL,
-  resolveClientCredentials: async (providerId, config) => {
-    // For now, use env vars: PROVIDER_ID_CLIENT_ID / PROVIDER_ID_CLIENT_SECRET
-    const envPrefix = providerId.toUpperCase().replace(/-/g, "_");
-    const clientId = process.env[`${envPrefix}_CLIENT_ID`];
-    const clientSecret = process.env[`${envPrefix}_CLIENT_SECRET`];
-    if (clientId && clientSecret) {
-      return { clientId, clientSecret };
-    }
-    throw new Error(`No client credentials found for provider '${providerId}'. Set ${envPrefix}_CLIENT_ID and ${envPrefix}_CLIENT_SECRET env vars.`);
-  },
 }));
 
 // @users — user accounts + identity linking
