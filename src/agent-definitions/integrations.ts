@@ -1057,11 +1057,23 @@ export function createIntegrationsAgent(
         tool: { type: "string", description: "Target tool name (e.g. 'add_connection')" },
         params: { type: "object", description: "Partial params already collected" },
         registry: { type: "string", description: "Remote registry URL. Omit for local." },
+        source: {
+          type: "object",
+          description: "Where to render the form. Determines form delivery method.",
+          properties: {
+            type: { type: "string", enum: ["slack", "web", "cli"], description: "Platform type" },
+            workspace: { type: "string", description: "Slack workspace ID (for slack)" },
+            channel: { type: "string", description: "Slack channel ID (for slack)" },
+            threadTs: { type: "string", description: "Slack thread timestamp (for slack)" },
+            redirectUrl: { type: "string", description: "URL to redirect after submission (for web)" },
+          },
+          required: ["type"],
+        },
       },
       required: ["agent", "tool"],
     },
     execute: async (
-      input: { agent: string; tool: string; params?: Record<string, unknown>; registry?: string },
+      input: { agent: string; tool: string; params?: Record<string, unknown>; registry?: string; source?: { type: string; workspace?: string; channel?: string; threadTs?: string; redirectUrl?: string } },
       ctx: ToolContext,
     ) => {
       // Fetch tool schema from registry
@@ -1149,6 +1161,7 @@ export function createIntegrationsAgent(
           callbackUrl: `${baseUrl}/secrets/collect`,
           callbackToken: token,
           expiresIn: 600,
+          source: input.source ?? { type: "web" },
           context: {
             agent: input.agent,
             tool: input.tool,
