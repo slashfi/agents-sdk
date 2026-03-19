@@ -129,12 +129,6 @@ export type { JwtPayload } from "./jwt.js";
 export { createPostgresSecretStore } from "./postgres-secret-store.js";
 export type { PostgresSecretStoreOptions } from "./postgres-secret-store.js";
 
-// Testing utilities (re-exported for backward compatibility, prefer '@slashfi/agents-sdk/testing')
-/** @deprecated Import from '@slashfi/agents-sdk/testing' instead */
-export { createMemoryAuthStore } from "./auth.js";
-/** @deprecated Import from '@slashfi/agents-sdk/testing' instead */
-export { createInMemorySecretStore } from "./secrets.js";
-
 // BM25 Search
 export { createBM25Index } from "./bm25.js";
 export type { BM25Options, BM25Document, BM25Result } from "./bm25.js";
