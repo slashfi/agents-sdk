@@ -445,9 +445,8 @@ export function createAgentServer(
         }
 
         // Process secret params: resolve refs, store raw secrets
-        // Skip for @secrets resolve/revoke — those tools take refs as input, not secrets
-        const isSecretRefTool = req.path === "@secrets" && ["resolve", "revoke"].includes((req as any).tool);
-        if ((req as any).params && secretStore && !isSecretRefTool) {
+        // Auto-resolve secret:xxx refs in tool params before execution
+        if ((req as any).params && secretStore) {
           const ownerId = auth?.callerId ?? "anonymous";
           // Find the tool schema to check for secret: true fields
           const agent = registry.get(req.path);

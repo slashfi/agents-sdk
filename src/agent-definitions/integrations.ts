@@ -631,10 +631,12 @@ export function createIntegrationsAgent(
           },
         },
         clientId: {
+          secret: true,
           type: "string",
           description: "OAuth client ID for this provider. Stored encrypted.",
         },
         clientSecret: {
+          secret: true,
           type: "string",
           description: "OAuth client secret for this provider. Stored encrypted.",
         },
