@@ -123,6 +123,23 @@ export interface AuthStore {
 
   /** Revoke a specific token. */
   revokeToken(tokenString: string): Promise<boolean>;
+
+  /** Register a user under a tenant. Returns a refresh token. */
+  registerUser?(
+    tenantId: string,
+    userId: string,
+    clientId: string,
+  ): Promise<{ refreshToken: string }>;
+
+  /** Validate a refresh token. Returns user info. */
+  validateRefreshToken?(
+    refreshToken: string,
+  ): Promise<{ tenantId: string; userId: string; clientId: string } | null>;
+
+  /** Rotate a refresh token. */
+  rotateRefreshToken?(
+    oldToken: string,
+  ): Promise<{ refreshToken: string; tenantId: string; userId: string; clientId: string } | null>;
 }
 
 // ============================================
@@ -341,16 +358,36 @@ export function createAuthAgent(
     },
     execute: async (input: {
       grantType: string;
-      clientId: string;
-      clientSecret: string;
+      clientId?: string;
+      clientSecret?: string;
+      userId?: string;
+      refreshToken?: string;
     }) => {
+      if (input.grantType === "refresh_token") {
+        if (!input.refreshToken) throw new Error("refreshToken is required for refresh_token grant");
+        if (!store.rotateRefreshToken) throw new Error("Refresh tokens not supported by this store");
+        const result = await store.rotateRefreshToken(input.refreshToken);
+        if (!result) throw new Error("Invalid or expired refresh token");
+        const now = Math.floor(Date.now() / 1000);
+        const jwt = await signJwt(
+          { sub: result.clientId, name: result.userId, tenantId: result.tenantId, scopes: [], iat: now, exp: now + tokenTtl },
+          (await store.getClient(result.clientId))?.clientSecretHash ?? "",
+        );
+        return {
+          accessToken: { $agent_type: "secret", value: jwt },
+          refreshToken: { $agent_type: "secret", value: result.refreshToken },
+          tokenType: "bearer",
+          expiresIn: tokenTtl,
+        } as any;
+      }
+
       if (input.grantType !== "client_credentials") {
-        throw new Error("Unsupported grant type. Use 'client_credentials'.");
+        throw new Error("Unsupported grant type. Use 'client_credentials' or 'refresh_token'.");
       }
 
       const client = await store.validateClient(
-        input.clientId,
-        input.clientSecret,
+        input.clientId!,
+        input.clientSecret!,
       );
       if (!client) {
         throw new Error("Invalid client credentials");
