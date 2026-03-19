@@ -764,16 +764,36 @@ export function createIntegrationsAgent(
       const redirectUri = `${callbackBaseUrl}/${config.id}`;
       const userId = input.userId ?? ctx.callerId;
 
-      // Resolve client ID from secret store via config
+      // Resolve client ID from secret store
+      // Check both _clientIdSecretId (from setup_integration direct) and
+      // clientId field as secret:ref (from collect_secrets flow)
+      let clientId: string | null = null;
       const cidSecretId = (config as any)._clientIdSecretId;
-      if (!cidSecretId) {
-        return {
-          error: `No client credentials stored for '${config.id}'. Use setup_integration with clientId and clientSecret params first.`,
-        };
+      if (cidSecretId && secretStore) {
+        clientId = await secretStore.resolve(cidSecretId, SYSTEM_OWNER);
       }
-      const clientId = await secretStore.resolve(cidSecretId, SYSTEM_OWNER);
+      // Also check if auth config has clientId as a secret:ref
+      if (!clientId && (oauth as any).clientId && typeof (oauth as any).clientId === "string") {
+        if ((oauth as any).clientId.startsWith("secret:") && secretStore) {
+          const refId = (oauth as any).clientId.slice("secret:".length);
+          clientId = await secretStore.resolve(refId, SYSTEM_OWNER);
+        } else if (!(oauth as any).clientId.startsWith("secret:")) {
+          clientId = (oauth as any).clientId;
+        }
+      }
+      // Check top-level config too
+      if (!clientId && (config as any).clientId) {
+        const cid = (config as any).clientId;
+        if (typeof cid === "string" && cid.startsWith("secret:") && secretStore) {
+          clientId = await secretStore.resolve(cid.slice("secret:".length), SYSTEM_OWNER);
+        } else if (typeof cid === "string" && !cid.startsWith("secret:")) {
+          clientId = cid;
+        }
+      }
       if (!clientId) {
-        return { error: `Could not resolve client ID for '${config.id}'.` };
+        return {
+          error: `No client credentials stored for '${config.id}'. Use setup_integration with clientId/clientSecret or collect_secrets.`,
+        };
       }
 
       const separator = oauth.scopeSeparator ?? " ";

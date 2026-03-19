@@ -39,23 +39,14 @@ export function createPostgresIntegrationStore(
       const existing = await this.getProvider(config.id);
 
       if (existing) {
-        await db.update(ProviderConfigEntity)
-          .setFields((_) => [
-            _.provider_config.name,
-            _.provider_config.type,
-            _.provider_config.scope,
-            _.provider_config.config_json,
-            _.provider_config.updated_at,
-          ])
-          .values({
-            name: config.name,
-            type: config.type,
-            scope: config.scope ?? "user",
-            config_json: JSON.stringify(config),
-            updated_at: now,
-          })
-          .where((_) => _.provider_config.id.equals(config.id))
-          .query();
+        // Use raw SQL - QB update chain with multiple fields breaks .query()
+        await client`UPDATE provider_configs SET
+          name = ${config.name},
+          type = ${config.type},
+          scope = ${config.scope ?? "user"},
+          config_json = ${JSON.stringify(config)},
+          updated_at = ${now}
+          WHERE id = ${config.id}`;
       } else {
         await db.insert(ProviderConfigEntity).values({
           id: config.id,
@@ -109,26 +100,14 @@ export function createPostgresIntegrationStore(
       const existing = await this.getConnection(connection.userId, connection.providerId);
 
       if (existing) {
-        await db.update(UserConnectionEntity)
-          .setFields((_) => [
-            _.user_conn.access_token_encrypted,
-            _.user_conn.refresh_token_encrypted,
-            _.user_conn.expires_at,
-            _.user_conn.token_type,
-            _.user_conn.scopes,
-            _.user_conn.updated_at,
-          ])
-          .values({
-            access_token_encrypted: accessEnc,
-            refresh_token_encrypted: refreshEnc,
-            expires_at: connection.expiresAt ? new Date(connection.expiresAt) : undefined,
-            token_type: connection.tokenType,
-            scopes: connection.scopes ? JSON.stringify(connection.scopes) : undefined,
-            updated_at: now,
-          })
-          .where((_) => _.user_conn.user_id.equals(connection.userId))
-          .where((_) => _.user_conn.provider_id.equals(connection.providerId))
-          .query();
+        await client`UPDATE user_connections SET
+          access_token_encrypted = ${encrypt(connection.accessToken)},
+          refresh_token_encrypted = ${connection.refreshToken ? encrypt(connection.refreshToken) : null},
+          expires_at = ${connection.expiresAt ? new Date(connection.expiresAt) : null},
+          token_type = ${connection.tokenType ?? null},
+          scopes = ${connection.scopes ? JSON.stringify(connection.scopes) : null},
+          updated_at = ${now}
+          WHERE user_id = ${connection.userId} AND provider_id = ${connection.providerId}`;
       } else {
         await db.insert(UserConnectionEntity).values({
           user_id: connection.userId,
