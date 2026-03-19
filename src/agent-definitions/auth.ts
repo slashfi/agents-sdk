@@ -24,9 +24,9 @@
  * ```
  */
 
-import { defineAgent, defineTool } from "./define.js";
-import type { AgentDefinition, ToolContext, ToolDefinition } from "./types.js";
-import { signJwt } from "./jwt.js";
+import { defineAgent, defineTool } from "../define.js";
+import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
+import { signJwt } from "../jwt.js";
 
 // ============================================
 // Auth Types
@@ -412,7 +412,7 @@ export function createAuthAgent(
       },
       required: ["name"],
     },
-    execute: async (input: { name: string; scopes?: string[] }) => {
+    execute: async (input: { name: string; tenantId: string; scopes?: string[] }) => {
       let scopes = input.scopes ?? [];
 
       // If registration scopes are restricted, filter
@@ -424,6 +424,7 @@ export function createAuthAgent(
         input.name,
         scopes,
         true,
+        input.tenantId,
       );
 
       return { clientId, clientSecret: { $agent_type: "secret", value: clientSecret }, scopes } as any;

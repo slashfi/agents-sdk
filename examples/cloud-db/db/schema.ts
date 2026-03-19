@@ -42,6 +42,7 @@ export { db };
 
 interface AuthClientSchema {
   client_id: string;
+  tenant_id: string | undefined;
   client_secret_hash: string;
   name: string;
   scopes: string;
@@ -54,6 +55,7 @@ export class AuthClient {
     .buildTableFromSchema<AuthClientSchema>()
     .columns({
       client_id: (_) => _.varchar(),
+      tenant_id: (_) => _.varchar({ isNullable: true }),
       client_secret_hash: (_) => _.varchar(),
       name: (_) => _.varchar(),
       scopes: (_) => _.varchar(),
@@ -89,6 +91,32 @@ export class AuthToken {
     .tableName("auth_tokens")
     .introspect({ columns: "enforce" })
     .defaultAlias("auth_token")
+    .build();
+}
+
+
+// ============================================
+// Tenants Table
+// ============================================
+
+interface TenantSchema {
+  id: string;
+  name: string;
+  created_at: Date;
+}
+
+export class Tenant {
+  static readonly Table = db
+    .buildTableFromSchema<TenantSchema>()
+    .columns({
+      id: (_) => _.varchar(),
+      name: (_) => _.varchar(),
+      created_at: (_) => _.timestamp(),
+    })
+    .primaryKey("id")
+    .tableName("tenants")
+    .introspect({ columns: "enforce" })
+    .defaultAlias("tenant")
     .build();
 }
 
@@ -181,6 +209,7 @@ export class SecretAssociation {
     .build();
 }
 // Register all entities
+db.register(Tenant);
 db.register(AuthClient);
 db.register(AuthToken);
 db.register(Connection);

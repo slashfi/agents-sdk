@@ -97,14 +97,14 @@ export { createAgentServer } from "./server.js";
 export type { AgentServer, AgentServerOptions } from "./server.js";
 
 // Auth
-export { createAuthAgent } from "./auth.js";
+export { createAuthAgent } from "./agent-definitions/auth.js";
 export type {
   AuthClient,
   AuthIdentity,
   AuthStore,
   AuthToken,
   CreateAuthAgentOptions,
-} from "./auth.js";
+} from "./agent-definitions/auth.js";
 
 // Build
 export { buildAgents } from "./build.js";
@@ -115,8 +115,8 @@ export {
   createSecretsAgent,
   isSecretRef,
   processSecretParams,
-} from "./secrets.js";
-export type { SecretStore, SecretsAgentOptions } from "./secrets.js";
+} from "./agent-definitions/secrets.js";
+export type { SecretStore, SecretsAgentOptions } from "./agent-definitions/secrets.js";
 
 // Crypto
 export { encryptSecret, decryptSecret } from "./crypto.js";
@@ -126,9 +126,6 @@ export { signJwt, verifyJwt } from "./jwt.js";
 export type { JwtPayload } from "./jwt.js";
 
 // Postgres Secret Store
-export { createPostgresSecretStore } from "./postgres-secret-store.js";
-export type { PostgresSecretStoreOptions } from "./postgres-secret-store.js";
-
 // BM25 Search
 export { createBM25Index } from "./bm25.js";
 export type { BM25Options, BM25Document, BM25Result } from "./bm25.js";

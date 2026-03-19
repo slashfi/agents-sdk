@@ -26,11 +26,11 @@
  * - Recognizes the root key for admin access
  */
 
-import type { AuthStore } from "./auth.js";
+import type { AuthStore } from "./agent-definitions/auth.js";
 import { type BM25Document, createBM25Index } from "./bm25.js";
 import { verifyJwt } from "./jwt.js";
 import type { AgentRegistry } from "./registry.js";
-import { type SecretStore, processSecretParams } from "./secrets.js";
+import { type SecretStore, processSecretParams } from "./agent-definitions/secrets.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 
 // ============================================

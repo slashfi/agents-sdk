@@ -13,5 +13,5 @@
  * ```
  */
 
-export { createMemoryAuthStore } from "./auth.js";
-export { createInMemorySecretStore } from "./secrets.js";
+export { createMemoryAuthStore } from "./agent-definitions/auth.js";
+export { createInMemorySecretStore } from "./agent-definitions/secrets.js";
