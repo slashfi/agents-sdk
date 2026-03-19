@@ -554,22 +554,32 @@ export function createAgentServer(
       );
     }
 
-    const tokenString = `at_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
-    const now = Date.now();
+    // Delegate to @auth agent's token tool which generates proper JWTs
+    const tokenResult = await registry.call({
+      action: "execute_tool",
+      path: "@auth",
+      tool: "token",
+      params: {
+        grantType: "client_credentials",
+        clientId,
+        clientSecret,
+      },
+      context: {
+        tenantId: "default",
+        agentPath: "@auth",
+        callerId: "oauth_endpoint",
+        callerType: "system",
+      },
+    } as any);
 
-    await authConfig.store.storeToken({
-      token: tokenString,
-      clientId: client.clientId,
-      scopes: client.scopes,
-      issuedAt: now,
-      expiresAt: now + authConfig.tokenTtl * 1000,
-    });
+    // Extract the result - token tool returns { accessToken, tokenType, expiresIn, scopes }
+    const parsed = typeof tokenResult === "string" ? JSON.parse(tokenResult) : tokenResult;
 
     return jsonResponse({
-      access_token: tokenString,
-      token_type: "Bearer",
-      expires_in: authConfig.tokenTtl,
-      scope: client.scopes.join(" "),
+      access_token: parsed.accessToken?.$agent_type === "secret" ? parsed.accessToken.value : parsed.accessToken,
+      token_type: parsed.tokenType ?? "Bearer",
+      expires_in: parsed.expiresIn ?? authConfig.tokenTtl,
+      scope: Array.isArray(parsed.scopes) ? parsed.scopes.join(" ") : (client.scopes.join(" ")),
     });
   }
 
