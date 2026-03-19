@@ -153,8 +153,12 @@ export function createSecretsAgent(
     execute: async (input: { ref: string }, ctx: ToolContext) => {
       const ownerId = ctx.callerId ?? "anonymous";
       const id = getSecretId(input.ref);
+      console.log(`[secrets.resolve] id=${id} ownerId=${ownerId} callerId=${ctx.callerId} callerType=${ctx.callerType}`);
       const value = await store.resolve(id, ownerId);
-      if (!value) throw new Error("Secret not found or unauthorized");
+      if (!value) {
+        console.log(`[secrets.resolve] FAILED for id=${id} ownerId=${ownerId}`);
+        throw new Error("Secret not found or unauthorized");
+      }
       // Return wrapped so actor can handle it
       return { value: { $agent_type: "secret", value } };
     },
