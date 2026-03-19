@@ -19,7 +19,7 @@
     "examples/cloud-db": {
       "name": "@slashfi/agents-sdk-cloud-db-example",
       "dependencies": {
-        "@slashfi/agents-sdk": "file:../..",
+        "@slashfi/agents-sdk": "0.5.0",
         "@slashfi/query-builder": "0.1.0",
         "postgres": "^3.4.8",
       },
@@ -103,7 +103,7 @@
 
     "@sinclair/typebox": ["@sinclair/typebox@0.34.48", "", {}, "sha512-kKJTNuK3AQOrgjjotVxMrCn1sUJwM76wMszfq1kdU4uYVJjvEWuFQ6HgvLt4Xz3fSmZlTOxJ/Ie13KnIcWQXFA=="],
 
-    "@slashfi/agents-sdk": ["@slashfi/agents-sdk@root:", {}],
+    "@slashfi/agents-sdk": ["@slashfi/agents-sdk@0.5.0", "", { "peerDependencies": { "zod": "^3.23.0" }, "optionalPeers": ["zod"] }, "sha512-7ZUvxGGXxPtMd6Kh6PLcowgiUfSbWkvAQwjqhsDRzF3HS6JUo26pAFwxivnrdXjTvOw8Lu7JiA8R45qVSWlxwg=="],
 
     "@slashfi/agents-sdk-cloud-db-example": ["@slashfi/agents-sdk-cloud-db-example@workspace:examples/cloud-db"],
 
