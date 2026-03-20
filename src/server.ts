@@ -842,7 +842,6 @@ export function createAgentServer(
       const reqUrl = new URL(req.url);
       const baseUrl = resolveBaseUrl(req, reqUrl);
 
-      // Slack OAuth config from env
       const slackConfig: SlackOAuthConfig | null =
         process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET
           ? {
@@ -852,205 +851,160 @@ export function createAgentServer(
             }
           : null;
 
+      // Helper: read session from cookie
+      function getSession(r: Request): Record<string, any> | null {
+        const c = r.headers.get("Cookie") || "";
+        const m = c.match(/s_session=([^;]+)/);
+        if (!m) return null;
+        try { return JSON.parse(Buffer.from(m[1], "base64url").toString()); }
+        catch { return null; }
+      }
+
+      // Helper: generate JWT from client credentials
+      async function generateMcpToken(): Promise<string> {
+        const clientRes = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_client", params: {
+          name: "mcp-" + Date.now(),
+          scopes: ["*"],
+        }} as any) as any;
+        const cid = clientRes?.result?.clientId;
+        const csec = clientRes?.result?.clientSecret;
+        if (!cid || !csec) throw new Error("Failed to create client: " + JSON.stringify(clientRes));
+
+        const tokenRes = await globalThis.fetch(`http://localhost:${port}/oauth/token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ grant_type: "client_credentials", client_id: cid, client_secret: csec }),
+        });
+        const tokenData = await tokenRes.json() as any;
+        if (!tokenData.access_token) throw new Error("Failed to get JWT: " + JSON.stringify(tokenData));
+        return tokenData.access_token;
+      }
+
+      // Helper: set session cookie and redirect
+      function sessionRedirect(location: string, session: Record<string, any>): Response {
+        const data = Buffer.from(JSON.stringify(session)).toString("base64url");
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: location,
+            "Set-Cookie": `s_session=${data}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
+          },
+        });
+      }
+
+      // GET / — login page (or redirect to dashboard if session exists)
       if (path === "/" && req.method === "GET") {
-        // If user has a valid session, redirect to dashboard
-        const cookie = req.headers.get("Cookie") || "";
-        const match = cookie.match(/s_session=([^;]+)/);
-        if (match) {
-          try {
-            const session = JSON.parse(Buffer.from(match[1], "base64url").toString());
-            if (session.token) {
-              return Response.redirect(`${baseUrl}/dashboard`, 302);
-            }
-          } catch {}
-        }
+        const session = getSession(req);
+        if (session?.token) return Response.redirect(`${baseUrl}/dashboard`, 302);
         return htmlRes(renderLoginPage(baseUrl, !!slackConfig));
       }
 
-      // Start Slack OAuth flow
+      // GET /auth/slack — start Slack OAuth
       if (path === "/auth/slack" && req.method === "GET") {
-        if (!slackConfig) return htmlRes("<h1>Slack OAuth not configured</h1><p>Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET env vars.</p>");
+        if (!slackConfig) return htmlRes("<h1>Slack OAuth not configured</h1>");
         return Response.redirect(slackAuthUrl(slackConfig), 302);
       }
 
-      // Slack OAuth callback
+      // GET /auth/slack/callback — handle Slack OAuth callback
       if (path === "/auth/slack/callback" && req.method === "GET") {
         if (!slackConfig) return htmlRes("<h1>Slack OAuth not configured</h1>");
-        const code = reqUrl.searchParams.get("code");
-        const error = reqUrl.searchParams.get("error");
-        if (error || !code) return Response.redirect(`${baseUrl}/?error=${error || "no_code"}`, 302);
+        const authCode = reqUrl.searchParams.get("code");
+        const authError = reqUrl.searchParams.get("error");
+        if (authError || !authCode) return Response.redirect(`${baseUrl}/?error=${authError || "no_code"}`, 302);
 
         try {
-          const tokens = await exchangeSlackCode(code, slackConfig);
+          const tokens = await exchangeSlackCode(authCode, slackConfig);
           const profile = await getSlackProfile(tokens.access_token);
           const teamId = profile["https://slack.com/team_id"] || "";
           const teamName = profile["https://slack.com/team_name"] || "";
 
-          // Check if user already exists via resolve_identity
-          console.log("[callback] Looking up slack user:", profile.sub, profile.email);
+          // Check if user already exists
+          console.log("[auth] Looking up slack user:", profile.sub, profile.email);
           const existing = await registry.call({
-            action: "execute_tool",
-            path: "@users",
-            tool: "resolve_identity",
+            action: "execute_tool", path: "@users", tool: "resolve_identity",
             params: { provider: "slack", providerUserId: profile.sub },
           } as any) as any;
-          console.log("[callback] resolve_identity result:", JSON.stringify(existing));
+          console.log("[auth] resolve_identity:", JSON.stringify(existing));
 
           if (existing?.result?.found && existing?.result?.user?.tenantId) {
-            // Existing user — generate JWT
-            console.log("[callback] Existing user found, generating token...");
-            let mcpToken = "";
-            try {
-              const clientRes = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_client", params: {
-                name: (existing.result.user.name || "user") + "-" + Date.now(),
-                scopes: ["*"],
-              }} as any) as any;
-              console.log("[callback] create_client:", JSON.stringify(clientRes));
-              const cid = clientRes?.result?.clientId;
-              const csec = clientRes?.result?.clientSecret;
-              if (cid && csec) {
-                const tokenRes = await fetch(`http://localhost:${port}/oauth/token`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                  body: new URLSearchParams({ grant_type: "client_credentials", client_id: cid, client_secret: csec }),
-                });
-                const tokenData = await tokenRes.json() as any;
-                console.log("[callback] oauth/token response:", JSON.stringify(tokenData));
-                mcpToken = tokenData.access_token || "";
-              }
-            } catch (e: any) { console.error("[callback] token gen error:", e.message); }
-
-            if (!mcpToken) {
-              console.warn("[callback] JWT generation failed, falling back to tenantId");
-              mcpToken = existing.result.user.tenantId;
-            }
-
-            const sessionData = Buffer.from(JSON.stringify({
+            // Returning user — generate token and go to dashboard
+            console.log("[auth] Returning user, generating token...");
+            const mcpToken = await generateMcpToken();
+            return sessionRedirect(`${baseUrl}/dashboard`, {
               userId: existing.result.user.id,
               tenantId: existing.result.user.tenantId,
               email: existing.result.user.email,
               name: existing.result.user.name,
               token: mcpToken,
-            })).toString("base64url");
-            return new Response(null, {
-              status: 302,
-              headers: {
-                Location: `${baseUrl}/dashboard`,
-                "Set-Cookie": `s_session=${sessionData}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
-              },
             });
           }
 
           // New user — redirect to setup
-          const sessionData = Buffer.from(JSON.stringify({
+          return sessionRedirect(`${baseUrl}/setup`, {
             email: profile.email,
             name: profile.name,
             picture: profile.picture,
             slackUserId: profile.sub,
             slackTeamId: teamId,
             slackTeamName: teamName,
-          })).toString("base64url");
-          return new Response(null, {
-            status: 302,
-            headers: {
-              Location: `${baseUrl}/setup`,
-              "Set-Cookie": `s_session=${sessionData}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`,
-            },
           });
         } catch (err: any) {
-          console.error("[slack-oauth] callback error:", err);
+          console.error("[auth] callback error:", err);
           return Response.redirect(`${baseUrl}/?error=oauth_failed`, 302);
         }
       }
 
-      // Tenant setup page (after Google auth)
+      // GET /setup — tenant creation page
       if (path === "/setup" && req.method === "GET") {
-        const cookie = req.headers.get("Cookie") || "";
-        const cookieMatch = cookie.match(/s_session=([^;]+)/);
-        if (!cookieMatch) return Response.redirect(`${baseUrl}/`, 302);
-        try {
-          const session = JSON.parse(Buffer.from(cookieMatch[1], "base64url").toString());
-          return htmlRes(renderTenantPage(baseUrl, session.email, session.name));
-        } catch {
-          return Response.redirect(`${baseUrl}/`, 302);
-        }
+        const session = getSession(req);
+        if (!session?.email) return Response.redirect(`${baseUrl}/`, 302);
+        return htmlRes(renderTenantPage(baseUrl, session.email, session.name || ""));
       }
 
-      // Create tenant + user + API key (POST from setup page)
+      // POST /setup — create tenant + user + link identity + generate token
       if (path === "/setup" && req.method === "POST") {
         try {
           const body = await req.json() as { email?: string; tenant?: string; name?: string };
-          console.log("[setup] POST /setup body:", JSON.stringify(body));
-          console.log("[setup] cookies:", req.headers.get("Cookie"));
-          
+          const session = getSession(req);
+          console.log("[setup] body:", JSON.stringify(body), "session:", JSON.stringify(session));
+
           // 1. Create tenant
-          const tenantResult = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_tenant", params: { name: body.tenant } } as any) as any;
-          const tenantId = tenantResult?.result?.tenantId;
+          const tenantRes = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_tenant", params: { name: body.tenant } } as any) as any;
+          const tenantId = tenantRes?.result?.tenantId;
           if (!tenantId) return addCors(jsonResponse({ error: "Failed to create tenant" }, 400));
+          console.log("[setup] tenant created:", tenantId);
 
           // 2. Create user
-          const userResult = await registry.call({ action: "execute_tool", path: "@users", tool: "create_user", params: { email: body.email, name: body.name, tenantId } } as any) as any;
-          console.log("[setup] create_user result:", JSON.stringify(userResult));
-          const userId = userResult?.result?.id;
-          console.log("[setup] userId:", userId, "match:", !!cookieMatch);
+          const userRes = await registry.call({ action: "execute_tool", path: "@users", tool: "create_user", params: { email: body.email, name: session?.name, tenantId } } as any) as any;
+          const userId = userRes?.result?.id || userRes?.result?.user?.id;
+          console.log("[setup] user created:", userId);
 
           // 3. Link Slack identity
-          const cookie = req.headers.get("Cookie") || "";
-          const cmatch2 = cookie.match(/s_session=([^;]+)/);
-          if (cmatch2 && userId) {
-            const session = JSON.parse(Buffer.from(cookieMatch[1], "base64url").toString());
-              console.log("[setup] linking identity for userId:", userId, "slackUserId:", session.slackUserId);
-              if (session.slackUserId) {
-                const linkRes = await registry.call({ action: "execute_tool", path: "@users", tool: "link_identity", params: {
-                  userId,
-                  provider: "slack",
-                  providerUserId: session.slackUserId,
-                  email: body.email,
-                  name: body.name,
-                  metadata: { slackTeamId: session.slackTeamId, slackTeamName: session.slackTeamName },
-                }} as any);
-                console.log("[setup] link_identity result:", JSON.stringify(linkRes));
-              }
+          if (session?.slackUserId && userId) {
+            console.log("[setup] linking slack identity:", session.slackUserId);
+            const linkRes = await registry.call({ action: "execute_tool", path: "@users", tool: "link_identity", params: {
+              userId,
+              provider: "slack",
+              providerUserId: session.slackUserId,
+              email: body.email,
+              name: session.name,
+              metadata: { slackTeamId: session.slackTeamId, slackTeamName: session.slackTeamName },
+            }} as any);
+            console.log("[setup] link_identity result:", JSON.stringify(linkRes));
           }
 
-          // 4. Create auth client (API key) for MCP access
-          const clientResult = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_client", params: {
-            name: (body.tenant || "default") + "-key",
-            scopes: ["*"],
-          }} as any) as any;
-          const clientId = clientResult?.result?.clientId;
-          const clientSecret = clientResult?.result?.clientSecret;
+          // 4. Generate MCP token
+          const mcpToken = await generateMcpToken();
+          console.log("[setup] token generated, length:", mcpToken.length);
 
-          // 5. Generate a secure MCP token from client credentials
-          let mcpToken = "";
-          if (clientId && clientSecret) {
-            // Call our own /oauth/token endpoint to get a JWT
-            try {
-              const tokenRes = await fetch(`http://localhost:${port}/oauth/token`, {
-                method: "POST",
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                body: new URLSearchParams({
-                  grant_type: "client_credentials",
-                  client_id: clientId,
-                  client_secret: clientSecret,
-                }),
-              });
-              const tokenData = await tokenRes.json() as any;
-              mcpToken = tokenData.access_token || "";
-            } catch (e) { console.error("[setup] token generation error:", e); }
-          }
-
-          // Fallback: base64 encoded client_id:secret  
-          if (!mcpToken && clientId && clientSecret) {
-            mcpToken = Buffer.from(clientId + ":" + clientSecret).toString("base64url");
-          }
-
-          return addCors(jsonResponse({ success: true, result: { tenantId, userId, token: mcpToken || tenantId } }));
+          return addCors(jsonResponse({ success: true, result: { tenantId, userId, token: mcpToken } }));
         } catch (err: any) {
+          console.error("[setup] error:", err);
           return addCors(jsonResponse({ error: err.message }, 400));
         }
       }
 
+      // POST /logout — clear session
       if (path === "/logout" && req.method === "POST") {
         return new Response(null, {
           status: 302,
@@ -1061,23 +1015,18 @@ export function createAgentServer(
         });
       }
 
+      // GET /dashboard — show MCP URL and setup instructions
       if (path === "/dashboard" && req.method === "GET") {
-        let token = "";
-        const ck = req.headers.get("Cookie") || "";
-        const cm = ck.match(/s_session=([^;]+)/);
-        if (cm) {
-          try {
-            const s = JSON.parse(Buffer.from(cm[1], "base64url").toString());
-            token = s.token || "";
-          } catch {}
-        }
-        if (!token) token = reqUrl.searchParams.get("token") ?? "";
+        const session = getSession(req);
+        let token = session?.token || reqUrl.searchParams.get("token") || "";
         if (!token) return Response.redirect(`${baseUrl}/`, 302);
-        const sd = Buffer.from(JSON.stringify({ token })).toString("base64url");
+
+        // Persist token in cookie
+        const sessData = Buffer.from(JSON.stringify({ ...session, token })).toString("base64url");
         return new Response(renderDashboardPage(baseUrl, token), {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
-            "Set-Cookie": `s_session=${sd}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
+            "Set-Cookie": `s_session=${sessData}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
           },
         });
       }
