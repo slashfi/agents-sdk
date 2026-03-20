@@ -36,6 +36,13 @@ import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 import { renderLoginPage, renderDashboardPage, renderTenantPage } from "./web-pages.js";
 import { slackAuthUrl, exchangeSlackCode, getSlackProfile, type SlackOAuthConfig } from "./slack-oauth.js";
 
+
+function resolveBaseUrl(req: Request, url: URL): string {
+  const proto = req.headers.get("x-forwarded-proto") || url.protocol.replace(":", "");
+  const host = req.headers.get("x-forwarded-host") || url.host;
+  return `${proto}://${host}`;
+}
+
 // ============================================
 // Server Types
 // ============================================
@@ -763,7 +770,7 @@ export function createAgentServer(
           pendingCollections.delete(token);
           return addCors(new Response("Form link expired", { status: 410 }));
         }
-        const reqUrl = new URL(req.url); const baseUrl = `${reqUrl.protocol}//${reqUrl.host}`;
+        const reqUrl = new URL(req.url); const baseUrl = resolveBaseUrl(req, reqUrl);
         const html = renderSecretForm(token, pending, baseUrl);
         return addCors(new Response(html, { headers: { "Content-Type": "text/html" } }));
       }
@@ -833,7 +840,7 @@ export function createAgentServer(
       // --- Web pages (plain HTML, served from same server) ---
       const htmlRes = (body: string) => addCors(new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8" } }));
       const reqUrl = new URL(req.url);
-      const baseUrl = `${reqUrl.protocol}//${reqUrl.host}`;
+      const baseUrl = resolveBaseUrl(req, reqUrl);
 
       // Slack OAuth config from env
       const slackConfig: SlackOAuthConfig | null =
@@ -867,6 +874,33 @@ export function createAgentServer(
           const profile = await getSlackProfile(tokens.access_token);
           const teamId = profile["https://slack.com/team_id"] || "";
           const teamName = profile["https://slack.com/team_name"] || "";
+
+          // Check if user already exists via resolve_identity
+          const existing = await registry.call({
+            action: "execute_tool",
+            path: "@users",
+            tool: "resolve_identity",
+            params: { provider: "slack", providerUserId: profile.sub },
+          } as any) as any;
+
+          if (existing?.result?.found && existing?.result?.user?.tenantId) {
+            // Existing user — go straight to dashboard
+            const sessionData = Buffer.from(JSON.stringify({
+              userId: existing.result.user.id,
+              tenantId: existing.result.user.tenantId,
+              email: existing.result.user.email,
+              name: existing.result.user.name,
+            })).toString("base64url");
+            return new Response(null, {
+              status: 302,
+              headers: {
+                Location: `${baseUrl}/dashboard?token=${existing.result.user.tenantId}`,
+                "Set-Cookie": `s_session=${sessionData}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+              },
+            });
+          }
+
+          // New user — redirect to setup
           const sessionData = Buffer.from(JSON.stringify({
             email: profile.email,
             name: profile.name,
@@ -901,12 +935,40 @@ export function createAgentServer(
         }
       }
 
-      // Create tenant (POST from setup page)
+      // Create tenant + user (POST from setup page)
       if (path === "/setup" && req.method === "POST") {
         try {
-          const body = await req.json() as { email?: string; tenant?: string; name?: string };
-          const result = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_tenant", params: { name: body.tenant, email: body.email } } as any);
-          return addCors(jsonResponse(result));
+          const body = await req.json() as { email?: string; tenant?: string; name?: string; slackUserId?: string; slackTeamId?: string };
+          
+          // 1. Create tenant
+          const tenantResult = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_tenant", params: { name: body.tenant } } as any) as any;
+          const tenantId = tenantResult?.result?.tenantId;
+          if (!tenantId) return addCors(jsonResponse({ error: "Failed to create tenant" }, 400));
+
+          // 2. Create user
+          const userResult = await registry.call({ action: "execute_tool", path: "@users", tool: "create_user", params: { email: body.email, name: body.name, tenantId } } as any) as any;
+          const userId = userResult?.result?.id;
+
+          // 3. Link Slack identity if we have it
+          const cookie = req.headers.get("Cookie") || "";
+          const match = cookie.match(/s_session=([^;]+)/);
+          if (match && userId) {
+            try {
+              const session = JSON.parse(Buffer.from(match[1], "base64url").toString());
+              if (session.slackUserId) {
+                await registry.call({ action: "execute_tool", path: "@users", tool: "link_identity", params: {
+                  userId,
+                  provider: "slack",
+                  providerUserId: session.slackUserId,
+                  email: body.email,
+                  name: body.name,
+                  meta: { slackTeamId: session.slackTeamId, slackTeamName: session.slackTeamName },
+                }} as any);
+              }
+            } catch (e) { console.error("[setup] link identity error:", e); }
+          }
+
+          return addCors(jsonResponse({ success: true, result: { tenantId, userId } }));
         } catch (err: any) {
           return addCors(jsonResponse({ error: err.message }, 400));
         }

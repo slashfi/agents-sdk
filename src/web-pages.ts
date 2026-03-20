@@ -55,11 +55,13 @@ document.getElementById('f').addEventListener('submit', async e => {
   try {
     const r = await fetch('/setup', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email: fd.get('email'), tenant: fd.get('tenant') }) });
     const d = await r.json();
-    if (d.token || d.result?.token) {
+    if (d.success && d.result?.tenantId) {
+      window.location.href = '/dashboard?token=' + d.result.tenantId;
+    } else if (d.token || d.result?.token) {
       window.location.href = '/dashboard?token=' + (d.token || d.result.token);
     } else {
       const el = document.getElementById('err');
-      el.textContent = d.error || JSON.stringify(d);
+      el.textContent = d.error || d.result?.error || 'Something went wrong';
       el.style.display = 'block';
     }
   } catch(err) { document.getElementById('err').textContent = err.message; document.getElementById('err').style.display = 'block'; }
