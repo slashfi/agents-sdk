@@ -935,10 +935,10 @@ export function createAgentServer(
         }
       }
 
-      // Create tenant + user (POST from setup page)
+      // Create tenant + user + API key (POST from setup page)
       if (path === "/setup" && req.method === "POST") {
         try {
-          const body = await req.json() as { email?: string; tenant?: string; name?: string; slackUserId?: string; slackTeamId?: string };
+          const body = await req.json() as { email?: string; tenant?: string; name?: string };
           
           // 1. Create tenant
           const tenantResult = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_tenant", params: { name: body.tenant } } as any) as any;
@@ -949,7 +949,7 @@ export function createAgentServer(
           const userResult = await registry.call({ action: "execute_tool", path: "@users", tool: "create_user", params: { email: body.email, name: body.name, tenantId } } as any) as any;
           const userId = userResult?.result?.id;
 
-          // 3. Link Slack identity if we have it
+          // 3. Link Slack identity
           const cookie = req.headers.get("Cookie") || "";
           const match = cookie.match(/s_session=([^;]+)/);
           if (match && userId) {
@@ -968,7 +968,39 @@ export function createAgentServer(
             } catch (e) { console.error("[setup] link identity error:", e); }
           }
 
-          return addCors(jsonResponse({ success: true, result: { tenantId, userId } }));
+          // 4. Create auth client (API key) for MCP access
+          const clientResult = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_client", params: {
+            name: (body.tenant || "default") + "-key",
+            scopes: ["*"],
+          }} as any) as any;
+          const clientId = clientResult?.result?.clientId;
+          const clientSecret = clientResult?.result?.clientSecret;
+
+          // 5. Generate a secure MCP token from client credentials
+          let mcpToken = "";
+          if (clientId && clientSecret) {
+            // Call our own /oauth/token endpoint to get a JWT
+            try {
+              const tokenRes = await fetch(`http://localhost:${port}/oauth/token`, {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({
+                  grant_type: "client_credentials",
+                  client_id: clientId,
+                  client_secret: clientSecret,
+                }),
+              });
+              const tokenData = await tokenRes.json() as any;
+              mcpToken = tokenData.access_token || "";
+            } catch (e) { console.error("[setup] token generation error:", e); }
+          }
+
+          // Fallback: base64 encoded client_id:secret  
+          if (!mcpToken && clientId && clientSecret) {
+            mcpToken = Buffer.from(clientId + ":" + clientSecret).toString("base64url");
+          }
+
+          return addCors(jsonResponse({ success: true, result: { tenantId, userId, token: mcpToken || tenantId } }));
         } catch (err: any) {
           return addCors(jsonResponse({ error: err.message }, 400));
         }

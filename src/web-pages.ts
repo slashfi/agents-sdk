@@ -55,8 +55,8 @@ document.getElementById('f').addEventListener('submit', async e => {
   try {
     const r = await fetch('/setup', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email: fd.get('email'), tenant: fd.get('tenant') }) });
     const d = await r.json();
-    if (d.success && d.result?.tenantId) {
-      window.location.href = '/dashboard?token=' + d.result.tenantId;
+    if (d.success && (d.result?.token || d.result?.tenantId)) {
+      window.location.href = '/dashboard?token=' + (d.result.token || d.result.tenantId);
     } else if (d.token || d.result?.token) {
       window.location.href = '/dashboard?token=' + (d.token || d.result.token);
     } else {
