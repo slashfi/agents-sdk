@@ -129,7 +129,7 @@ const testConnection = defineTool({
   },
   execute: async (input: { connection_id: string }, ctx: ToolContext) => {
     const ownerId = getOwnerId(ctx);
-    const conn = await getConnection(input.connection_id, ownerId);
+    const conn = await getConnectionHelper(input.connection_id, ownerId);
 
     try {
       if (conn.type === "postgres" || conn.type === "cockroachdb") {
@@ -160,7 +160,7 @@ const queryConnection = defineTool({
   },
   execute: async (input: { connection_id: string; sql: string }, ctx: ToolContext) => {
     const ownerId = getOwnerId(ctx);
-    const conn = await getConnection(input.connection_id, ownerId);
+    const conn = await getConnectionHelper(input.connection_id, ownerId);
 
     if (conn.type === "postgres" || conn.type === "cockroachdb") {
       const client = postgres(buildPgUrl(conn.config));
@@ -177,6 +177,71 @@ const queryConnection = defineTool({
   },
 });
 
+
+const getConnection = defineTool({
+  name: "get_connection",
+  description: "Get details of a specific database connection",
+  inputSchema: {
+    type: "object",
+    properties: {
+      connection_id: { type: "string", description: "Connection ID" },
+    },
+    required: ["connection_id"],
+  },
+  execute: async (input: { connection_id: string }, ctx: ToolContext) => {
+    const ownerId = getOwnerId(ctx);
+    const conn = await getConnectionHelper(input.connection_id, ownerId);
+    return { id: input.connection_id, name: conn.name, type: conn.type, status: "active" };
+  },
+});
+
+const updateConnection = defineTool({
+  name: "update_connection",
+  description: "Update an existing database connection's name or config",
+  inputSchema: {
+    type: "object",
+    properties: {
+      connection_id: { type: "string", description: "Connection ID to update" },
+      name: { type: "string", description: "New friendly name (optional)" },
+      connection: {
+        type: "object",
+        description: "Updated connection config fields (merged with existing)",
+        properties: {
+          host: { type: "string" },
+          port: { type: "number" },
+          user: { type: "string" },
+          password: { type: "string", secret: true },
+          database: { type: "string" },
+          ssl: { type: "boolean" },
+          account: { type: "string" },
+          warehouse: { type: "string" },
+          schema: { type: "string" },
+          role: { type: "string" },
+        },
+      },
+    },
+    required: ["connection_id"],
+  },
+  execute: async (input: { connection_id: string; name?: string; connection?: Record<string, unknown> }, ctx: ToolContext) => {
+    const ownerId = getOwnerId(ctx);
+    const existing = await getConnectionHelper(input.connection_id, ownerId);
+    const newName = input.name ?? existing.name;
+    const newConfig = input.connection
+      ? { ...existing.config, ...input.connection }
+      : existing.config;
+
+    // Re-encrypt and store
+    const configEncrypted = await encrypt(JSON.stringify(newConfig), getEncryptionKey());
+    const pgClient = (globalThis as any).__pgClient;
+    await pgClient.unsafe(
+      "UPDATE connections SET name = $1, config_encrypted = $2, updated_at = $3 WHERE id = $4 AND owner_id = $5",
+      [newName, configEncrypted, new Date(), input.connection_id, ownerId],
+    );
+
+    return { id: input.connection_id, name: newName, type: existing.type, updated: true };
+  },
+});
+
 const removeConnection = defineTool({
   name: "remove_connection",
   description: "Remove a registered database connection",
@@ -190,7 +255,7 @@ const removeConnection = defineTool({
   execute: async (input: { connection_id: string }, ctx: ToolContext) => {
     const ownerId = getOwnerId(ctx);
     // Verify ownership
-    await getConnection(input.connection_id, ownerId);
+    await getConnectionHelper(input.connection_id, ownerId);
     // QB doesn't support DELETE, use raw SQL
     const pgClient = (globalThis as any).__pgClient;
     await pgClient.unsafe(
@@ -211,7 +276,7 @@ interface DecodedConnection {
   config: Record<string, unknown>;
 }
 
-async function getConnection(id: string, ownerId: string): Promise<DecodedConnection> {
+async function getConnectionHelper(id: string, ownerId: string): Promise<DecodedConnection> {
   const result = await db.from(Connection)
     .where((_) => _.connection.id.equals(id))
     .limit(1);
@@ -262,8 +327,15 @@ For passwords and sensitive credentials, prefer using a secure link rather than 
       icon: "database",
       category: "infrastructure",
       description: "Connect PostgreSQL, CockroachDB, or Snowflake databases to query and manage them through your agent.",
+      methods: {
+        setup: "add_connection",
+        list: "list_connections",
+        connect: "test_connection",
+        get: "get_connection",
+        update: "update_connection",
+      },
     },
   },
-  tools: [addConnection, listConnections, testConnection, queryConnection, removeConnection],
+  tools: [addConnection, listConnections, testConnection, queryConnection, getConnection, updateConnection, removeConnection],
   visibility: "public",
 });

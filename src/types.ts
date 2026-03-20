@@ -37,6 +37,23 @@ export type JsonSchema = {
  * any agent can declare itself as an integration by setting this field.
  * Each agent handles its own setup through its own tools.
  */
+/**
+ * Standard integration method names mapped to actual tool names.
+ * Each integration agent implements these through its own tools.
+ */
+export interface IntegrationMethods {
+  /** Configure/initialize the integration (e.g., add a DB connection, set API key) */
+  setup: string;
+  /** List configured instances (e.g., list DB connections, list repos) */
+  list: string;
+  /** Establish connection or authenticate (e.g., test DB connectivity, OAuth flow) */
+  connect: string;
+  /** Get details of a specific instance */
+  get: string;
+  /** Modify an existing configuration */
+  update: string;
+}
+
 export interface IntegrationConfig {
   /** Provider identifier (e.g., "databases", "slack", "github") */
   provider: string;
@@ -52,6 +69,12 @@ export interface IntegrationConfig {
 
   /** Brief description of what connecting this integration enables */
   description?: string;
+
+  /**
+   * Maps standard integration methods to this agent's tool names.
+   * @integrations uses these to dispatch calls uniformly.
+   */
+  methods: IntegrationMethods;
 }
 
 // ============================================
