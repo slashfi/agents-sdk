@@ -158,7 +158,6 @@ export type {
   IntegrationCallInput,
   RestCallInput,
   GraphqlCallInput,
-  AgentRegistryCallInput,
   UserConnection,
   ClientAuthMethod,
   TokenContentType,
