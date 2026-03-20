@@ -33,6 +33,7 @@ import {
 import { verifyJwt } from "./jwt.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
+import { renderLoginPage, renderDashboardPage } from "./web-pages.js";
 
 // ============================================
 // Server Types
@@ -825,6 +826,34 @@ export function createAgentServer(
         } as any);
 
         return addCors(jsonResponse({ success: true, result }));
+      }
+
+
+      // --- Web pages (plain HTML, served from same server) ---
+      const htmlRes = (body: string) => addCors(new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8" } }));
+
+      if (path === "/" && req.method === "GET") {
+        const reqUrl = new URL(req.url);
+        const baseUrl = `${reqUrl.protocol}//${reqUrl.host}`;
+        return htmlRes(renderLoginPage(baseUrl));
+      }
+
+      if (path === "/dashboard" && req.method === "GET") {
+        const reqUrl = new URL(req.url);
+        const baseUrl = `${reqUrl.protocol}//${reqUrl.host}`;
+        const token = reqUrl.searchParams.get("token") ?? "";
+        if (!token) return Response.redirect(`${baseUrl}/`, 302);
+        return htmlRes(renderDashboardPage(baseUrl, token));
+      }
+
+      if (path === "/login" && req.method === "POST") {
+        try {
+          const body = await req.json() as { email?: string; tenant?: string };
+          const result = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_tenant", params: { name: body.tenant, email: body.email } } as any);
+          return addCors(jsonResponse(result));
+        } catch (err: any) {
+          return addCors(jsonResponse({ error: err.message }, 400));
+        }
       }
 
       return addCors(
