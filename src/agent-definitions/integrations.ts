@@ -99,7 +99,11 @@ export interface IntegrationApiConfig {
 export interface ProviderConfig {
   id: string;
   name: string;
-  type: "rest" | "graphql" | "agent-registry";
+  /**
+   * Agent path that handles this integration type.
+   * @integrations dispatches setup/connect/call to that agent's integrationMethods.
+   */
+  agentPath: string;
   /**
    * Scope of the integration:
    * - 'user': per-user tokens (Slack, Notion, Linear)
@@ -108,7 +112,7 @@ export interface ProviderConfig {
   scope?: "user" | "tenant";
   docs?: { llmsTxt?: string; human?: string[] };
   auth?: IntegrationOAuthConfig;
-  api: IntegrationApiConfig;
+  api?: IntegrationApiConfig;
 }
 
 // ============================================
@@ -131,18 +135,9 @@ export interface GraphqlCallInput {
   variables?: Record<string, unknown>;
 }
 
-export interface AgentRegistryCallInput {
-  provider: string;
-  type: "agent-registry";
-  agent: string;
-  tool: string;
-  params?: Record<string, unknown>;
-}
-
 export type IntegrationCallInput =
   | RestCallInput
-  | GraphqlCallInput
-  | AgentRegistryCallInput;
+  | GraphqlCallInput;
 
 // ============================================
 // User Connection (stored token)
@@ -273,6 +268,7 @@ function buildAuthHeaders(
   config: ProviderConfig,
   accessToken: string,
 ): Record<string, string> {
+  if (!config.api) return {};
   const { auth } = config.api;
   const headerName = auth.headerName ?? "Authorization";
   const prefix = auth.prefix ?? "Bearer";
@@ -433,7 +429,7 @@ async function executeRestCall(
   input: RestCallInput,
   accessToken: string,
 ): Promise<unknown> {
-  const url = new URL(input.path, config.api.baseUrl);
+  const url = new URL(input.path, config.api?.baseUrl);
   if (input.query) {
     for (const [k, v] of Object.entries(input.query)) {
       url.searchParams.set(k, v);
@@ -442,7 +438,7 @@ async function executeRestCall(
 
   const headers: Record<string, string> = {
     ...buildAuthHeaders(config, accessToken),
-    ...(config.api.defaultHeaders ?? {}),
+    ...(config.api?.defaultHeaders ?? {}),
   };
 
   if (input.body) {
@@ -471,9 +467,10 @@ async function executeGraphqlCall(
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...buildAuthHeaders(config, accessToken),
-    ...(config.api.defaultHeaders ?? {}),
+    ...(config.api?.defaultHeaders ?? {}),
   };
 
+  if (!config.api?.baseUrl) throw new Error("No baseUrl configured for this provider");
   const response = await fetch(config.api.baseUrl, {
     method: "POST",
     headers,
@@ -539,10 +536,9 @@ export function createIntegrationsAgent(
           description: "Provider ID (e.g. 'linear', 'notion')",
         },
         name: { type: "string", description: "Display name" },
-        type: {
+        agentPath: {
           type: "string",
-          enum: ["rest", "graphql", "agent-registry"],
-          description: "Integration type",
+          description: "Agent path that handles this integration (e.g. '@remote-registry', '@databases'). Omit for simple REST/GraphQL integrations.",
         },
         scope: {
           type: "string",
@@ -647,7 +643,7 @@ export function createIntegrationsAgent(
       const config: ProviderConfig = {
         id: input.id,
         name: input.name,
-        type: input.type,
+        agentPath: input.agentPath,
         scope: input.scope,
         docs: input.docs,
         auth: input.auth,
@@ -696,7 +692,7 @@ export function createIntegrationsAgent(
         providers: providers.map((p) => ({
           id: p.id,
           name: p.name,
-          type: p.type,
+          agentPath: p.agentPath,
           scope: p.scope ?? "user",
           hasOAuth: !!p.auth,
           connected: connections.some((c) => c.providerId === p.id),
@@ -831,8 +827,8 @@ export function createIntegrationsAgent(
         provider: { type: "string", description: "Provider ID" },
         type: {
           type: "string",
-          enum: ["rest", "graphql", "agent-registry"],
-          description: "Call type",
+          enum: ["rest", "graphql"],
+          description: "Call type (rest or graphql)",
         },
         // REST fields
         method: {
@@ -924,7 +920,7 @@ export function createIntegrationsAgent(
         }
       }
 
-      // Execute the call
+      // Execute the call based on type
       switch (input.type) {
         case "rest":
           return executeRestCall(
@@ -952,27 +948,8 @@ export function createIntegrationsAgent(
             accessToken,
           );
 
-        case "agent-registry": {
-          // For agent-registry, forward the call to the remote agent server
-          const baseUrl = config.api.baseUrl;
-          const response = await fetch(`${baseUrl}/call`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...buildAuthHeaders(config, accessToken),
-            },
-            body: JSON.stringify({
-              action: "execute_tool",
-              path: input.agent,
-              tool: input.tool,
-              params: input.params ?? {},
-            }),
-          });
-          return response.json();
-        }
-
         default:
-          return { error: `Unknown integration type: ${input.type}` };
+          return { error: `Unknown call type: ${input.type}. Use 'rest' or 'graphql'.` };
       }
     },
   });

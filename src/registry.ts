@@ -290,6 +290,12 @@ export function createAgentRegistry(
           };
 
           try {
+            if (!tool.execute) {
+              return {
+                success: false,
+                error: `Tool ${request.tool} has no execute function`,
+              } as CallAgentErrorResponse;
+            }
             const result = await tool.execute(request.params, ctx);
             return {
               success: true,

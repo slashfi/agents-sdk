@@ -421,8 +421,21 @@ export interface ToolDefinition<
 
   /**
    * Execute the tool with validated input.
+   * Optional — some registries load tool implementations dynamically.
    */
-  execute: (input: TInput, ctx: TContext) => Promise<TOutput>;
+  execute?: (input: TInput, ctx: TContext) => Promise<TOutput>;
+
+  /**
+   * Path to the tool source file (e.g., '/agents/@clock/timer.tool.ts').
+   * Used for tool discovery and prompt composition.
+   */
+  path?: string;
+
+  /**
+   * Full documentation content for system prompt composition.
+   * When set, rendered directly into the agent's system prompt.
+   */
+  doc?: string;
 }
 
 /**
@@ -473,6 +486,12 @@ export interface AgentDefinition<TContext extends ToolContext = ToolContext> {
    * by @integrations via standard methods (setup, list, connect, get, update).
    */
   integrationMethods?: IntegrationMethods;
+
+  /**
+   * Lazy loader for lifecycle listeners.
+   * Called once to load runtime hooks exported from the agent's entrypoint module.
+   */
+  loadListeners?: () => Promise<unknown>;
 }
 
 // ============================================
