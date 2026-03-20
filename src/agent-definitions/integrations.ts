@@ -18,7 +18,7 @@
  * const registry = createAgentRegistry();
  * registry.register(createIntegrationsAgent({
  *   store: myIntegrationStore,
- *   callbackBaseUrl: 'https://myapp.com/integrations/callback',
+ *   callbackBaseUrl: 'https://myapp.com/oauth/callback',
  * }));
  * ```
  */
@@ -500,7 +500,7 @@ export interface IntegrationsAgentOptions {
 
   /**
    * Base URL for OAuth callbacks.
-   * The callback URL will be: `${callbackBaseUrl}/${providerId}`
+   * The OAuth redirect_uri. Provider is encoded in the state param.
    */
   callbackBaseUrl?: string;
 }
@@ -763,7 +763,7 @@ export function createIntegrationsAgent(
         return { error: "No callbackBaseUrl configured for OAuth flows" };
 
       const oauth = config.auth;
-      const redirectUri = `${callbackBaseUrl}/${config.id}`;
+      const redirectUri = callbackBaseUrl;
       const userId = input.userId ?? ctx.callerId;
 
       // Resolve client ID from secret store
@@ -1030,7 +1030,7 @@ export function createIntegrationsAgent(
         return { error: "Failed to resolve client credentials." };
       }
 
-      const redirectUri = `${callbackBaseUrl}/${config.id}`;
+      const redirectUri = callbackBaseUrl;
       const result = await exchangeCodeForToken(
         config,
         input.code,
@@ -1175,7 +1175,7 @@ export function createIntegrationsAgent(
       });
 
       // Build callback URL from callbackBaseUrl
-      const baseUrl = callbackBaseUrl?.replace(/\/integrations\/callback$/, "") ?? "";
+      const baseUrl = callbackBaseUrl?.replace(/\/oauth\/callback$/, "").replace(/\/integrations\/callback$/, "") ?? "";
 
       return {
         url: `${baseUrl}/secrets/form/${token}`,
