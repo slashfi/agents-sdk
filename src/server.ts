@@ -34,7 +34,7 @@ import { verifyJwt } from "./jwt.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 import { renderLoginPage, renderDashboardPage, renderTenantPage } from "./web-pages.js";
-import { googleAuthUrl, exchangeGoogleCode, getGoogleProfile, type GoogleOAuthConfig } from "./google-oauth.js";
+import { slackAuthUrl, exchangeSlackCode, getSlackProfile, type SlackOAuthConfig } from "./slack-oauth.js";
 
 // ============================================
 // Server Types
@@ -835,47 +835,55 @@ export function createAgentServer(
       const reqUrl = new URL(req.url);
       const baseUrl = `${reqUrl.protocol}//${reqUrl.host}`;
 
-      // Google OAuth config from env
-      const googleConfig: GoogleOAuthConfig | null =
-        process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+      // Slack OAuth config from env
+      const slackConfig: SlackOAuthConfig | null =
+        process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET
           ? {
-              clientId: process.env.GOOGLE_CLIENT_ID,
-              clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-              redirectUri: `${baseUrl}/auth/google/callback`,
+              clientId: process.env.SLACK_CLIENT_ID,
+              clientSecret: process.env.SLACK_CLIENT_SECRET,
+              redirectUri: `${baseUrl}/auth/slack/callback`,
             }
           : null;
 
       if (path === "/" && req.method === "GET") {
-        return htmlRes(renderLoginPage(baseUrl, !!googleConfig));
+        return htmlRes(renderLoginPage(baseUrl, !!slackConfig));
       }
 
-      // Start Google OAuth flow
-      if (path === "/auth/google" && req.method === "GET") {
-        if (!googleConfig) return htmlRes("<h1>Google OAuth not configured</h1><p>Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars.</p>");
-        return Response.redirect(googleAuthUrl(googleConfig), 302);
+      // Start Slack OAuth flow
+      if (path === "/auth/slack" && req.method === "GET") {
+        if (!slackConfig) return htmlRes("<h1>Slack OAuth not configured</h1><p>Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET env vars.</p>");
+        return Response.redirect(slackAuthUrl(slackConfig), 302);
       }
 
-      // Google OAuth callback
-      if (path === "/auth/google/callback" && req.method === "GET") {
-        if (!googleConfig) return htmlRes("<h1>Google OAuth not configured</h1>");
+      // Slack OAuth callback
+      if (path === "/auth/slack/callback" && req.method === "GET") {
+        if (!slackConfig) return htmlRes("<h1>Slack OAuth not configured</h1>");
         const code = reqUrl.searchParams.get("code");
         const error = reqUrl.searchParams.get("error");
         if (error || !code) return Response.redirect(`${baseUrl}/?error=${error || "no_code"}`, 302);
 
         try {
-          const tokens = await exchangeGoogleCode(code, googleConfig);
-          const profile = await getGoogleProfile(tokens.access_token);
-          // Store email in a short-lived session cookie and redirect to tenant creation
-          const sessionData = Buffer.from(JSON.stringify({ email: profile.email, name: profile.name, picture: profile.picture })).toString("base64url");
+          const tokens = await exchangeSlackCode(code, slackConfig);
+          const profile = await getSlackProfile(tokens.access_token);
+          const teamId = profile["https://slack.com/team_id"] || "";
+          const teamName = profile["https://slack.com/team_name"] || "";
+          const sessionData = Buffer.from(JSON.stringify({
+            email: profile.email,
+            name: profile.name,
+            picture: profile.picture,
+            slackUserId: profile.sub,
+            slackTeamId: teamId,
+            slackTeamName: teamName,
+          })).toString("base64url");
           return new Response(null, {
             status: 302,
             headers: {
               Location: `${baseUrl}/setup`,
-              "Set-Cookie": `g_session=${sessionData}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`,
+              "Set-Cookie": `s_session=${sessionData}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`,
             },
           });
         } catch (err: any) {
-          console.error("[google-oauth] callback error:", err);
+          console.error("[slack-oauth] callback error:", err);
           return Response.redirect(`${baseUrl}/?error=oauth_failed`, 302);
         }
       }
@@ -883,7 +891,7 @@ export function createAgentServer(
       // Tenant setup page (after Google auth)
       if (path === "/setup" && req.method === "GET") {
         const cookie = req.headers.get("Cookie") || "";
-        const match = cookie.match(/g_session=([^;]+)/);
+        const match = cookie.match(/s_session=([^;]+)/);
         if (!match) return Response.redirect(`${baseUrl}/`, 302);
         try {
           const session = JSON.parse(Buffer.from(match[1], "base64url").toString());
