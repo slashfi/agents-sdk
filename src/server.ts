@@ -941,6 +941,55 @@ export function createAgentServer(
             });
           }
 
+          // Check if Slack team already has a tenant
+          if (teamId) {
+            console.log("[auth] Checking tenant_identities for team:", teamId);
+            try {
+              // Direct DB query via the auth store's underlying connection
+              // We'll use a simple fetch to our own MCP endpoint to call @db-connections
+              // Actually, simpler: just query the DB directly via the server's context
+              // For now, use registry.call to a custom tool or direct SQL
+              // Simplest: call @auth list_tenants and check metadata
+              // Even simpler: direct SQL via globalThis.fetch to ourselves
+              const dbUrl = process.env.DATABASE_URL;
+              if (dbUrl) {
+                const { default: postgres } = await import("postgres");
+                const sql = postgres(dbUrl);
+                const rows = await sql`SELECT tenant_id FROM tenant_identities WHERE provider = 'slack' AND provider_org_id = ${teamId} LIMIT 1`;
+                await sql.end();
+                if (rows.length > 0) {
+                  const existingTenantId = rows[0].tenant_id;
+                  console.log("[auth] Found existing tenant for team:", existingTenantId);
+                  
+                  // Create user on existing tenant
+                  const userRes = await registry.call({ action: "execute_tool", path: "@users", callerType: "system", tool: "create_user", params: {
+                    email: profile.email, name: profile.name, tenantId: existingTenantId,
+                  }} as any) as any;
+                  const newUserId = userRes?.result?.id || userRes?.result?.user?.id;
+                  console.log("[auth] Created user on existing tenant:", newUserId);
+
+                  // Link identity
+                  if (newUserId) {
+                    await registry.call({ action: "execute_tool", path: "@users", callerType: "system", tool: "link_identity", params: {
+                      userId: newUserId, provider: "slack", providerUserId: profile.sub,
+                      email: profile.email, name: profile.name,
+                      metadata: { slackTeamId: teamId, slackTeamName: teamName },
+                    }} as any);
+                  }
+
+                  // Generate token and go to dashboard
+                  const mcpToken = await generateMcpToken();
+                  return sessionRedirect(`${baseUrl}/dashboard`, {
+                    userId: newUserId, tenantId: existingTenantId,
+                    email: profile.email, name: profile.name, token: mcpToken,
+                  });
+                }
+              }
+            } catch (e: any) {
+              console.error("[auth] tenant_identity lookup error:", e.message);
+            }
+          }
+
           // New user — redirect to setup
           return sessionRedirect(`${baseUrl}/setup`, {
             email: profile.email,
@@ -980,6 +1029,21 @@ export function createAgentServer(
           const userRes = await registry.call({ action: "execute_tool", path: "@users", callerType: "system", tool: "create_user", params: { email: body.email, name: session?.name, tenantId } } as any) as any;
           const userId = userRes?.result?.id || userRes?.result?.user?.id;
           console.log("[setup] user created:", userId);
+
+          // 2b. Link tenant to Slack team
+          if (session?.slackTeamId) {
+            try {
+              const dbUrl = process.env.DATABASE_URL;
+              if (dbUrl) {
+                const { default: postgres } = await import("postgres");
+                const sql = postgres(dbUrl);
+                const id = "ti_" + Math.random().toString(36).slice(2, 14);
+                await sql`INSERT INTO tenant_identities (id, tenant_id, provider, provider_org_id, name) VALUES (${id}, ${tenantId}, 'slack', ${session.slackTeamId}, ${session.slackTeamName || ''})`;
+                await sql.end();
+                console.log("[setup] Created tenant_identity for slack team:", session.slackTeamId);
+              }
+            } catch (e: any) { console.error("[setup] tenant_identity insert error:", e.message); }
+          }
 
           // 3. Link Slack identity
           if (session?.slackUserId && userId) {
