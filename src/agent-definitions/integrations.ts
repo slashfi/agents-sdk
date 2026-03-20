@@ -101,10 +101,9 @@ export interface ProviderConfig {
   name: string;
   /**
    * Agent path that handles this integration type.
-   * When set, @integrations dispatches setup/connect/call to that agent's integrationMethods.
-   * When not set (or for simple REST/GraphQL), built-in handling is used.
+   * @integrations dispatches setup/connect/call to that agent's integrationMethods.
    */
-  agentPath?: string;
+  agentPath: string;
   /**
    * Scope of the integration:
    * - 'user': per-user tokens (Slack, Notion, Linear)
