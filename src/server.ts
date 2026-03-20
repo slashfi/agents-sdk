@@ -862,7 +862,7 @@ export function createAgentServer(
 
       // Helper: generate JWT from client credentials
       async function generateMcpToken(): Promise<string> {
-        const clientRes = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_client", params: {
+        const clientRes = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_client", callerType: "system", params: {
           name: "mcp-" + Date.now(),
           scopes: ["*"],
         }} as any) as any;
@@ -921,7 +921,7 @@ export function createAgentServer(
           // Check if user already exists
           console.log("[auth] Looking up slack user:", profile.sub, profile.email);
           const existing = await registry.call({
-            action: "execute_tool", path: "@users", tool: "resolve_identity",
+            action: "execute_tool", path: "@users", callerType: "system", tool: "resolve_identity",
             params: { provider: "slack", providerUserId: profile.sub },
           } as any) as any;
           console.log("[auth] resolve_identity:", JSON.stringify(existing));
@@ -969,27 +969,26 @@ export function createAgentServer(
           console.log("[setup] body:", JSON.stringify(body), "session:", JSON.stringify(session));
 
           // 1. Create tenant
-          const tenantRes = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_tenant", params: { name: body.tenant } } as any) as any;
+          const tenantRes = await registry.call({ action: "execute_tool", path: "@auth", callerType: "system", tool: "create_tenant", params: { name: body.tenant } } as any) as any;
           const tenantId = tenantRes?.result?.tenantId;
           if (!tenantId) return addCors(jsonResponse({ error: "Failed to create tenant" }, 400));
           console.log("[setup] tenant created:", tenantId);
 
           // 2. Create user
-          const userRes = await registry.call({ action: "execute_tool", path: "@users", tool: "create_user", params: { email: body.email, name: session?.name, tenantId } } as any) as any;
+          const userRes = await registry.call({ action: "execute_tool", path: "@users", callerType: "system", tool: "create_user", params: { email: body.email, name: session?.name, tenantId } } as any) as any;
           const userId = userRes?.result?.id || userRes?.result?.user?.id;
           console.log("[setup] user created:", userId);
 
           // 3. Link Slack identity
           if (session?.slackUserId && userId) {
             console.log("[setup] linking slack identity:", session.slackUserId);
-            const linkRes = await registry.call({ action: "execute_tool", path: "@users", tool: "link_identity", params: {
+            const linkRes = await registry.call({ action: "execute_tool", path: "@users", callerType: "system", tool: "link_identity", params: {
               userId,
               provider: "slack",
               providerUserId: session.slackUserId,
               email: body.email,
               name: session.name,
-              metadata: { slackTeamId: session.slackTeamId, slackTeamName: session.slackTeamName },
-            }} as any);
+              metadata:{ slackTeamId: session.slackTeamId, slackTeamName: session.slackTeamName }, callerType: "system" }} as any);
             console.log("[setup] link_identity result:", JSON.stringify(linkRes));
           }
 
