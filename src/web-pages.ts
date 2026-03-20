@@ -23,7 +23,8 @@ export function renderLoginPage(_baseUrl: string, slackEnabled: boolean): string
 <div class="page">
   <div class="card">
     <div class="logo"><span style="font-size:24px">\u2B21</span><h1>Agent Registry</h1></div>
-    <p class="sub">Connect your AI agents to any API. Set up integrations, manage credentials securely, and get an MCP endpoint for Claude, Cursor, and more.</p>
+    <p style="font-size:17px;font-weight:500;color:#1a1917;margin-bottom:8px">Connect your AI agents to any API.</p>
+    <p style="font-size:13px;color:#9c958e;line-height:1.5;margin-bottom:28px">Set up integrations, manage credentials securely, and get an MCP endpoint for Claude, Cursor, and more.</p>
     ${googleBtn}
     <p class="footer">By continuing, you agree to our terms of service.</p>
   </div>
@@ -72,11 +73,24 @@ document.getElementById('f').addEventListener('submit', async e => {
 
 export function renderDashboardPage(baseUrl: string, token: string): string {
   const mcpUrl = `${baseUrl}/mcp?token=${h(token)}`;
+  const redacted = `${baseUrl}/mcp?token=${'*'.repeat(12)}`;
   const claudeCmd = `claude mcp add agent-registry ${mcpUrl}`;
+  const redactedClaudeCmd = `claude mcp add agent-registry ${redacted}`;
   const desktopJson = JSON.stringify({ mcpServers: { "agent-registry": { url: mcpUrl } } }, null, 2);
-  const cpFn = `function cp(id){navigator.clipboard.writeText(document.getElementById(id).textContent);event.target.textContent='\u2713 Copied';setTimeout(()=>event.target.textContent='Copy',2000)}`;
+  const redactedDesktopJson = JSON.stringify({ mcpServers: { "agent-registry": { url: redacted } } }, null, 2);
 
-  return wrap("Dashboard — Agent Registry", `
+  const js = `
+var _v={mcp:${JSON.stringify(mcpUrl)},cc:${JSON.stringify(claudeCmd)},cd:${JSON.stringify(desktopJson)},cu:${JSON.stringify(mcpUrl)}};
+var _r=false;
+function cp(id){navigator.clipboard.writeText(_v[id]);event.target.textContent='\u2713 Copied';setTimeout(()=>event.target.textContent='Copy',2000)}
+function rv(){var el=document.getElementById('md');_r=!_r;el.textContent=_r?_v.mcp:_v.mcp.split('token=')[0]+'token=${'*'.repeat(12)}';document.getElementById('rb').textContent=_r?'Hide':'Reveal'}
+function st(n){document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.t===n));document.querySelectorAll('.tp').forEach(p=>p.classList.toggle('active',p.dataset.t===n))}
+`;
+
+  const extraCss = `.tabs{display:flex;gap:0;border-bottom:1px solid #e4ddd6;margin-bottom:16px}.tab{padding:8px 16px;}.tabs .tab:first-child{padding-left:0}.tab{padding:8px 16px;font-size:13px;font-weight:500;color:#9c958e;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}.tab:hover{color:#6b6560}.tab.active{color:#1a1917;border-bottom-color:#c4982a}.tp{display:none}.tp.active{display:block}.page{align-items:flex-start;padding-top:48px}.divider{border:none;border-top:1px solid #e4ddd6;margin:20px 0}`;
+
+  return wrap("Dashboard \u2014 Agent Registry", `
+<style>${extraCss}</style>
 <div class="page">
   <div class="dash">
     <header class="dh">
@@ -85,34 +99,35 @@ export function renderDashboardPage(baseUrl: string, token: string): string {
     </header>
 
     <section class="sec">
-      <h2>\uD83D\uDD17 MCP Endpoint</h2>
-      <p class="d">Use this URL to connect any MCP-compatible agent.</p>
+      <h2>MCP Endpoint</h2>
+      <p class="d">Connect any MCP-compatible agent with this URL.</p>
       <div class="cb">
-        <code id="mcp">${h(mcpUrl)}</code>
+        <code id="md">${h(redacted)}</code>
+        <button class="btn-copy" id="rb" onclick="rv()">Reveal</button>
         <button class="btn-copy" onclick="cp('mcp')">Copy</button>
       </div>
-    </section>
 
-    <section class="sec">
-      <h2>\uD83D\uDE80 Quick Setup</h2>
-      <div class="sg">
-        <div class="sc">
-          <h3>Claude Code</h3>
-          <div class="cbl"><code id="cc">${h(claudeCmd)}</code><button class="btn-copy" onclick="cp('cc')">Copy</button></div>
-        </div>
-        <div class="sc">
-          <h3>Claude Desktop</h3>
-          <p class="hint">Add to claude_desktop_config.json:</p>
-          <div class="cbl"><code id="cd">${h(desktopJson)}</code><button class="btn-copy" onclick="cp('cd')">Copy</button></div>
-        </div>
-        <div class="sc">
-          <h3>Cursor</h3>
-          <p class="hint">Settings \u2192 MCP \u2192 Add Server \u2192 paste URL</p>
-          <div class="cbl"><code id="cu">${h(mcpUrl)}</code><button class="btn-copy" onclick="cp('cu')">Copy</button></div>
-        </div>
+      
+
+      <div class="tabs">
+        <div class="tab active" data-t="cc" onclick="st('cc')">Claude Code</div>
+        <div class="tab" data-t="cd" onclick="st('cd')">Claude Desktop</div>
+        <div class="tab" data-t="cu" onclick="st('cu')">Cursor</div>
+      </div>
+      <div class="tp active" data-t="cc">
+        <p class="hint" style="margin-bottom:8px">Run in your terminal:</p>
+        <div class="cbl"><code>${h(redactedClaudeCmd)}</code><button class="btn-copy" onclick="cp('cc')">Copy</button></div>
+      </div>
+      <div class="tp" data-t="cd">
+        <p class="hint" style="margin-bottom:8px">Add to claude_desktop_config.json:</p>
+        <div class="cbl"><code>${h(redactedDesktopJson)}</code><button class="btn-copy" onclick="cp('cd')">Copy</button></div>
+      </div>
+      <div class="tp" data-t="cu">
+        <p class="hint" style="margin-bottom:8px">Settings \u2192 MCP \u2192 Add Server \u2192 paste URL:</p>
+        <div class="cbl"><code>${h(redacted)}</code><button class="btn-copy" onclick="cp('cu')">Copy</button></div>
       </div>
     </section>
   </div>
 </div>
-<script>${cpFn}</script>`);
+<script>${js}</script>`);
 }
