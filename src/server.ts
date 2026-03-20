@@ -33,7 +33,8 @@ import {
 import { verifyJwt } from "./jwt.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
-import { renderLoginPage, renderDashboardPage } from "./web-pages.js";
+import { renderLoginPage, renderDashboardPage, renderTenantPage } from "./web-pages.js";
+import { googleAuthUrl, exchangeGoogleCode, getGoogleProfile, type GoogleOAuthConfig } from "./google-oauth.js";
 
 // ============================================
 // Server Types
@@ -831,29 +832,82 @@ export function createAgentServer(
 
       // --- Web pages (plain HTML, served from same server) ---
       const htmlRes = (body: string) => addCors(new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8" } }));
+      const reqUrl = new URL(req.url);
+      const baseUrl = `${reqUrl.protocol}//${reqUrl.host}`;
+
+      // Google OAuth config from env
+      const googleConfig: GoogleOAuthConfig | null =
+        process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+          ? {
+              clientId: process.env.GOOGLE_CLIENT_ID,
+              clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+              redirectUri: `${baseUrl}/auth/google/callback`,
+            }
+          : null;
 
       if (path === "/" && req.method === "GET") {
-        const reqUrl = new URL(req.url);
-        const baseUrl = `${reqUrl.protocol}//${reqUrl.host}`;
-        return htmlRes(renderLoginPage(baseUrl));
+        return htmlRes(renderLoginPage(baseUrl, !!googleConfig));
       }
 
-      if (path === "/dashboard" && req.method === "GET") {
-        const reqUrl = new URL(req.url);
-        const baseUrl = `${reqUrl.protocol}//${reqUrl.host}`;
-        const token = reqUrl.searchParams.get("token") ?? "";
-        if (!token) return Response.redirect(`${baseUrl}/`, 302);
-        return htmlRes(renderDashboardPage(baseUrl, token));
+      // Start Google OAuth flow
+      if (path === "/auth/google" && req.method === "GET") {
+        if (!googleConfig) return htmlRes("<h1>Google OAuth not configured</h1><p>Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars.</p>");
+        return Response.redirect(googleAuthUrl(googleConfig), 302);
       }
 
-      if (path === "/login" && req.method === "POST") {
+      // Google OAuth callback
+      if (path === "/auth/google/callback" && req.method === "GET") {
+        if (!googleConfig) return htmlRes("<h1>Google OAuth not configured</h1>");
+        const code = reqUrl.searchParams.get("code");
+        const error = reqUrl.searchParams.get("error");
+        if (error || !code) return Response.redirect(`${baseUrl}/?error=${error || "no_code"}`, 302);
+
         try {
-          const body = await req.json() as { email?: string; tenant?: string };
+          const tokens = await exchangeGoogleCode(code, googleConfig);
+          const profile = await getGoogleProfile(tokens.access_token);
+          // Store email in a short-lived session cookie and redirect to tenant creation
+          const sessionData = Buffer.from(JSON.stringify({ email: profile.email, name: profile.name, picture: profile.picture })).toString("base64url");
+          return new Response(null, {
+            status: 302,
+            headers: {
+              Location: `${baseUrl}/setup`,
+              "Set-Cookie": `g_session=${sessionData}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`,
+            },
+          });
+        } catch (err: any) {
+          console.error("[google-oauth] callback error:", err);
+          return Response.redirect(`${baseUrl}/?error=oauth_failed`, 302);
+        }
+      }
+
+      // Tenant setup page (after Google auth)
+      if (path === "/setup" && req.method === "GET") {
+        const cookie = req.headers.get("Cookie") || "";
+        const match = cookie.match(/g_session=([^;]+)/);
+        if (!match) return Response.redirect(`${baseUrl}/`, 302);
+        try {
+          const session = JSON.parse(Buffer.from(match[1], "base64url").toString());
+          return htmlRes(renderTenantPage(baseUrl, session.email, session.name));
+        } catch {
+          return Response.redirect(`${baseUrl}/`, 302);
+        }
+      }
+
+      // Create tenant (POST from setup page)
+      if (path === "/setup" && req.method === "POST") {
+        try {
+          const body = await req.json() as { email?: string; tenant?: string; name?: string };
           const result = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_tenant", params: { name: body.tenant, email: body.email } } as any);
           return addCors(jsonResponse(result));
         } catch (err: any) {
           return addCors(jsonResponse({ error: err.message }, 400));
         }
+      }
+
+      if (path === "/dashboard" && req.method === "GET") {
+        const token = reqUrl.searchParams.get("token") ?? "";
+        if (!token) return Response.redirect(`${baseUrl}/`, 302);
+        return htmlRes(renderDashboardPage(baseUrl, token));
       }
 
       return addCors(
