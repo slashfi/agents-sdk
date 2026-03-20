@@ -14,8 +14,10 @@
  * - list_agents  → List registered agents and their tools
  *
  * Additional endpoints:
- * - POST /oauth/token → OAuth2 client_credentials (when @auth registered)
- * - GET /health       → Health check
+ * - POST /oauth/token             → OAuth2 client_credentials (when @auth registered)
+ * - GET  /oauth/callback          → Unified OAuth callback (provider from state)
+ * - GET  /integrations/callback/* → Legacy OAuth callback (provider from URL path)
+ * - GET  /health                  → Health check
  *
  * Auth Integration:
  * When an `@auth` agent is registered, the server automatically:
@@ -702,13 +704,8 @@ export function createAgentServer(
       }
 
 
-      // GET /integrations/callback/:provider - OAuth callback
-      if (path.startsWith("/integrations/callback/") && req.method === "GET") {
-        const provider = path.split("/integrations/callback/")[1]?.split("?")[0];
-        if (!provider) {
-          return addCors(jsonResponse({ error: "Missing provider" }, 400));
-        }
-
+      // ---- Shared OAuth callback handler ----
+      async function handleIntegrationOAuthCallback(provider: string, req: Request): Promise<Response> {
         const url = new URL(req.url);
         const code = url.searchParams.get("code");
         const state = url.searchParams.get("state");
@@ -726,7 +723,6 @@ export function createAgentServer(
           return addCors(jsonResponse({ error: "Missing authorization code" }, 400));
         }
 
-        // Call handle_oauth_callback tool on @integrations
         try {
           await registry.call({
             action: "execute_tool",
@@ -741,13 +737,19 @@ export function createAgentServer(
             },
           } as any);
 
-          // Parse redirect URL from state
+          // Parse redirect URL from state (base64-encoded JSON)
           let redirectUrl = "/";
           if (state) {
             try {
-              const parsed = JSON.parse(state);
+              const parsed = JSON.parse(atob(state));
               if (parsed.redirectUrl) redirectUrl = parsed.redirectUrl;
-            } catch {}
+            } catch {
+              // Fallback: try raw JSON for backward compat
+              try {
+                const parsed = JSON.parse(state);
+                if (parsed.redirectUrl) redirectUrl = parsed.redirectUrl;
+              } catch {}
+            }
           }
 
           const sep = redirectUrl.includes("?") ? "&" : "?";
@@ -758,6 +760,38 @@ export function createAgentServer(
             { status: 500, headers: { "Content-Type": "text/html", ...corsHeaders() } },
           );
         }
+      }
+
+      // GET /oauth/callback - Unified OAuth callback (provider from state param)
+      if (path === "/oauth/callback" && req.method === "GET") {
+        const url = new URL(req.url);
+        const state = url.searchParams.get("state");
+        let provider: string | undefined;
+        if (state) {
+          try {
+            const parsed = JSON.parse(atob(state));
+            provider = parsed.providerId;
+          } catch {
+            // Fallback: try raw JSON for backward compat
+            try {
+              const parsed = JSON.parse(state);
+              provider = parsed.providerId;
+            } catch {}
+          }
+        }
+        if (!provider) {
+          return addCors(jsonResponse({ error: "Missing provider in state param" }, 400));
+        }
+        return handleIntegrationOAuthCallback(provider, req);
+      }
+
+      // GET /integrations/callback/:provider - Legacy OAuth callback (provider from URL path)
+      if (path.startsWith("/integrations/callback/") && req.method === "GET") {
+        const provider = path.split("/integrations/callback/")[1]?.split("?")[0];
+        if (!provider) {
+          return addCors(jsonResponse({ error: "Missing provider" }, 400));
+        }
+        return handleIntegrationOAuthCallback(provider, req);
       }
 
 
