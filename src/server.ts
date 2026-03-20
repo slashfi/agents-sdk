@@ -107,6 +107,31 @@ interface ResolvedAuth {
 // Secrets Collection (one-time tokens)
 // ============================================
 
+
+function escHtml(s: string): string {
+  return s.replace(/&/g,"\&amp;").replace(/</g,"\&lt;").replace(/>/g,"\&gt;").replace(/"/g,"\&quot;");
+}
+
+function renderSecretForm(token: string, pending: PendingCollection, baseUrl: string): string {
+  const fields = pending.fields.map(f => `
+    <div class="field">
+      <label>${escHtml(f.name)}${f.secret ? ` <span class="badge">SECRET</span>` : ""}${f.required ? ` <span class="req">*</span>` : ""}</label>
+      ${f.description ? `<p class="desc">${escHtml(f.description)}</p>` : ""}
+      <input type="${f.secret ? "password" : "text"}" name="${escHtml(f.name)}" ${f.required ? "required" : ""} autocomplete="off" />
+    </div>`).join("");
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Secure Setup</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh;display:flex;align-items:center;justify-content:center}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:32px;max-width:480px;width:100%}.header{display:flex;align-items:center;gap:12px;margin-bottom:8px}.lock{font-size:24px}h1{font-size:20px;font-weight:600}.subtitle{color:#8b949e;font-size:14px;margin-bottom:24px}.shield{display:inline-flex;align-items:center;gap:4px;background:#1a2332;border:1px solid #1f6feb33;color:#58a6ff;font-size:12px;padding:2px 8px;border-radius:12px;margin-bottom:20px}label{display:block;font-size:14px;font-weight:500;margin-bottom:6px}.desc{font-size:12px;color:#8b949e;margin-bottom:4px}.badge{background:#3d1f00;color:#f0883e;font-size:10px;padding:1px 6px;border-radius:4px}.req{color:#f85149}input{width:100%;padding:10px 12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:14px;margin-bottom:16px;outline:none}input:focus{border-color:#58a6ff;box-shadow:0 0 0 3px #1f6feb33}button{width:100%;padding:12px;background:#238636;border:none;border-radius:6px;color:#fff;font-size:14px;font-weight:600;cursor:pointer}button:hover{background:#2ea043}button:disabled{opacity:.5;cursor:not-allowed}.footer{text-align:center;margin-top:16px;font-size:12px;color:#484f58}.error{background:#3d1418;border:1px solid #f8514966;color:#f85149;padding:10px 12px;border-radius:6px;font-size:13px;margin-bottom:16px;display:none}.ok{text-align:center;padding:40px 0}.ok .icon{font-size:48px;margin-bottom:12px}.ok h2{font-size:18px;margin-bottom:8px;color:#3fb950}.ok p{color:#8b949e;font-size:14px}.field{position:relative}</style></head><body>
+<div class="card" id="fc"><div class="header"><span class="lock">🔐</span><h1>${escHtml(pending.tool)} on ${escHtml(pending.agent)}</h1></div>
+<p class="subtitle">Enter credentials below. They are encrypted and stored securely — they never pass through the AI.</p>
+<div class="shield">🛡️ End-to-end encrypted</div><div id="err" class="error"></div>
+<form id="f">${fields}<button type="submit">Submit Securely</button></form>
+<p class="footer">Expires in 10 minutes</p></div>
+<div class="card ok" id="ok" style="display:none"><div class="icon">✅</div><h2>Done</h2><p>Credentials stored securely. You can close this window.</p></div>
+<script>document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();const b=e.target.querySelector("button");b.disabled=true;b.textContent="Submitting...";try{const fd=new FormData(e.target),vals=Object.fromEntries(fd.entries());const r=await fetch("${baseUrl}/secrets/collect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:"${token}",values:vals})});const d=await r.json();if(d.success){document.getElementById("fc").style.display="none";document.getElementById("ok").style.display="block";}else throw new Error(d.error?.message||JSON.stringify(d));}catch(err){const el=document.getElementById("err");el.textContent=err.message;el.style.display="block";b.disabled=false;b.textContent="Submit Securely";}});</script></body></html>`;
+}
+
 export interface PendingCollection {
   /** Partial params already provided by agent */
   params: Record<string, unknown>;
@@ -722,6 +747,23 @@ export function createAgentServer(
             { status: 500, headers: { "Content-Type": "text/html", ...corsHeaders() } },
           );
         }
+      }
+
+
+      // GET /secrets/form/:token - Serve hosted secrets form
+      if (path.startsWith("/secrets/form/") && req.method === "GET") {
+        const token = path.split("/").pop() ?? "";
+        const pending = pendingCollections.get(token);
+        if (!pending) {
+          return addCors(new Response("Invalid or expired form link", { status: 404 }));
+        }
+        if (Date.now() - pending.createdAt > 10 * 60 * 1000) {
+          pendingCollections.delete(token);
+          return addCors(new Response("Form link expired", { status: 410 }));
+        }
+        const reqUrl = new URL(req.url); const baseUrl = `${reqUrl.protocol}//${reqUrl.host}`;
+        const html = renderSecretForm(token, pending, baseUrl);
+        return addCors(new Response(html, { headers: { "Content-Type": "text/html" } }));
       }
 
       // POST /secrets/collect - Submit collected secrets and auto-forward to tool

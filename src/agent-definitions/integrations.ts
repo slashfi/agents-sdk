@@ -1178,18 +1178,9 @@ export function createIntegrationsAgent(
       const baseUrl = callbackBaseUrl?.replace(/\/integrations\/callback$/, "") ?? "";
 
       return {
-        formSpec: {
-          fields,
-          callbackUrl: `${baseUrl}/secrets/collect`,
-          callbackToken: token,
-          expiresIn: 600,
-          source: input.source ?? { type: "web" },
-          context: {
-            agent: input.agent,
-            tool: input.tool,
-            description: toolSchema.description,
-          },
-        },
+        url: `${baseUrl}/secrets/form/${token}`,
+        message: `Open this link to securely enter credentials for ${input.tool} on ${input.agent}. They will be encrypted and never pass through the AI.`,
+        expiresIn: 600,
       };
     },
   });
