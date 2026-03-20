@@ -8,6 +8,7 @@ import type {
   AgentConfig,
   AgentDefinition,
   AgentRuntime,
+  IntegrationMethods,
   JsonSchema,
   ToolContext,
   ToolDefinition,
@@ -112,6 +113,12 @@ export interface DefineAgentOptions<
 
   /** Explicit allowed callers */
   allowedCallers?: string[];
+
+  /**
+   * Integration method callbacks.
+   * Implement these when this agent acts as an integration.
+   */
+  integrationMethods?: IntegrationMethods;
 }
 
 /**
@@ -149,5 +156,6 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
     runtime: options.runtime,
     visibility: options.visibility,
     allowedCallers: options.allowedCallers,
+    integrationMethods: options.integrationMethods,
   };
 }

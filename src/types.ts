@@ -38,20 +38,39 @@ export type JsonSchema = {
  * Each agent handles its own setup through its own tools.
  */
 /**
- * Standard integration method names mapped to actual tool names.
- * Each integration agent implements these through its own tools.
+ * Standard result type for integration method callbacks.
+ */
+export interface IntegrationMethodResult {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+}
+
+/**
+ * Context passed to integration method callbacks.
+ * Extends ToolContext with the integration-specific info.
+ */
+export interface IntegrationMethodContext extends ToolContext {
+  /** The provider ID from the integration config */
+  provider: string;
+}
+
+/**
+ * Callback methods that integration agents implement.
+ * These provide a standard interface for @integrations to interact
+ * with any integration uniformly, regardless of internal tool schemas.
  */
 export interface IntegrationMethods {
   /** Configure/initialize the integration (e.g., add a DB connection, set API key) */
-  setup: string;
+  setup(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
   /** List configured instances (e.g., list DB connections, list repos) */
-  list: string;
+  list(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
   /** Establish connection or authenticate (e.g., test DB connectivity, OAuth flow) */
-  connect: string;
+  connect(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
   /** Get details of a specific instance */
-  get: string;
+  get(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
   /** Modify an existing configuration */
-  update: string;
+  update(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
 }
 
 export interface IntegrationConfig {
@@ -70,11 +89,7 @@ export interface IntegrationConfig {
   /** Brief description of what connecting this integration enables */
   description?: string;
 
-  /**
-   * Maps standard integration methods to this agent's tool names.
-   * @integrations uses these to dispatch calls uniformly.
-   */
-  methods: IntegrationMethods;
+
 }
 
 // ============================================
@@ -451,6 +466,13 @@ export interface AgentDefinition<TContext extends ToolContext = ToolContext> {
 
   /** Explicit list of callers allowed to invoke this agent */
   allowedCallers?: string[];
+
+  /**
+   * Integration method callbacks.
+   * When set alongside config.integration, this agent can be called
+   * by @integrations via standard methods (setup, list, connect, get, update).
+   */
+  integrationMethods?: IntegrationMethods;
 }
 
 // ============================================

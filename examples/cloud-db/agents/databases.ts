@@ -8,7 +8,7 @@
 
 import postgres from "postgres";
 import { defineAgent, defineTool } from "@slashfi/agents-sdk";
-import type { ToolContext } from "@slashfi/agents-sdk";
+import type { ToolContext, IntegrationMethodContext } from "@slashfi/agents-sdk";
 import { db, Connection } from "../db/schema.js";
 import { encrypt, decrypt, getEncryptionKey } from "../db/crypto.js";
 
@@ -327,13 +327,65 @@ For passwords and sensitive credentials, prefer using a secure link rather than 
       icon: "database",
       category: "infrastructure",
       description: "Connect PostgreSQL, CockroachDB, or Snowflake databases to query and manage them through your agent.",
-      methods: {
-        setup: "add_connection",
-        list: "list_connections",
-        connect: "test_connection",
-        get: "get_connection",
-        update: "update_connection",
-      },
+
+    },
+  },
+  integrationMethods: {
+    async setup(params: Record<string, unknown>, ctx: IntegrationMethodContext) {
+      try {
+        const result = await addConnection.execute(
+          { name: params.name as string, connection: params.connection as any },
+          ctx,
+        );
+        return { success: true, data: result };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async list(_params: Record<string, unknown>, ctx: IntegrationMethodContext) {
+      try {
+        const result = await listConnections.execute({}, ctx);
+        return { success: true, data: result };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async connect(params: Record<string, unknown>, ctx: IntegrationMethodContext) {
+      try {
+        const result = await testConnection.execute(
+          { connection_id: params.connection_id as string },
+          ctx,
+        );
+        return { success: true, data: result };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async get(params: Record<string, unknown>, ctx: IntegrationMethodContext) {
+      try {
+        const result = await getConnection.execute(
+          { connection_id: params.connection_id as string },
+          ctx,
+        );
+        return { success: true, data: result };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async update(params: Record<string, unknown>, ctx: IntegrationMethodContext) {
+      try {
+        const result = await updateConnection.execute(
+          {
+            connection_id: params.connection_id as string,
+            name: params.name as string | undefined,
+            connection: params.connection as Record<string, unknown> | undefined,
+          },
+          ctx,
+        );
+        return { success: true, data: result };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
     },
   },
   tools: [addConnection, listConnections, testConnection, queryConnection, getConnection, updateConnection, removeConnection],

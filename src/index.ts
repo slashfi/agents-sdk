@@ -83,6 +83,8 @@ export type {
   ToolSelectionContext,
   IntegrationConfig,
   IntegrationMethods,
+  IntegrationMethodResult,
+  IntegrationMethodContext,
   Visibility,
 } from "./types.js";
 
