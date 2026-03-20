@@ -853,6 +853,17 @@ export function createAgentServer(
           : null;
 
       if (path === "/" && req.method === "GET") {
+        // If user has a valid session, redirect to dashboard
+        const cookie = req.headers.get("Cookie") || "";
+        const match = cookie.match(/s_session=([^;]+)/);
+        if (match) {
+          try {
+            const session = JSON.parse(Buffer.from(match[1], "base64url").toString());
+            if (session.token) {
+              return Response.redirect(`${baseUrl}/dashboard`, 302);
+            }
+          } catch {}
+        }
         return htmlRes(renderLoginPage(baseUrl, !!slackConfig));
       }
 
@@ -876,26 +887,56 @@ export function createAgentServer(
           const teamName = profile["https://slack.com/team_name"] || "";
 
           // Check if user already exists via resolve_identity
+          console.log("[callback] Looking up slack user:", profile.sub, profile.email);
           const existing = await registry.call({
             action: "execute_tool",
             path: "@users",
             tool: "resolve_identity",
             params: { provider: "slack", providerUserId: profile.sub },
           } as any) as any;
+          console.log("[callback] resolve_identity result:", JSON.stringify(existing));
 
           if (existing?.result?.found && existing?.result?.user?.tenantId) {
-            // Existing user — go straight to dashboard
+            // Existing user — generate JWT
+            console.log("[callback] Existing user found, generating token...");
+            let mcpToken = "";
+            try {
+              const clientRes = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_client", params: {
+                name: (existing.result.user.name || "user") + "-" + Date.now(),
+                scopes: ["*"],
+              }} as any) as any;
+              console.log("[callback] create_client:", JSON.stringify(clientRes));
+              const cid = clientRes?.result?.clientId;
+              const csec = clientRes?.result?.clientSecret;
+              if (cid && csec) {
+                const tokenRes = await fetch(`http://localhost:${port}/oauth/token`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                  body: new URLSearchParams({ grant_type: "client_credentials", client_id: cid, client_secret: csec }),
+                });
+                const tokenData = await tokenRes.json() as any;
+                console.log("[callback] oauth/token response:", JSON.stringify(tokenData));
+                mcpToken = tokenData.access_token || "";
+              }
+            } catch (e: any) { console.error("[callback] token gen error:", e.message); }
+
+            if (!mcpToken) {
+              console.warn("[callback] JWT generation failed, falling back to tenantId");
+              mcpToken = existing.result.user.tenantId;
+            }
+
             const sessionData = Buffer.from(JSON.stringify({
               userId: existing.result.user.id,
               tenantId: existing.result.user.tenantId,
               email: existing.result.user.email,
               name: existing.result.user.name,
+              token: mcpToken,
             })).toString("base64url");
             return new Response(null, {
               status: 302,
               headers: {
-                Location: `${baseUrl}/dashboard?token=${existing.result.user.tenantId}`,
-                "Set-Cookie": `s_session=${sessionData}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+                Location: `${baseUrl}/dashboard`,
+                "Set-Cookie": `s_session=${sessionData}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
               },
             });
           }
@@ -1006,10 +1047,35 @@ export function createAgentServer(
         }
       }
 
+      if (path === "/logout" && req.method === "POST") {
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: `${baseUrl}/`,
+            "Set-Cookie": "s_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+          },
+        });
+      }
+
       if (path === "/dashboard" && req.method === "GET") {
-        const token = reqUrl.searchParams.get("token") ?? "";
+        let token = "";
+        const ck = req.headers.get("Cookie") || "";
+        const cm = ck.match(/s_session=([^;]+)/);
+        if (cm) {
+          try {
+            const s = JSON.parse(Buffer.from(cm[1], "base64url").toString());
+            token = s.token || "";
+          } catch {}
+        }
+        if (!token) token = reqUrl.searchParams.get("token") ?? "";
         if (!token) return Response.redirect(`${baseUrl}/`, 302);
-        return htmlRes(renderDashboardPage(baseUrl, token));
+        const sd = Buffer.from(JSON.stringify({ token })).toString("base64url");
+        return new Response(renderDashboardPage(baseUrl, token), {
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Set-Cookie": `s_session=${sd}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
+          },
+        });
       }
 
       return addCors(

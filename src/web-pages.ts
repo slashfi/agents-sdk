@@ -81,7 +81,7 @@ export function renderDashboardPage(baseUrl: string, token: string): string {
   <div class="dash">
     <header class="dh">
       <div class="logo"><span style="font-size:24px">\u2B21</span><h1>Agent Registry</h1></div>
-      <a href="/" class="btn btn-ghost">Logout</a>
+      <form method="POST" action="/logout" style="margin:0"><button type="submit" class="btn btn-ghost">Logout</button></form>
     </header>
 
     <section class="sec">
