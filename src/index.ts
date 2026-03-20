@@ -165,6 +165,10 @@ export type {
   TokenExchangeResult,
 } from "./agent-definitions/integrations.js";
 
+
+// Remote Registry
+export { createRemoteRegistryAgent } from "./agent-definitions/remote-registry.js";
+export type { RemoteRegistryAgentOptions } from "./agent-definitions/remote-registry.js";
 // Users
 export {
   createUsersAgent,
