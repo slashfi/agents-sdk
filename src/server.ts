@@ -737,13 +737,19 @@ export function createAgentServer(
             },
           } as any);
 
-          // Parse redirect URL from state
+          // Parse redirect URL from state (base64-encoded JSON)
           let redirectUrl = "/";
           if (state) {
             try {
-              const parsed = JSON.parse(state);
+              const parsed = JSON.parse(atob(state));
               if (parsed.redirectUrl) redirectUrl = parsed.redirectUrl;
-            } catch {}
+            } catch {
+              // Fallback: try raw JSON for backward compat
+              try {
+                const parsed = JSON.parse(state);
+                if (parsed.redirectUrl) redirectUrl = parsed.redirectUrl;
+              } catch {}
+            }
           }
 
           const sep = redirectUrl.includes("?") ? "&" : "?";
@@ -763,9 +769,15 @@ export function createAgentServer(
         let provider: string | undefined;
         if (state) {
           try {
-            const parsed = JSON.parse(state);
+            const parsed = JSON.parse(atob(state));
             provider = parsed.providerId;
-          } catch {}
+          } catch {
+            // Fallback: try raw JSON for backward compat
+            try {
+              const parsed = JSON.parse(state);
+              provider = parsed.providerId;
+            } catch {}
+          }
         }
         if (!provider) {
           return addCors(jsonResponse({ error: "Missing provider in state param" }, 400));

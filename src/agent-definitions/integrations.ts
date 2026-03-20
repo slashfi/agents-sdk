@@ -806,7 +806,7 @@ export function createIntegrationsAgent(
         redirect_uri: redirectUri,
         response_type: "code",
         ...(scopeStr ? { scope: scopeStr } : {}),
-        state: input.state ?? JSON.stringify({ userId, providerId: config.id, redirectUrl: input.redirectUrl ?? "/" }),
+        state: input.state ?? btoa(JSON.stringify({ userId, providerId: config.id, redirectUrl: input.redirectUrl ?? "/" })),
         ...(oauth.authUrlExtraParams ?? {}),
       });
 
@@ -1013,7 +1013,7 @@ export function createIntegrationsAgent(
       let userId = ctx.callerId;
       if (input.state) {
         try {
-          const parsed = JSON.parse(input.state);
+          const parsed = JSON.parse(atob(input.state));
           if (parsed.userId) userId = parsed.userId;
         } catch {}
       }
