@@ -6,13 +6,15 @@ import {
   createSecretsAgent,
   createIntegrationsAgent,
   createUsersAgent,
+  createDatabasesAgent,
+  buildPgUrl,
 } from "@slashfi/agents-sdk";
 import { connectDb } from "./db/schema.js";
 import { createPostgresAuthStore } from "./db/store.js";
 import { createPostgresSecretStore } from "./db/secret-store.js";
 import { createPostgresIntegrationStore } from "./db/integration-store.js";
 import { createPostgresUserStore } from "./db/user-store.js";
-import { dbConnectionsAgent } from "./agents/db-connections.js";
+import { createPostgresDatabaseStore } from "./db/database-store.js";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) { console.error("ERROR: DATABASE_URL is required"); process.exit(1); }
@@ -32,6 +34,7 @@ console.log("[db] Connected.");
 const secretStore = createPostgresSecretStore(client, process.env.ENCRYPTION_KEY!);
 const integrationStore = createPostgresIntegrationStore(client, process.env.ENCRYPTION_KEY!);
 const userStore = createPostgresUserStore(client, process.env.ENCRYPTION_KEY!);
+const databaseStore = createPostgresDatabaseStore(client, process.env.ENCRYPTION_KEY!);
 
 // Registry
 const registry = createAgentRegistry();
@@ -59,8 +62,36 @@ registry.register(createIntegrationsAgent({
 // @users — user accounts + identity linking
 registry.register(createUsersAgent({ store: userStore }));
 
-// @db-connections — database connection management
-registry.register(dbConnectionsAgent);
+// @databases — database connection management
+registry.register(createDatabasesAgent({
+  store: databaseStore,
+  queryExecutor: async (type, config, sql) => {
+    if (type === "postgres" || type === "cockroachdb") {
+      const pgClient = postgres(buildPgUrl(config));
+      try {
+        const result = await pgClient.unsafe(sql);
+        return { rows: [...result], rowCount: result.length };
+      } finally {
+        await pgClient.end();
+      }
+    }
+    throw new Error(`Query not supported for ${type}`);
+  },
+  connectionTester: async (type, config) => {
+    if (type === "postgres" || type === "cockroachdb") {
+      const pgClient = postgres(buildPgUrl(config));
+      try {
+        await pgClient`SELECT 1 as ok`;
+        return { success: true, message: "Connection successful" };
+      } catch (err) {
+        return { success: false, message: `Failed: ${err instanceof Error ? err.message : String(err)}` };
+      } finally {
+        await pgClient.end();
+      }
+    }
+    return { success: false, message: `Test not supported for ${type}` };
+  },
+}));
 
 // Server
 const server = createAgentServer(registry, {

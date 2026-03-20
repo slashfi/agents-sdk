@@ -87,7 +87,7 @@ function rv(){var el=document.getElementById('md');_r=!_r;el.textContent=_r?_v.m
 function st(n){document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.t===n));document.querySelectorAll('.tp').forEach(p=>p.classList.toggle('active',p.dataset.t===n))}
 `;
 
-  const extraCss = `.tabs{display:flex;gap:0;border-bottom:1px solid #e4ddd6;margin-bottom:16px}.tab{padding:8px 16px;}.tabs .tab:first-child{padding-left:0}.tab{padding:8px 16px;font-size:13px;font-weight:500;color:#9c958e;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}.tab:hover{color:#6b6560}.tab.active{color:#1a1917;border-bottom-color:#c4982a}.tp{display:none}.tp.active{display:block}.page{align-items:flex-start;padding-top:48px}.divider{border:none;border-top:1px solid #e4ddd6;margin:20px 0}`;
+  const extraCss = `.tabs{margin-top:12px;display:flex;gap:0;border-bottom:1px solid #e4ddd6;margin-bottom:16px}.tab{padding:8px 16px;}.tabs .tab:first-child{padding-left:0}.tab{padding:8px 16px;font-size:13px;font-weight:500;color:#9c958e;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}.tab:hover{color:#6b6560}.tab.active{color:#1a1917;border-bottom-color:#c4982a}.tp{display:none}.tp.active{display:block}.page{align-items:flex-start;padding-top:48px}.divider{border:none;border-top:1px solid #e4ddd6;margin:20px 0}`;
 
   return wrap("Dashboard \u2014 Agent Registry", `
 <style>${extraCss}</style>
