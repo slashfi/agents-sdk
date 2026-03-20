@@ -71,7 +71,7 @@ document.getElementById('f').addEventListener('submit', async e => {
 </script>`);
 }
 
-export function renderDashboardPage(baseUrl: string, token: string): string {
+export function renderDashboardPage(baseUrl: string, token: string, session?: { name?: string; email?: string; tenantName?: string }): string {
   const mcpUrl = `${baseUrl}/mcp?token=${h(token)}`;
   const redacted = `${baseUrl}/mcp?token=${'*'.repeat(12)}`;
   const claudeCmd = `claude mcp add agent-registry ${mcpUrl}`;
@@ -95,7 +95,10 @@ function st(n){document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('
   <div class="dash">
     <header class="dh">
       <div class="logo"><span style="font-size:24px">\u2B21</span><h1>Agent Registry</h1></div>
-      <form method="POST" action="/logout" style="margin:0"><button type="submit" class="btn btn-ghost">Logout</button></form>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span style="font-size:13px;color:#6b6560">${h(session?.tenantName || session?.name || '')}</span>
+        <form method="POST" action="/logout" style="margin:0"><button type="submit" class="btn btn-ghost">Logout</button></form>
+      </div>
     </header>
 
     <section class="sec">
@@ -125,6 +128,48 @@ function st(n){document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('
       <div class="tp" data-t="cu">
         <p class="hint" style="margin-bottom:8px">Settings \u2192 MCP \u2192 Add Server \u2192 paste URL:</p>
         <div class="cbl"><code>${h(redacted)}</code><button class="btn-copy" onclick="cp('cu')">Copy</button></div>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2>Integrations</h2>
+      <p class="d">Connect services to make them available to your agents.</p>
+      <div style="display:grid;gap:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:#f4f3f1;border:1px solid #e4ddd6;border-radius:8px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <svg width="20" height="20" viewBox="0 0 54 54" xmlns="http://www.w3.org/2000/svg"><path d="M19.712.133a5.381 5.381 0 0 0-5.376 5.387 5.381 5.381 0 0 0 5.376 5.386h5.376V5.52A5.381 5.381 0 0 0 19.712.133m0 14.365H5.376A5.381 5.381 0 0 0 0 19.884a5.381 5.381 0 0 0 5.376 5.387h14.336a5.381 5.381 0 0 0 5.376-5.387 5.381 5.381 0 0 0-5.376-5.386" fill="#36C5F0"/><path d="M53.76 19.884a5.381 5.381 0 0 0-5.376-5.386 5.381 5.381 0 0 0-5.376 5.386v5.387h5.376a5.381 5.381 0 0 0 5.376-5.387m-14.336 0V5.52A5.381 5.381 0 0 0 34.048.133a5.381 5.381 0 0 0-5.376 5.387v14.364a5.381 5.381 0 0 0 5.376 5.387 5.381 5.381 0 0 0 5.376-5.387" fill="#2EB67D"/><path d="M34.048 54a5.381 5.381 0 0 0 5.376-5.387 5.381 5.381 0 0 0-5.376-5.386h-5.376v5.386A5.381 5.381 0 0 0 34.048 54m0-14.365h14.336a5.381 5.381 0 0 0 5.376-5.386 5.381 5.381 0 0 0-5.376-5.387H34.048a5.381 5.381 0 0 0-5.376 5.387 5.381 5.381 0 0 0 5.376 5.386" fill="#ECB22E"/><path d="M0 34.249a5.381 5.381 0 0 0 5.376 5.386 5.381 5.381 0 0 0 5.376-5.386v-5.387H5.376A5.381 5.381 0 0 0 0 34.25m14.336 0v14.364A5.381 5.381 0 0 0 19.712 54a5.381 5.381 0 0 0 5.376-5.387V34.25a5.381 5.381 0 0 0-5.376-5.387 5.381 5.381 0 0 0-5.376 5.387" fill="#E01E5A"/></svg>
+            <div><div style="font-size:14px;font-weight:500">Slack</div><div style="font-size:12px;color:#9c958e">Connected</div></div>
+          </div>
+          <span style="font-size:12px;color:#2d7a3a;background:#f0f9f1;padding:2px 8px;border-radius:4px;font-weight:500">Connected</span>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:#fff;border:1px solid #e4ddd6;border-radius:8px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.115 2.504.337 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z" fill="#1a1917"/></svg>
+            <div><div style="font-size:14px;font-weight:500">GitHub</div><div style="font-size:12px;color:#9c958e">Code repositories</div></div>
+          </div>
+          <button class="btn-copy" style="font-weight:500">Connect</button>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:#fff;border:1px solid #e4ddd6;border-radius:8px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 6h16M4 12h16M4 18h16" stroke="#9c958e" stroke-width="2" stroke-linecap="round"/></svg>
+            <div><div style="font-size:14px;font-weight:500">Databases</div><div style="font-size:12px;color:#9c958e">PostgreSQL, MySQL, CockroachDB</div></div>
+          </div>
+          <button class="btn-copy" style="font-weight:500">Connect</button>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:#fff;border:1px solid #e4ddd6;border-radius:8px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="#9c958e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div><div style="font-size:14px;font-weight:500">Linear</div><div style="font-size:12px;color:#9c958e">Issue tracking</div></div>
+          </div>
+          <button class="btn-copy" style="font-weight:500">Connect</button>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:#fff;border:1px solid #e4ddd6;border-radius:8px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 4h16v16H4V4z" stroke="#9c958e" stroke-width="2"/><path d="M9 9h6v6H9V9z" fill="#9c958e"/></svg>
+            <div><div style="font-size:14px;font-weight:500">Notion</div><div style="font-size:12px;color:#9c958e">Docs and databases</div></div>
+          </div>
+          <button class="btn-copy" style="font-weight:500">Connect</button>
+        </div>
       </div>
     </section>
   </div>

@@ -1,5 +1,5 @@
 /**
- * @db-connections Agent
+ * @databases Agent
  *
  * Manages database connections (Postgres, CockroachDB, Snowflake).
  * Connections are scoped to the authenticated client (owner_id = JWT sub).
@@ -242,8 +242,8 @@ function buildPgUrl(config: Record<string, unknown>): string {
 // Agent Definition
 // ============================================
 
-export const dbConnectionsAgent = defineAgent({
-  path: "@db-connections",
+export const databasesAgent = defineAgent({
+  path: "@databases",
   entrypoint: `Database connections agent. Manages connections to PostgreSQL, CockroachDB, and Snowflake databases.
 
 To add a connection, collect from the user:
@@ -254,8 +254,16 @@ To add a connection, collect from the user:
 
 For passwords and sensitive credentials, prefer using a secure link rather than having the user paste them directly.`,
   config: {
-    name: "db-connections",
+    name: "databases",
     description: "Manage database connections - connect Postgres, CockroachDB, and Snowflake databases",
+    integration: {
+      provider: "databases",
+      displayName: "Databases",
+      icon: "database",
+      category: "infrastructure",
+      description: "Connect PostgreSQL, CockroachDB, or Snowflake databases to query and manage them through your agent.",
+    },
   },
   tools: [addConnection, listConnections, testConnection, queryConnection, removeConnection],
+  visibility: "public",
 });

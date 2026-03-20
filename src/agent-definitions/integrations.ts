@@ -1075,7 +1075,7 @@ export function createIntegrationsAgent(
     inputSchema: {
       type: "object" as const,
       properties: {
-        agent: { type: "string", description: "Target agent path (e.g. '@db-connections')" },
+        agent: { type: "string", description: "Target agent path (e.g. '@databases')" },
         tool: { type: "string", description: "Target tool name (e.g. 'add_connection')" },
         params: { type: "object", description: "Partial params already collected" },
         registry: { type: "string", description: "Remote registry URL. Omit for local." },

@@ -81,6 +81,7 @@ export type {
   ToolDefinition,
   ToolSchema,
   ToolSelectionContext,
+  IntegrationConfig,
   Visibility,
 } from "./types.js";
 

@@ -510,6 +510,7 @@ export function createAgentServer(
             name: agent.config?.name,
             description: agent.config?.description,
             supportedActions: agent.config?.supportedActions,
+            integration: agent.config?.integration || null,
             tools: agent.tools
               .filter((t) => {
                 const tv = t.visibility ?? "internal";
@@ -685,6 +686,7 @@ export function createAgentServer(
               name: agent.config?.name,
               description: agent.config?.description,
               supportedActions: agent.config?.supportedActions,
+              integration: agent.config?.integration || null,
               tools: agent.tools
                 .filter((t) => {
                   const tv = t.visibility ?? "internal";
@@ -1022,7 +1024,7 @@ export function createAgentServer(
 
         // Persist token in cookie
         const sessData = Buffer.from(JSON.stringify({ ...session, token })).toString("base64url");
-        return new Response(renderDashboardPage(baseUrl, token), {
+        return new Response(renderDashboardPage(baseUrl, token, session || undefined), {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
             "Set-Cookie": `s_session=${sessData}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,

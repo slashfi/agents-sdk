@@ -12,7 +12,7 @@ import { createPostgresAuthStore } from "./db/store.js";
 import { createPostgresSecretStore } from "./db/secret-store.js";
 import { createPostgresIntegrationStore } from "./db/integration-store.js";
 import { createPostgresUserStore } from "./db/user-store.js";
-import { dbConnectionsAgent } from "./agents/db-connections.js";
+import { databasesAgent } from "./agents/databases.js";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) { console.error("ERROR: DATABASE_URL is required"); process.exit(1); }
@@ -59,8 +59,8 @@ registry.register(createIntegrationsAgent({
 // @users — user accounts + identity linking
 registry.register(createUsersAgent({ store: userStore }));
 
-// @db-connections — database connection management
-registry.register(dbConnectionsAgent);
+// @databases — database connection management
+registry.register(databasesAgent);
 
 // Server
 const server = createAgentServer(registry, {

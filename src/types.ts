@@ -23,6 +23,37 @@ export type JsonSchema = {
   [key: string]: unknown;
 };
 
+
+// ============================================
+// Integration Config
+// ============================================
+
+/**
+ * Integration configuration for agents that act as integrations.
+ * When set on an agent's config, the agent is discoverable as an
+ * integration by the registry and the @integrations agent.
+ *
+ * This is how "each integration = its own agent" works:
+ * any agent can declare itself as an integration by setting this field.
+ * Each agent handles its own setup through its own tools.
+ */
+export interface IntegrationConfig {
+  /** Provider identifier (e.g., "databases", "slack", "github") */
+  provider: string;
+
+  /** Display name shown in dashboards and listings */
+  displayName: string;
+
+  /** Icon identifier or URL */
+  icon?: string;
+
+  /** Category for grouping (e.g., "infrastructure", "communication", "developer") */
+  category?: string;
+
+  /** Brief description of what connecting this integration enables */
+  description?: string;
+}
+
 // ============================================
 // Agent Configuration
 // ============================================
@@ -63,6 +94,13 @@ export interface AgentConfig {
     temperature?: number;
     [key: string]: unknown;
   };
+
+  /**
+   * Integration config. When set, this agent is discoverable as an integration.
+   * Any agent can opt-in by providing this field.
+   * @see IntegrationConfig
+   */
+  integration?: IntegrationConfig;
 
   /** Additional configuration */
   [key: string]: unknown;
