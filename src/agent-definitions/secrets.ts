@@ -20,13 +20,42 @@ import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
  * Pluggable secret storage backend.
  * Stores encrypted values, resolves refs.
  */
+/**
+ * Scope for multi-tenant secret isolation.
+ * When provided, secrets are partitioned by tenant/instance.
+ */
+export interface SecretScope {
+  tenantId: string;
+  instanceKey?: string;
+}
+
 export interface SecretStore {
   /** Store a secret. Returns the secret ID (without prefix). */
-  store(value: string, ownerId: string): Promise<string>;
+  store(value: string, ownerId: string, scope?: SecretScope): Promise<string>;
+
   /** Resolve a secret ID to its decrypted value. */
-  resolve(id: string, ownerId: string): Promise<string | null>;
+  resolve(id: string, ownerId: string, scope?: SecretScope): Promise<string | null>;
+
   /** Delete a secret. */
-  delete(id: string, ownerId: string): Promise<boolean>;
+  delete(id: string, ownerId: string, scope?: SecretScope): Promise<boolean>;
+
+  /**
+   * Store multiple secrets in a single operation.
+   * Returns an array of secret IDs in the same order as the input values.
+   */
+  storeBatch?(values: string[], ownerId: string, scope?: SecretScope): Promise<string[]>;
+
+  /**
+   * Associate a secret with an entity (e.g., a provider config, a connection).
+   * Enables lookup of secrets by entity rather than by ID.
+   */
+  associate?(secretId: string, entityType: string, entityId: string, scope?: SecretScope): Promise<void>;
+
+  /**
+   * Resolve secrets associated with an entity.
+   * Returns all secret IDs linked to the given entity.
+   */
+  resolveByEntity?(entityType: string, entityId: string, scope?: SecretScope): Promise<string[]>;
 }
 
 // ============================================
@@ -61,26 +90,52 @@ function randomSecretId(): string {
 
 export function createInMemorySecretStore(encryptionKey: string): SecretStore {
   const secrets = new Map<string, { encrypted: string; ownerId: string }>();
+  const associations = new Map<string, string[]>(); // "entityType:entityId" -> secretIds
 
   return {
-    async store(value, ownerId) {
+    async store(value, ownerId, _scope?) {
       const id = randomSecretId();
       const encrypted = await encryptSecret(value, encryptionKey);
       secrets.set(id, { encrypted, ownerId });
       return id;
     },
 
-    async resolve(id, ownerId) {
+    async resolve(id, ownerId, _scope?) {
       const entry = secrets.get(id);
       if (!entry || entry.ownerId !== ownerId) return null;
       return decryptSecret(entry.encrypted, encryptionKey);
     },
 
-    async delete(id, ownerId) {
+    async delete(id, ownerId, _scope?) {
       const entry = secrets.get(id);
       if (!entry || entry.ownerId !== ownerId) return false;
       secrets.delete(id);
       return true;
+    },
+
+    async storeBatch(values, ownerId, _scope?) {
+      const ids: string[] = [];
+      for (const value of values) {
+        const id = randomSecretId();
+        const encrypted = await encryptSecret(value, encryptionKey);
+        secrets.set(id, { encrypted, ownerId });
+        ids.push(id);
+      }
+      return ids;
+    },
+
+    async associate(secretId, entityType, entityId, _scope?) {
+      const key = `${entityType}:${entityId}`;
+      const existing = associations.get(key) ?? [];
+      if (!existing.includes(secretId)) {
+        existing.push(secretId);
+        associations.set(key, existing);
+      }
+    },
+
+    async resolveByEntity(entityType, entityId, _scope?) {
+      const key = `${entityType}:${entityId}`;
+      return associations.get(key) ?? [];
     },
   };
 }

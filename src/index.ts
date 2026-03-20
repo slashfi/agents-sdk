@@ -125,6 +125,7 @@ export {
   processSecretParams,
 } from "./agent-definitions/secrets.js";
 export type {
+  SecretScope,
   SecretStore,
   SecretsAgentOptions,
 } from "./agent-definitions/secrets.js";
