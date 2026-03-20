@@ -14,6 +14,7 @@
  * - list_agents  → List registered agents and their tools
  *
  * Additional endpoints:
+ * - GET /             → Registry description (markdown, for AI agent discovery)
  * - POST /oauth/token → OAuth2 client_credentials (when @auth registered)
  * - GET /health       → Health check
  *
@@ -509,12 +510,222 @@ export function createAgentServer(
   }
 
   // ──────────────────────────────────────────
+  // Registry markdown (GET /)
+  // ──────────────────────────────────────────
+
+  function generateRegistryMarkdown(auth: ResolvedAuth | null): string {
+    const agents = registry.list();
+    const visible = agents.filter((agent) => canSeeAgent(agent, auth));
+    const hasAuth = !!authConfig;
+
+    const md: string[] = [];
+    md.push(`# ${serverName}`);
+    md.push("");
+    md.push(
+      "This is an agent registry powered by [@slashfi/agents-sdk](https://github.com/slashfi/agents-sdk).",
+    );
+    md.push("");
+    md.push("## Protocol");
+    md.push("");
+    md.push(
+      "This server speaks [MCP](https://modelcontextprotocol.io/) (JSON-RPC) over HTTP.",
+    );
+    md.push("");
+    md.push("| Endpoint | Method | Description |");
+    md.push("|----------|--------|-------------|");
+    md.push("| `/` | `GET` | This page (plaintext markdown) |");
+    md.push("| `/` | `POST` | MCP JSON-RPC endpoint |");
+    md.push("| `/mcp` | `POST` | MCP JSON-RPC endpoint (alias) |");
+    md.push("| `/list` | `GET` | List agents and tools (JSON) |");
+    md.push("| `/health` | `GET` | Health check |");
+    if (hasAuth) {
+      md.push("| `/oauth/token` | `POST` | OAuth2 token endpoint |");
+    }
+    md.push("");
+
+    // Auth section
+    if (hasAuth) {
+      const authAgent = registry.get("@auth");
+      const hasRegister = authAgent?.tools.some((t) => t.name === "register");
+
+      md.push("## Authentication");
+      md.push("");
+      md.push(
+        "This registry requires authentication for most operations. It uses OAuth2 client\\_credentials.",
+      );
+      md.push("");
+
+      if (hasRegister) {
+        md.push("### 1. Register a client");
+        md.push("");
+        md.push("```json");
+        md.push("POST /");
+        md.push("Content-Type: application/json");
+        md.push("");
+        md.push("{");
+        md.push('  "jsonrpc": "2.0",');
+        md.push('  "id": 1,');
+        md.push('  "method": "tools/call",');
+        md.push('  "params": {');
+        md.push('    "name": "call_agent",');
+        md.push('    "arguments": {');
+        md.push('      "request": {');
+        md.push('        "action": "execute_tool",');
+        md.push('        "path": "@auth",');
+        md.push('        "tool": "register",');
+        md.push('        "params": { "name": "my-agent" }');
+        md.push("      }");
+        md.push("    }");
+        md.push("  }");
+        md.push("}");
+        md.push("```");
+        md.push("");
+        md.push("This returns a `clientId` and `clientSecret`.");
+        md.push("");
+        md.push("### 2. Exchange credentials for a token");
+      } else {
+        md.push(
+          "This is a closed registry \u2014 credentials are provisioned by an administrator.",
+        );
+        md.push("");
+        md.push("### Exchange credentials for a token");
+      }
+      md.push("");
+      md.push("```");
+      md.push("POST /oauth/token");
+      md.push("Content-Type: application/x-www-form-urlencoded");
+      md.push("");
+      md.push(
+        "grant_type=client_credentials&client_id=YOUR_CLIENT_ID&client_secret=YOUR_CLIENT_SECRET",
+      );
+      md.push("```");
+      md.push("");
+      md.push(
+        "This returns an `access_token` (JWT). Include it on subsequent requests:",
+      );
+      md.push("");
+      md.push("```");
+      md.push("Authorization: Bearer <access_token>");
+      md.push("```");
+      md.push("");
+    } else {
+      md.push("## Authentication");
+      md.push("");
+      md.push("This registry does not require authentication.");
+      md.push("");
+    }
+
+    // Agents section
+    md.push("## Agents");
+    md.push("");
+    if (visible.length === 0) {
+      md.push(
+        "No agents are publicly visible. Authenticate to see more.",
+      );
+      md.push("");
+    } else {
+      for (const agent of visible) {
+        const desc = agent.config?.description;
+        md.push(`### ${agent.path}`);
+        if (desc) {
+          md.push("");
+          md.push(desc);
+        }
+        md.push("");
+
+        // Show tools visible to this caller
+        const visibleTools = agent.tools.filter((t) => {
+          const tv = t.visibility ?? "internal";
+          if (auth?.isRoot) return true;
+          if (tv === "public") return true;
+          if (tv === "internal" && auth) return true;
+          return false;
+        });
+
+        if (visibleTools.length > 0) {
+          md.push("| Tool | Description |");
+          md.push("|------|-------------|");
+          for (const tool of visibleTools) {
+            const toolDesc = (tool.description || "")
+              .replace(/\|/g, "\\|")
+              .replace(/\n/g, " ");
+            md.push(`| \`${tool.name}\` | ${toolDesc} |`);
+          }
+          md.push("");
+        } else {
+          md.push(
+            "_No tools visible. Authenticate to see available tools._",
+          );
+          md.push("");
+        }
+      }
+    }
+
+    // Calling tools section
+    md.push("## Calling a Tool");
+    md.push("");
+    md.push("Send a JSON-RPC request to `POST /`:");
+    md.push("");
+    md.push("```json");
+    md.push("{");
+    md.push('  "jsonrpc": "2.0",');
+    md.push('  "id": 1,');
+    md.push('  "method": "tools/call",');
+    md.push('  "params": {');
+    md.push('    "name": "call_agent",');
+    md.push('    "arguments": {');
+    md.push('      "request": {');
+    md.push('        "action": "execute_tool",');
+    md.push('        "path": "@agent-path",');
+    md.push('        "tool": "tool-name",');
+    md.push('        "params": { }');
+    md.push("      }");
+    md.push("    }");
+    md.push("  }");
+    md.push("}");
+    md.push("```");
+    md.push("");
+    md.push("To inspect a tool's input schema before calling it:");
+    md.push("");
+    md.push("```json");
+    md.push("{");
+    md.push('  "jsonrpc": "2.0",');
+    md.push('  "id": 1,');
+    md.push('  "method": "tools/call",');
+    md.push('  "params": {');
+    md.push('    "name": "call_agent",');
+    md.push('    "arguments": {');
+    md.push('      "request": {');
+    md.push('        "action": "describe_tools",');
+    md.push('        "path": "@agent-path"');
+    md.push("      }");
+    md.push("    }");
+    md.push("  }");
+    md.push("}");
+    md.push("```");
+    md.push("");
+
+    return md.join("\n");
+  }
+
+  // ──────────────────────────────────────────
   // HTTP request handler
   // ─��────────────────────────────────────────
 
   async function fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname.replace(basePath, "") || "/";
+
+    // Registry description: GET /
+    if (path === "/" && req.method === "GET") {
+      const auth = authConfig ? await resolveAuth(req, authConfig) : null;
+      const md = generateRegistryMarkdown(auth);
+      const headers: Record<string, string> = {
+        "Content-Type": "text/plain; charset=utf-8",
+      };
+      if (cors) Object.assign(headers, corsHeaders());
+      return new Response(md, { status: 200, headers });
+    }
 
     // CORS preflight
     if (cors && req.method === "OPTIONS") {
@@ -604,6 +815,7 @@ export function createAgentServer(
       serverUrl = `http://${hostname}:${port}${basePath}`;
 
       console.log(`Agent server running at ${serverUrl}`);
+      console.log(`  GET  /     - Registry description (markdown)`);
       console.log(`  POST /     - MCP JSON-RPC endpoint`);
       console.log(`  POST /mcp  - MCP JSON-RPC endpoint (alias)`);
       console.log(`  GET  /health - Health check`);
