@@ -966,10 +966,10 @@ export function createAgentServer(
       // Tenant setup page (after Google auth)
       if (path === "/setup" && req.method === "GET") {
         const cookie = req.headers.get("Cookie") || "";
-        const match = cookie.match(/s_session=([^;]+)/);
-        if (!match) return Response.redirect(`${baseUrl}/`, 302);
+        const cookieMatch = cookie.match(/s_session=([^;]+)/);
+        if (!cookieMatch) return Response.redirect(`${baseUrl}/`, 302);
         try {
-          const session = JSON.parse(Buffer.from(match[1], "base64url").toString());
+          const session = JSON.parse(Buffer.from(cookieMatch[1], "base64url").toString());
           return htmlRes(renderTenantPage(baseUrl, session.email, session.name));
         } catch {
           return Response.redirect(`${baseUrl}/`, 302);
@@ -980,6 +980,8 @@ export function createAgentServer(
       if (path === "/setup" && req.method === "POST") {
         try {
           const body = await req.json() as { email?: string; tenant?: string; name?: string };
+          console.log("[setup] POST /setup body:", JSON.stringify(body));
+          console.log("[setup] cookies:", req.headers.get("Cookie"));
           
           // 1. Create tenant
           const tenantResult = await registry.call({ action: "execute_tool", path: "@auth", tool: "create_tenant", params: { name: body.tenant } } as any) as any;
@@ -988,25 +990,27 @@ export function createAgentServer(
 
           // 2. Create user
           const userResult = await registry.call({ action: "execute_tool", path: "@users", tool: "create_user", params: { email: body.email, name: body.name, tenantId } } as any) as any;
+          console.log("[setup] create_user result:", JSON.stringify(userResult));
           const userId = userResult?.result?.id;
+          console.log("[setup] userId:", userId, "match:", !!cookieMatch);
 
           // 3. Link Slack identity
           const cookie = req.headers.get("Cookie") || "";
-          const match = cookie.match(/s_session=([^;]+)/);
-          if (match && userId) {
-            try {
-              const session = JSON.parse(Buffer.from(match[1], "base64url").toString());
+          const cmatch2 = cookie.match(/s_session=([^;]+)/);
+          if (cmatch2 && userId) {
+            const session = JSON.parse(Buffer.from(cookieMatch[1], "base64url").toString());
+              console.log("[setup] linking identity for userId:", userId, "slackUserId:", session.slackUserId);
               if (session.slackUserId) {
-                await registry.call({ action: "execute_tool", path: "@users", tool: "link_identity", params: {
+                const linkRes = await registry.call({ action: "execute_tool", path: "@users", tool: "link_identity", params: {
                   userId,
                   provider: "slack",
                   providerUserId: session.slackUserId,
                   email: body.email,
                   name: body.name,
-                  meta: { slackTeamId: session.slackTeamId, slackTeamName: session.slackTeamName },
+                  metadata: { slackTeamId: session.slackTeamId, slackTeamName: session.slackTeamName },
                 }} as any);
+                console.log("[setup] link_identity result:", JSON.stringify(linkRes));
               }
-            } catch (e) { console.error("[setup] link identity error:", e); }
           }
 
           // 4. Create auth client (API key) for MCP access
