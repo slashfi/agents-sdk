@@ -81,6 +81,10 @@ export type {
   ToolDefinition,
   ToolSchema,
   ToolSelectionContext,
+  IntegrationConfig,
+  IntegrationMethods,
+  IntegrationMethodResult,
+  IntegrationMethodContext,
   Visibility,
 } from "./types.js";
 
@@ -97,7 +101,10 @@ export { createAgentServer } from "./server.js";
 export type { AgentServer, AgentServerOptions } from "./server.js";
 
 // Auth
-export { createAuthAgent, createMemoryAuthStore } from "./agent-definitions/auth.js";
+export {
+  createAuthAgent,
+  createMemoryAuthStore,
+} from "./agent-definitions/auth.js";
 export type {
   AuthClient,
   AuthIdentity,
@@ -111,8 +118,16 @@ export { buildAgents } from "./build.js";
 export type { BuildAgentsOptions, BuildAgentsResult } from "./build.js";
 
 // Secrets
-export { createSecretsAgent, createInMemorySecretStore, isSecretRef, processSecretParams } from "./agent-definitions/secrets.js";
-export type { SecretStore, SecretsAgentOptions } from "./agent-definitions/secrets.js";
+export {
+  createSecretsAgent,
+  createInMemorySecretStore,
+  isSecretRef,
+  processSecretParams,
+} from "./agent-definitions/secrets.js";
+export type {
+  SecretStore,
+  SecretsAgentOptions,
+} from "./agent-definitions/secrets.js";
 
 // Crypto
 export { encryptSecret, decryptSecret } from "./crypto.js";
@@ -122,3 +137,41 @@ export { signJwt, verifyJwt } from "./jwt.js";
 export type { JwtPayload } from "./jwt.js";
 
 // Postgres Secret Store
+
+// Integrations
+export {
+  createIntegrationsAgent,
+  createInMemoryIntegrationStore,
+  exchangeCodeForToken,
+  refreshAccessToken,
+  getDefaultTokenBodyParams,
+  getDefaultRefreshBodyParams,
+} from "./agent-definitions/integrations.js";
+export type {
+  IntegrationStore,
+  IntegrationsAgentOptions,
+  ProviderConfig,
+  IntegrationOAuthConfig,
+  IntegrationApiConfig,
+  IntegrationApiAuthConfig,
+  IntegrationCallInput,
+  RestCallInput,
+  GraphqlCallInput,
+  AgentRegistryCallInput,
+  UserConnection,
+  ClientAuthMethod,
+  TokenContentType,
+  TokenExchangeResult,
+} from "./agent-definitions/integrations.js";
+
+// Users
+export {
+  createUsersAgent,
+  createInMemoryUserStore,
+} from "./agent-definitions/users.js";
+export type {
+  User,
+  UserIdentity,
+  UserStore,
+  UsersAgentOptions,
+} from "./agent-definitions/users.js";

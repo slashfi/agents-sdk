@@ -8,7 +8,7 @@
  * - AES-256-GCM encryption via crypto.ts
  */
 
-import { encryptSecret, decryptSecret } from "../crypto.js";
+import { decryptSecret, encryptSecret } from "../crypto.js";
 import { defineAgent, defineTool } from "../define.js";
 import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 
@@ -50,7 +50,8 @@ export function makeSecretRef(id: string): string {
 function randomSecretId(): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
   let id = "";
-  for (let i = 0; i < 24; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  for (let i = 0; i < 24; i++)
+    id += chars[Math.floor(Math.random() * chars.length)];
   return id;
 }
 
@@ -104,7 +105,8 @@ export function createSecretsAgent(
 
   const storeSecretTool = defineTool({
     name: "store",
-    description: "Store secret values. Returns secret:<id> refs for each value.",
+    description:
+      "Store secret values. Returns secret:<id> refs for each value.",
     visibility: "internal" as const,
     inputSchema: {
       type: "object" as const,
@@ -117,7 +119,10 @@ export function createSecretsAgent(
       },
       required: ["secrets"],
     },
-    execute: async (input: { secrets: Record<string, string> }, ctx: ToolContext) => {
+    execute: async (
+      input: { secrets: Record<string, string> },
+      ctx: ToolContext,
+    ) => {
       const ownerId = ctx.callerId ?? "anonymous";
       const refs: Record<string, string> = {};
       for (const [key, value] of Object.entries(input.secrets)) {
@@ -127,27 +132,6 @@ export function createSecretsAgent(
         }
       }
       return { refs };
-    },
-  });
-
-  const resolveSecretTool = defineTool({
-    name: "resolve",
-    description: "Resolve a secret ref to its value. Only accessible to the owner.",
-    visibility: "internal" as const,
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        ref: { type: "string" as const, description: "Secret ref (secret:xxx)" },
-      },
-      required: ["ref"],
-    },
-    execute: async (input: { ref: string }, ctx: ToolContext) => {
-      const ownerId = ctx.callerId ?? "anonymous";
-      const id = getSecretId(input.ref);
-      const value = await store.resolve(id, ownerId);
-      if (!value) throw new Error("Secret not found or unauthorized");
-      // Return wrapped so actor can handle it
-      return { value: { $agent_type: "secret", value } };
     },
   });
 
@@ -172,13 +156,17 @@ export function createSecretsAgent(
 
   return defineAgent({
     path: "@secrets",
-    entrypoint: "Secret storage agent. Stores, resolves, and manages encrypted secrets.",
+    entrypoint:
+      "Secret storage agent. Stores, resolves, and manages encrypted secrets.",
     config: {
       name: "Secrets",
       description: "Encrypted secret storage and management",
       visibility: "internal",
     },
-    tools: [storeSecretTool, resolveSecretTool, revokeSecretTool] as ToolDefinition<ToolContext>[],
+    tools: [
+      storeSecretTool,
+      revokeSecretTool,
+    ] as ToolDefinition<ToolContext>[],
   });
 }
 
@@ -200,7 +188,10 @@ export async function processSecretParams(
   schema: { properties?: Record<string, SchemaProperty> } | undefined,
   secretStore: SecretStore,
   ownerId: string,
-): Promise<{ resolved: Record<string, unknown>; redacted: Record<string, unknown> }> {
+): Promise<{
+  resolved: Record<string, unknown>;
+  redacted: Record<string, unknown>;
+}> {
   const resolved: Record<string, unknown> = { ...params };
   const redacted: Record<string, unknown> = { ...params };
 
@@ -210,7 +201,11 @@ export async function processSecretParams(
     const value = params[key];
     if (value === undefined || value === null) continue;
 
-    if (schemaProp.type === "object" && typeof value === "object" && !Array.isArray(value)) {
+    if (
+      schemaProp.type === "object" &&
+      typeof value === "object" &&
+      !Array.isArray(value)
+    ) {
       const nested = await processSecretParams(
         value as Record<string, unknown>,
         schemaProp,
@@ -239,7 +234,6 @@ export async function processSecretParams(
       const id = await secretStore.store(value, ownerId);
       resolved[key] = value;
       redacted[key] = makeSecretRef(id);
-      continue;
     }
   }
 

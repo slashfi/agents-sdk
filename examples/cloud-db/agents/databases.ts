@@ -1,5 +1,5 @@
 /**
- * @db-connections Agent
+ * @databases Agent
  *
  * Manages database connections (Postgres, CockroachDB, Snowflake).
  * Connections are scoped to the authenticated client (owner_id = JWT sub).
@@ -8,7 +8,7 @@
 
 import postgres from "postgres";
 import { defineAgent, defineTool } from "@slashfi/agents-sdk";
-import type { ToolContext } from "@slashfi/agents-sdk";
+import type { ToolContext, IntegrationMethodContext } from "@slashfi/agents-sdk";
 import { db, Connection } from "../db/schema.js";
 import { encrypt, decrypt, getEncryptionKey } from "../db/crypto.js";
 
@@ -129,7 +129,7 @@ const testConnection = defineTool({
   },
   execute: async (input: { connection_id: string }, ctx: ToolContext) => {
     const ownerId = getOwnerId(ctx);
-    const conn = await getConnection(input.connection_id, ownerId);
+    const conn = await getConnectionHelper(input.connection_id, ownerId);
 
     try {
       if (conn.type === "postgres" || conn.type === "cockroachdb") {
@@ -160,7 +160,7 @@ const queryConnection = defineTool({
   },
   execute: async (input: { connection_id: string; sql: string }, ctx: ToolContext) => {
     const ownerId = getOwnerId(ctx);
-    const conn = await getConnection(input.connection_id, ownerId);
+    const conn = await getConnectionHelper(input.connection_id, ownerId);
 
     if (conn.type === "postgres" || conn.type === "cockroachdb") {
       const client = postgres(buildPgUrl(conn.config));
@@ -177,6 +177,71 @@ const queryConnection = defineTool({
   },
 });
 
+
+const getConnection = defineTool({
+  name: "get_connection",
+  description: "Get details of a specific database connection",
+  inputSchema: {
+    type: "object",
+    properties: {
+      connection_id: { type: "string", description: "Connection ID" },
+    },
+    required: ["connection_id"],
+  },
+  execute: async (input: { connection_id: string }, ctx: ToolContext) => {
+    const ownerId = getOwnerId(ctx);
+    const conn = await getConnectionHelper(input.connection_id, ownerId);
+    return { id: input.connection_id, name: conn.name, type: conn.type, status: "active" };
+  },
+});
+
+const updateConnection = defineTool({
+  name: "update_connection",
+  description: "Update an existing database connection's name or config",
+  inputSchema: {
+    type: "object",
+    properties: {
+      connection_id: { type: "string", description: "Connection ID to update" },
+      name: { type: "string", description: "New friendly name (optional)" },
+      connection: {
+        type: "object",
+        description: "Updated connection config fields (merged with existing)",
+        properties: {
+          host: { type: "string" },
+          port: { type: "number" },
+          user: { type: "string" },
+          password: { type: "string", secret: true },
+          database: { type: "string" },
+          ssl: { type: "boolean" },
+          account: { type: "string" },
+          warehouse: { type: "string" },
+          schema: { type: "string" },
+          role: { type: "string" },
+        },
+      },
+    },
+    required: ["connection_id"],
+  },
+  execute: async (input: { connection_id: string; name?: string; connection?: Record<string, unknown> }, ctx: ToolContext) => {
+    const ownerId = getOwnerId(ctx);
+    const existing = await getConnectionHelper(input.connection_id, ownerId);
+    const newName = input.name ?? existing.name;
+    const newConfig = input.connection
+      ? { ...existing.config, ...input.connection }
+      : existing.config;
+
+    // Re-encrypt and store
+    const configEncrypted = await encrypt(JSON.stringify(newConfig), getEncryptionKey());
+    const pgClient = (globalThis as any).__pgClient;
+    await pgClient.unsafe(
+      "UPDATE connections SET name = $1, config_encrypted = $2, updated_at = $3 WHERE id = $4 AND owner_id = $5",
+      [newName, configEncrypted, new Date(), input.connection_id, ownerId],
+    );
+
+    return { id: input.connection_id, name: newName, type: existing.type, updated: true };
+  },
+});
+
 const removeConnection = defineTool({
   name: "remove_connection",
   description: "Remove a registered database connection",
@@ -190,7 +255,7 @@ const removeConnection = defineTool({
   execute: async (input: { connection_id: string }, ctx: ToolContext) => {
     const ownerId = getOwnerId(ctx);
     // Verify ownership
-    await getConnection(input.connection_id, ownerId);
+    await getConnectionHelper(input.connection_id, ownerId);
     // QB doesn't support DELETE, use raw SQL
     const pgClient = (globalThis as any).__pgClient;
     await pgClient.unsafe(
@@ -211,7 +276,7 @@ interface DecodedConnection {
   config: Record<string, unknown>;
 }
 
-async function getConnection(id: string, ownerId: string): Promise<DecodedConnection> {
+async function getConnectionHelper(id: string, ownerId: string): Promise<DecodedConnection> {
   const result = await db.from(Connection)
     .where((_) => _.connection.id.equals(id))
     .limit(1);
@@ -242,8 +307,8 @@ function buildPgUrl(config: Record<string, unknown>): string {
 // Agent Definition
 // ============================================
 
-export const dbConnectionsAgent = defineAgent({
-  path: "@db-connections",
+export const databasesAgent = defineAgent({
+  path: "@databases",
   entrypoint: `Database connections agent. Manages connections to PostgreSQL, CockroachDB, and Snowflake databases.
 
 To add a connection, collect from the user:
@@ -254,8 +319,75 @@ To add a connection, collect from the user:
 
 For passwords and sensitive credentials, prefer using a secure link rather than having the user paste them directly.`,
   config: {
-    name: "db-connections",
+    name: "databases",
     description: "Manage database connections - connect Postgres, CockroachDB, and Snowflake databases",
+    integration: {
+      provider: "databases",
+      displayName: "Databases",
+      icon: "database",
+      category: "infrastructure",
+      description: "Connect PostgreSQL, CockroachDB, or Snowflake databases to query and manage them through your agent.",
+
+    },
   },
-  tools: [addConnection, listConnections, testConnection, queryConnection, removeConnection],
+  integrationMethods: {
+    async setup(params: Record<string, unknown>, ctx: IntegrationMethodContext) {
+      try {
+        const result = await addConnection.execute(
+          { name: params.name as string, connection: params.connection as any },
+          ctx,
+        );
+        return { success: true, data: result };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async list(_params: Record<string, unknown>, ctx: IntegrationMethodContext) {
+      try {
+        const result = await listConnections.execute({}, ctx);
+        return { success: true, data: result };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async connect(params: Record<string, unknown>, ctx: IntegrationMethodContext) {
+      try {
+        const result = await testConnection.execute(
+          { connection_id: params.connection_id as string },
+          ctx,
+        );
+        return { success: true, data: result };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async get(params: Record<string, unknown>, ctx: IntegrationMethodContext) {
+      try {
+        const result = await getConnection.execute(
+          { connection_id: params.connection_id as string },
+          ctx,
+        );
+        return { success: true, data: result };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async update(params: Record<string, unknown>, ctx: IntegrationMethodContext) {
+      try {
+        const result = await updateConnection.execute(
+          {
+            connection_id: params.connection_id as string,
+            name: params.name as string | undefined,
+            connection: params.connection as Record<string, unknown> | undefined,
+          },
+          ctx,
+        );
+        return { success: true, data: result };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  },
+  tools: [addConnection, listConnections, testConnection, queryConnection, getConnection, updateConnection, removeConnection],
+  visibility: "public",
 });

@@ -208,6 +208,160 @@ export class SecretAssociation {
     .defaultAlias("secret_assoc")
     .build();
 }
+
+// ============================================
+// Integration Providers Table
+// ============================================
+
+interface ProviderConfigSchema {
+  id: string;
+  name: string;
+  type: string;
+  scope: string;
+  config_json: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export class ProviderConfigEntity {
+  static readonly Table = db
+    .buildTableFromSchema<ProviderConfigSchema>()
+    .columns({
+      id: (_) => _.varchar(),
+      name: (_) => _.varchar(),
+      type: (_) => _.varchar(),
+      scope: (_) => _.varchar(),
+      config_json: (_) => _.varchar(),
+      created_at: (_) => _.timestamp(),
+      updated_at: (_) => _.timestamp(),
+    })
+    .primaryKey("id")
+    .tableName("provider_configs")
+    .introspect({ columns: "enforce" })
+    .defaultAlias("provider_config")
+    .build();
+}
+
+// ============================================
+// User Connections Table (OAuth tokens)
+// ============================================
+
+interface UserConnectionSchema {
+  user_id: string;
+  provider_id: string;
+  access_token_encrypted: string;
+  refresh_token_encrypted: string | undefined;
+  expires_at: Date | undefined;
+  token_type: string | undefined;
+  scopes: string | undefined;
+  connected_at: Date;
+  updated_at: Date;
+}
+
+export class UserConnectionEntity {
+  static readonly Table = db
+    .buildTableFromSchema<UserConnectionSchema>()
+    .columns({
+      user_id: (_) => _.varchar(),
+      provider_id: (_) => _.varchar(),
+      access_token_encrypted: (_) => _.varchar(),
+      refresh_token_encrypted: (_) => _.varchar({ isNullable: true }),
+      expires_at: (_) => _.timestamp({ isNullable: true }),
+      token_type: (_) => _.varchar({ isNullable: true }),
+      scopes: (_) => _.varchar({ isNullable: true }),
+      connected_at: (_) => _.timestamp(),
+      updated_at: (_) => _.timestamp(),
+    })
+    .primaryKey("user_id", "provider_id")
+    .tableName("user_connections")
+    .introspect({ columns: "enforce" })
+    .defaultAlias("user_conn")
+    .build();
+}
+
+// ============================================
+// Users Table
+// ============================================
+
+interface UserSchema {
+  id: string;
+  tenant_id: string;
+  email: string | undefined;
+  name: string | undefined;
+  avatar_url: string | undefined;
+  metadata_json: string | undefined;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export class UserEntity {
+  static readonly Table = db
+    .buildTableFromSchema<UserSchema>()
+    .columns({
+      id: (_) => _.varchar(),
+      tenant_id: (_) => _.varchar(),
+      email: (_) => _.varchar({ isNullable: true }),
+      name: (_) => _.varchar({ isNullable: true }),
+      avatar_url: (_) => _.varchar({ isNullable: true }),
+      metadata_json: (_) => _.varchar({ isNullable: true }),
+      created_at: (_) => _.timestamp(),
+      updated_at: (_) => _.timestamp(),
+    })
+    .primaryKey("id")
+    .tableName("users")
+    .introspect({ columns: "enforce" })
+    .defaultAlias("usr")
+    .build();
+}
+
+// ============================================
+// User Identities Table
+// ============================================
+
+interface UserIdentitySchema {
+  id: string;
+  user_id: string;
+  provider: string;
+  provider_user_id: string;
+  email: string | undefined;
+  name: string | undefined;
+  avatar_url: string | undefined;
+  access_token_encrypted: string | undefined;
+  refresh_token_encrypted: string | undefined;
+  expires_at: Date | undefined;
+  token_type: string | undefined;
+  scopes: string | undefined;
+  metadata_json: string | undefined;
+  connected_at: Date;
+  updated_at: Date;
+}
+
+export class UserIdentityEntity {
+  static readonly Table = db
+    .buildTableFromSchema<UserIdentitySchema>()
+    .columns({
+      id: (_) => _.varchar(),
+      user_id: (_) => _.varchar(),
+      provider: (_) => _.varchar(),
+      provider_user_id: (_) => _.varchar(),
+      email: (_) => _.varchar({ isNullable: true }),
+      name: (_) => _.varchar({ isNullable: true }),
+      avatar_url: (_) => _.varchar({ isNullable: true }),
+      access_token_encrypted: (_) => _.varchar({ isNullable: true }),
+      refresh_token_encrypted: (_) => _.varchar({ isNullable: true }),
+      expires_at: (_) => _.timestamp({ isNullable: true }),
+      token_type: (_) => _.varchar({ isNullable: true }),
+      scopes: (_) => _.varchar({ isNullable: true }),
+      metadata_json: (_) => _.varchar({ isNullable: true }),
+      connected_at: (_) => _.timestamp(),
+      updated_at: (_) => _.timestamp(),
+    })
+    .primaryKey("id")
+    .tableName("user_identities")
+    .introspect({ columns: "enforce" })
+    .defaultAlias("user_ident")
+    .build();
+}
 // Register all entities
 db.register(Tenant);
 db.register(AuthClient);
@@ -215,3 +369,7 @@ db.register(AuthToken);
 db.register(Connection);
 db.register(Secret);
 db.register(SecretAssociation);
+db.register(ProviderConfigEntity);
+db.register(UserConnectionEntity);
+db.register(UserEntity);
+db.register(UserIdentityEntity);

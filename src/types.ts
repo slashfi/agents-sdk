@@ -23,6 +23,75 @@ export type JsonSchema = {
   [key: string]: unknown;
 };
 
+
+// ============================================
+// Integration Config
+// ============================================
+
+/**
+ * Integration configuration for agents that act as integrations.
+ * When set on an agent's config, the agent is discoverable as an
+ * integration by the registry and the @integrations agent.
+ *
+ * This is how "each integration = its own agent" works:
+ * any agent can declare itself as an integration by setting this field.
+ * Each agent handles its own setup through its own tools.
+ */
+/**
+ * Standard result type for integration method callbacks.
+ */
+export interface IntegrationMethodResult {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+}
+
+/**
+ * Context passed to integration method callbacks.
+ * Extends ToolContext with the integration-specific info.
+ */
+export interface IntegrationMethodContext extends ToolContext {
+  /** The provider ID from the integration config */
+  provider: string;
+}
+
+/**
+ * Callback methods that integration agents implement.
+ * These provide a standard interface for @integrations to interact
+ * with any integration uniformly, regardless of internal tool schemas.
+ */
+export interface IntegrationMethods {
+  /** Configure/initialize the integration (e.g., add a DB connection, set API key) */
+  setup(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
+  /** List configured instances (e.g., list DB connections, list repos) */
+  list(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
+  /** Establish connection or authenticate (e.g., test DB connectivity, OAuth flow) */
+  connect(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
+  /** Get details of a specific instance */
+  get(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
+  /** Modify an existing configuration */
+  update(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
+}
+
+export interface IntegrationConfig {
+  /** Provider identifier (e.g., "databases", "slack", "github") */
+  provider: string;
+
+  /** Display name shown in dashboards and listings */
+  displayName: string;
+
+  /** Icon identifier or URL */
+  icon?: string;
+
+  /** Category for grouping (e.g., "infrastructure", "communication", "developer") */
+  category?: string;
+
+  /** Brief description of what connecting this integration enables */
+  description?: string;
+
+
+}
+
 // ============================================
 // Agent Configuration
 // ============================================
@@ -63,6 +132,13 @@ export interface AgentConfig {
     temperature?: number;
     [key: string]: unknown;
   };
+
+  /**
+   * Integration config. When set, this agent is discoverable as an integration.
+   * Any agent can opt-in by providing this field.
+   * @see IntegrationConfig
+   */
+  integration?: IntegrationConfig;
 
   /** Additional configuration */
   [key: string]: unknown;
@@ -390,6 +466,13 @@ export interface AgentDefinition<TContext extends ToolContext = ToolContext> {
 
   /** Explicit list of callers allowed to invoke this agent */
   allowedCallers?: string[];
+
+  /**
+   * Integration method callbacks.
+   * When set alongside config.integration, this agent can be called
+   * by @integrations via standard methods (setup, list, connect, get, update).
+   */
+  integrationMethods?: IntegrationMethods;
 }
 
 // ============================================
