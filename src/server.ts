@@ -767,21 +767,30 @@ export function createAgentServer(
         const url = new URL(req.url);
         const state = url.searchParams.get("state");
         let provider: string | undefined;
+        let stateType: string | undefined;
         if (state) {
           try {
             const parsed = JSON.parse(atob(state));
             provider = parsed.providerId;
+            stateType = parsed.type;
           } catch {
             // Fallback: try raw JSON for backward compat
             try {
               const parsed = JSON.parse(state);
               provider = parsed.providerId;
+              stateType = parsed.type;
             } catch {}
           }
         }
         if (!provider) {
           return addCors(jsonResponse({ error: "Missing provider in state param" }, 400));
         }
+
+        // Slack sign-in auth flow (not an integration OAuth)
+        if (provider === "slack" && stateType === "auth") {
+          return handleSlackAuthCallback(req);
+        }
+
         return handleIntegrationOAuthCallback(provider, req);
       }
 
@@ -883,7 +892,7 @@ export function createAgentServer(
           ? {
               clientId: process.env.SLACK_CLIENT_ID,
               clientSecret: process.env.SLACK_CLIENT_SECRET,
-              redirectUri: `${baseUrl}/auth/slack/callback`,
+              redirectUri: `${baseUrl}/oauth/callback`,
             }
           : null;
 
@@ -928,24 +937,12 @@ export function createAgentServer(
         });
       }
 
-      // GET / — login page (or redirect to dashboard if session exists)
-      if (path === "/" && req.method === "GET") {
-        const session = getSession(req);
-        if (session?.token) return Response.redirect(`${baseUrl}/dashboard`, 302);
-        return htmlRes(renderLoginPage(baseUrl, !!slackConfig));
-      }
-
-      // GET /auth/slack — start Slack OAuth
-      if (path === "/auth/slack" && req.method === "GET") {
+      // Slack sign-in callback handler
+      async function handleSlackAuthCallback(cbReq: Request): Promise<Response> {
         if (!slackConfig) return htmlRes("<h1>Slack OAuth not configured</h1>");
-        return Response.redirect(slackAuthUrl(slackConfig), 302);
-      }
-
-      // GET /auth/slack/callback — handle Slack OAuth callback
-      if (path === "/auth/slack/callback" && req.method === "GET") {
-        if (!slackConfig) return htmlRes("<h1>Slack OAuth not configured</h1>");
-        const authCode = reqUrl.searchParams.get("code");
-        const authError = reqUrl.searchParams.get("error");
+        const cbUrl = new URL(cbReq.url);
+        const authCode = cbUrl.searchParams.get("code");
+        const authError = cbUrl.searchParams.get("error");
         if (authError || !authCode) return Response.redirect(`${baseUrl}/?error=${authError || "no_code"}`, 302);
 
         try {
@@ -1037,6 +1034,25 @@ export function createAgentServer(
           console.error("[auth] callback error:", err);
           return Response.redirect(`${baseUrl}/?error=oauth_failed`, 302);
         }
+      }
+
+      // GET / — login page (or redirect to dashboard if session exists)
+      if (path === "/" && req.method === "GET") {
+        const session = getSession(req);
+        if (session?.token) return Response.redirect(`${baseUrl}/dashboard`, 302);
+        return htmlRes(renderLoginPage(baseUrl, !!slackConfig));
+      }
+
+      // GET /auth/slack — start Slack OAuth
+      if (path === "/auth/slack" && req.method === "GET") {
+        if (!slackConfig) return htmlRes("<h1>Slack OAuth not configured</h1>");
+        const slackState = btoa(JSON.stringify({ providerId: "slack", type: "auth" }));
+        return Response.redirect(slackAuthUrl(slackConfig, slackState), 302);
+      }
+
+      // GET /auth/slack/callback — backward compat, redirect to unified /oauth/callback
+      if (path === "/auth/slack/callback" && req.method === "GET") {
+        return handleSlackAuthCallback(req);
       }
 
       // GET /setup — tenant creation page

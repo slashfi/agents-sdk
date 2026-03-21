@@ -3,7 +3,7 @@
  *
  * Flow:
  *   GET /auth/slack → redirect to Slack authorize
- *   GET /auth/slack/callback → exchange code, get user identity
+ *   GET /oauth/callback → exchange code, get user identity (unified callback)
  */
 
 export interface SlackOAuthConfig {
