@@ -78,89 +78,269 @@ app.get("/", (c) => {
     <html>
     <head>
       <title>Sample Agent Registry</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
-        body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; }
-        h1 { font-size: 24px; }
-        .agent { background: #f5f5f5; border-radius: 8px; padding: 16px; margin: 12px 0; }
-        .agent h3 { margin: 0 0 4px; font-size: 16px; }
-        .agent p { margin: 0; color: #666; font-size: 14px; }
-        .tools { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
-        .tool { background: #e0e0e0; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-family: monospace; }
-        code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
-        pre { background: #1a1a1a; color: #e0e0e0; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+          background: #f9f8f7;
+          color: #1a1917;
+          -webkit-font-smoothing: antialiased;
+          min-height: 100vh;
+        }
+        .page {
+          max-width: 720px;
+          margin: 0 auto;
+          padding: 48px 24px;
+        }
+        .header {
+          margin-bottom: 32px;
+        }
+        .header h1 {
+          font-size: 22px;
+          font-weight: 600;
+          letter-spacing: -0.02em;
+          margin-bottom: 6px;
+        }
+        .header p {
+          font-size: 14px;
+          color: #6b6560;
+          line-height: 1.5;
+        }
+        .section {
+          margin-bottom: 24px;
+        }
+        .section-title {
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: #9c958e;
+          margin-bottom: 10px;
+        }
+        .card {
+          background: #fff;
+          border: 1px solid #d9d6ce;
+          border-radius: 8px;
+          box-shadow: 0 1px 1px rgba(21,20,15,.05);
+          overflow: hidden;
+        }
+        .agent-row {
+          padding: 14px 16px;
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+          transition: background 0.1s;
+        }
+        .agent-row:not(:last-child) {
+          border-bottom: 1px solid #eae7e2;
+        }
+        .agent-row:hover {
+          background: #faf9f7;
+        }
+        .agent-info h3 {
+          font-size: 14px;
+          font-weight: 600;
+          margin-bottom: 2px;
+        }
+        .agent-info p {
+          font-size: 13px;
+          color: #6b6560;
+        }
+        .agent-meta {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-shrink: 0;
+        }
+        .badge {
+          font-size: 11px;
+          font-weight: 500;
+          padding: 2px 8px;
+          border-radius: 10px;
+          white-space: nowrap;
+        }
+        .badge-public {
+          background: #e8f5e8;
+          color: #2d6a2e;
+        }
+        .badge-internal {
+          background: #fef3e2;
+          color: #8a6318;
+        }
+        .tools {
+          display: flex;
+          gap: 4px;
+          flex-wrap: wrap;
+          margin-top: 6px;
+        }
+        .tool {
+          font-size: 11px;
+          font-family: 'SF Mono', Menlo, monospace;
+          color: #6b6560;
+          background: #f4f3f1;
+          border: 1px solid #eae7e2;
+          padding: 1px 7px;
+          border-radius: 4px;
+        }
+        .code-card {
+          background: #1a1917;
+          border: 1px solid #2d2c28;
+          border-radius: 8px;
+          overflow: hidden;
+        }
+        .code-header {
+          padding: 10px 14px;
+          font-size: 12px;
+          font-weight: 500;
+          color: #9c958e;
+          background: #222120;
+          border-bottom: 1px solid #2d2c28;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .code-body {
+          padding: 14px;
+          font-family: 'SF Mono', Menlo, monospace;
+          font-size: 12.5px;
+          line-height: 1.6;
+          color: #c9c5bf;
+          overflow-x: auto;
+          white-space: pre;
+        }
+        .code-body .comment { color: #6b6560; }
+        .code-body .string { color: #c4982a; }
+        .code-body .key { color: #a8c4a0; }
+        code {
+          font-family: 'SF Mono', Menlo, monospace;
+          font-size: 12.5px;
+          background: #f4f3f1;
+          border: 1px solid #eae7e2;
+          padding: 1px 5px;
+          border-radius: 4px;
+        }
+        .endpoints {
+          display: grid;
+          gap: 1px;
+          background: #eae7e2;
+          border: 1px solid #d9d6ce;
+          border-radius: 8px;
+          overflow: hidden;
+        }
+        .endpoint {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 14px;
+          background: #fff;
+          font-size: 13px;
+        }
+        .method {
+          font-family: 'SF Mono', Menlo, monospace;
+          font-size: 11px;
+          font-weight: 600;
+          padding: 2px 6px;
+          border-radius: 4px;
+          min-width: 40px;
+          text-align: center;
+        }
+        .method-get { background: #e8f5e8; color: #2d6a2e; }
+        .method-post { background: #e5edff; color: #2952a3; }
+        .endpoint-path {
+          font-family: 'SF Mono', Menlo, monospace;
+          font-size: 13px;
+          color: #1a1917;
+        }
+        .endpoint-desc {
+          color: #9c958e;
+          font-size: 12px;
+          margin-left: auto;
+        }
+        .footer {
+          text-align: center;
+          padding: 24px 0;
+          font-size: 12px;
+          color: #9c958e;
+        }
+        .footer a { color: #c4982a; text-decoration: none; }
+        .footer a:hover { text-decoration: underline; }
       </style>
     </head>
     <body>
-      <h1>\uD83E\uDD16 Sample Agent Registry</h1>
-      <p>MCP-compatible agent server built with <code>@slashfi/agents-sdk</code> + <code>hono</code></p>
+      <div class="page">
+        <div class="header">
+          <h1>\uD83D\uDD17 Agent Registry</h1>
+          <p>MCP-compatible agent server built with <code>@slashfi/agents-sdk</code> + <code>hono</code></p>
+        </div>
 
-      <h2>Registered Agents</h2>
-      ${agents
-        .filter((a) => !a.path.startsWith("@auth"))
-        .map(
-          (a) => `
-        <div class="agent">
-          <h3>${a.config?.name || a.path}</h3>
-          <p>${a.config?.description || "No description"}</p>
-          <div class="tools">
-            ${a.tools.map((t) => `<span class="tool">${t.name}</span>`).join("")}
+        <div class="section">
+          <div class="section-title">Agents</div>
+          <div class="card">
+            ${agents
+              .filter((a: any) => !a.path.startsWith("@auth"))
+              .map(
+                (a: any) => `
+              <div class="agent-row">
+                <div class="agent-info">
+                  <h3>${a.config?.name || a.path}</h3>
+                  <p>${a.config?.description || "No description"}</p>
+                  <div class="tools">
+                    ${a.tools.map((t: any) => `<span class="tool">${t.name}</span>`).join("")}
+                  </div>
+                </div>
+                <div class="agent-meta">
+                  <span class="badge ${a.visibility === "public" ? "badge-public" : "badge-internal"}">${a.visibility === "public" ? "public" : "internal"}</span>
+                </div>
+              </div>
+            `,
+              )
+              .join("")}
           </div>
         </div>
-      `,
-        )
-        .join("")}
 
-      <h2>Try it</h2>
-      <pre>curl http://localhost:3000/list
+        <div class="section">
+          <div class="section-title">Endpoints</div>
+          <div class="endpoints">
+            <div class="endpoint">
+              <span class="method method-post">POST</span>
+              <span class="endpoint-path">/</span>
+              <span class="endpoint-desc">MCP JSON-RPC</span>
+            </div>
+            <div class="endpoint">
+              <span class="method method-get">GET</span>
+              <span class="endpoint-path">/list</span>
+              <span class="endpoint-desc">List agents</span>
+            </div>
+            <div class="endpoint">
+              <span class="method method-get">GET</span>
+              <span class="endpoint-path">/health</span>
+              <span class="endpoint-desc">Health check</span>
+            </div>
+            <div class="endpoint">
+              <span class="method method-post">POST</span>
+              <span class="endpoint-path">/oauth/token</span>
+              <span class="endpoint-desc">Token exchange</span>
+            </div>
+          </div>
+        </div>
 
-# Call a tool via MCP JSON-RPC
-curl -X POST http://localhost:3000 \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "call_agent",
-      "arguments": {
-        "request": {
-          "action": "execute_tool",
-          "path": "@weather",
-          "tool": "get_weather",
-          "params": { "city": "san francisco" }
-        }
-      }
-    }
-  }'</pre>
+        <div class="section">
+          <div class="section-title">Try it</div>
+          <div class="code-card">
+            <div class="code-header">curl</div>
+            <div class="code-body"><span class="comment"># Call a public tool</span>
+curl -X POST ${c.req.url.replace(/\/$/, '')} \\
+  -H <span class="string">"Content-Type: application/json"</span> \\
+  -d <span class="string">'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"call_agent","arguments":{"request":{"action":"execute_tool","path":"@weather","tool":"get_weather","params":{"city":"san francisco"}}}}}'</span></div>
+          </div>
+        </div>
 
-      <h2>Auth</h2>
-      <p>The <code>@weather</code> agent is <strong>public</strong> (no auth needed).</p>
-      <p>The <code>@notes</code> agent is <strong>internal</strong> (requires a Bearer token).</p>
-      <pre># Register a client
-curl -X POST http://localhost:3000 \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer ${ROOT_KEY}" \\
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "call_agent",
-      "arguments": {
-        "request": {
-          "action": "execute_tool",
-          "path": "@auth",
-          "tool": "register",
-          "params": { "name": "my-app" }
-        }
-      }
-    }
-  }'
-
-# Exchange credentials for a token
-curl -X POST http://localhost:3000/oauth/token \\
-  -H "Content-Type: application/x-www-form-urlencoded" \\
-  -d "grant_type=client_credentials&amp;client_id=CLIENT_ID&amp;client_secret=CLIENT_SECRET"</pre>
+        <div class="footer">
+          Powered by <a href="https://github.com/slashfi/agents-sdk">@slashfi/agents-sdk</a>
+        </div>
+      </div>
     </body>
     </html>
   `);
