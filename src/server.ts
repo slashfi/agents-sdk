@@ -36,7 +36,6 @@ import { verifyJwt } from "./jwt.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 import { renderLoginPage, renderDashboardPage, renderTenantPage } from "./web-pages.js";
-import { slackAuthUrl, exchangeSlackCode, getSlackProfile, type SlackOAuthConfig } from "./slack-oauth.js";
 
 
 function resolveBaseUrl(req: Request, url: URL): string {
@@ -752,6 +751,109 @@ export function createAgentServer(
             }
           }
 
+          // If this is a sign-in flow (type: 'auth'), handle user/session creation
+          let stateType: string | undefined;
+          if (state) {
+            try {
+              const parsed = JSON.parse(atob(state));
+              stateType = parsed.type;
+            } catch {
+              try { stateType = JSON.parse(state).type; } catch {}
+            }
+          }
+
+          if (stateType === "auth" && provider === "slack") {
+            // Slack sign-in: exchange the stored tokens for user profile + create session
+            try {
+              // Get the stored connection to retrieve the access token
+              const connectionResult = await registry.call({
+                action: "execute_tool",
+                path: "@integrations",
+                tool: "list_integrations",
+                params: {},
+                context: { tenantId: "default", agentPath: "@integrations", callerId: "oauth_callback", callerType: "system" },
+              } as any) as any;
+
+              // Get the Slack access token from the connection
+              const slackConn = (connectionResult?.result?.connections || connectionResult?.result || [])
+                .find((c: any) => c.providerId === "slack" || c.provider === "slack");
+              const slackToken = slackConn?.accessToken;
+
+              if (slackToken) {
+                // Fetch Slack user profile using the stored token
+                const profileRes = await globalThis.fetch("https://slack.com/api/openid.connect.userInfo", {
+                  headers: { Authorization: `Bearer ${slackToken}` },
+                });
+                const profile = await profileRes.json() as any;
+                if (profile.ok) {
+                  const teamId = profile["https://slack.com/team_id"] || "";
+                  const teamName = profile["https://slack.com/team_name"] || "";
+
+                  // Check if user already exists
+                  const existing = await registry.call({
+                    action: "execute_tool", path: "@users", callerType: "system", tool: "resolve_identity",
+                    params: { provider: "slack", providerUserId: profile.sub },
+                  } as any) as any;
+
+                  if (existing?.result?.found && existing?.result?.user?.tenantId) {
+                    // Returning user
+                    const mcpToken = await generateMcpToken();
+                    return sessionRedirect(redirectUrl || `${baseUrl}/dashboard`, {
+                      userId: existing.result.user.id,
+                      tenantId: existing.result.user.tenantId,
+                      email: existing.result.user.email,
+                      name: existing.result.user.name,
+                      token: mcpToken,
+                    });
+                  }
+
+                  // Check if team already has a tenant
+                  if (teamId && process.env.DATABASE_URL) {
+                    try {
+                      const { default: postgres } = await import("postgres");
+                      const sql = postgres(process.env.DATABASE_URL);
+                      const rows = await sql`SELECT tenant_id FROM tenant_identities WHERE provider = 'slack' AND provider_org_id = ${teamId} LIMIT 1`;
+                      await sql.end();
+                      if (rows.length > 0) {
+                        const existingTenantId = rows[0].tenant_id;
+                        const userRes = await registry.call({ action: "execute_tool", path: "@users", callerType: "system", tool: "create_user", params: {
+                          email: profile.email, name: profile.name, tenantId: existingTenantId,
+                        }} as any) as any;
+                        const newUserId = userRes?.result?.id || userRes?.result?.user?.id;
+                        if (newUserId) {
+                          await registry.call({ action: "execute_tool", path: "@users", callerType: "system", tool: "link_identity", params: {
+                            userId: newUserId, provider: "slack", providerUserId: profile.sub,
+                            email: profile.email, name: profile.name,
+                            metadata: { slackTeamId: teamId, slackTeamName: teamName },
+                          }} as any);
+                        }
+                        const mcpToken = await generateMcpToken();
+                        return sessionRedirect(redirectUrl || `${baseUrl}/dashboard`, {
+                          userId: newUserId, tenantId: existingTenantId,
+                          email: profile.email, name: profile.name, token: mcpToken,
+                        });
+                      }
+                    } catch (e: any) {
+                      console.error("[auth] tenant_identity lookup error:", e.message);
+                    }
+                  }
+
+                  // New user — redirect to setup
+                  return sessionRedirect(`${baseUrl}/setup`, {
+                    email: profile.email,
+                    name: profile.name,
+                    picture: profile.picture,
+                    slackUserId: profile.sub,
+                    slackTeamId: teamId,
+                    slackTeamName: teamName,
+                  });
+                }
+              }
+            } catch (authErr: any) {
+              console.error("[auth] Slack sign-in post-callback error:", authErr);
+            }
+          }
+
           const sep = redirectUrl.includes("?") ? "&" : "?";
           return Response.redirect(`${redirectUrl}${sep}connected=${provider}`, 302);
         } catch (err) {
@@ -878,14 +980,34 @@ export function createAgentServer(
       const reqUrl = new URL(req.url);
       const baseUrl = resolveBaseUrl(req, reqUrl);
 
-      const slackConfig: SlackOAuthConfig | null =
-        process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET
-          ? {
+      // Auto-register Slack as an integration provider if env vars are set
+      const slackConfigured = !!(process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET);
+      if (slackConfigured) {
+        try {
+          await registry.call({
+            action: "execute_tool",
+            path: "@integrations",
+            tool: "setup_integration",
+            params: {
+              provider: "slack",
+              name: "Slack",
+              auth: {
+                authUrl: "https://slack.com/openid/connect/authorize",
+                tokenUrl: "https://slack.com/api/openid.connect.token",
+                scopes: ["openid", "email", "profile"],
+                clientAuthMethod: "client_secret_post",
+                tokenContentType: "application/x-www-form-urlencoded",
+              },
               clientId: process.env.SLACK_CLIENT_ID,
               clientSecret: process.env.SLACK_CLIENT_SECRET,
-              redirectUri: `${baseUrl}/auth/slack/callback`,
-            }
-          : null;
+            },
+            context: { tenantId: "default", agentPath: "@integrations", callerId: "system", callerType: "system" },
+          } as any);
+        } catch (e: any) {
+          // Ignore if already set up
+          if (!e.message?.includes("already")) console.warn("[auth] Slack provider setup:", e.message);
+        }
+      }
 
       // Helper: read session from cookie
       function getSession(r: Request): Record<string, any> | null {
@@ -932,110 +1054,29 @@ export function createAgentServer(
       if (path === "/" && req.method === "GET") {
         const session = getSession(req);
         if (session?.token) return Response.redirect(`${baseUrl}/dashboard`, 302);
-        return htmlRes(renderLoginPage(baseUrl, !!slackConfig));
+        return htmlRes(renderLoginPage(baseUrl, slackConfigured));
       }
 
       // GET /auth/slack — start Slack OAuth
       if (path === "/auth/slack" && req.method === "GET") {
-        if (!slackConfig) return htmlRes("<h1>Slack OAuth not configured</h1>");
-        return Response.redirect(slackAuthUrl(slackConfig), 302);
-      }
-
-      // GET /auth/slack/callback — handle Slack OAuth callback
-      if (path === "/auth/slack/callback" && req.method === "GET") {
-        if (!slackConfig) return htmlRes("<h1>Slack OAuth not configured</h1>");
-        const authCode = reqUrl.searchParams.get("code");
-        const authError = reqUrl.searchParams.get("error");
-        if (authError || !authCode) return Response.redirect(`${baseUrl}/?error=${authError || "no_code"}`, 302);
-
+        if (!slackConfigured) return htmlRes("<h1>Slack OAuth not configured</h1>");
         try {
-          const tokens = await exchangeSlackCode(authCode, slackConfig);
-          const profile = await getSlackProfile(tokens.access_token);
-          const teamId = profile["https://slack.com/team_id"] || "";
-          const teamName = profile["https://slack.com/team_name"] || "";
-
-          // Check if user already exists
-          console.log("[auth] Looking up slack user:", profile.sub, profile.email);
-          const existing = await registry.call({
-            action: "execute_tool", path: "@users", callerType: "system", tool: "resolve_identity",
-            params: { provider: "slack", providerUserId: profile.sub },
+          const connectResult = await registry.call({
+            action: "execute_tool",
+            path: "@integrations",
+            tool: "connect_integration",
+            params: {
+              provider: "slack",
+              state: btoa(JSON.stringify({ providerId: "slack", type: "auth", redirectUrl: `${baseUrl}/dashboard` })),
+            },
+            context: { tenantId: "default", agentPath: "@integrations", callerId: "system", callerType: "system" },
           } as any) as any;
-          console.log("[auth] resolve_identity:", JSON.stringify(existing));
-
-          if (existing?.result?.found && existing?.result?.user?.tenantId) {
-            // Returning user — generate token and go to dashboard
-            console.log("[auth] Returning user, generating token...");
-            const mcpToken = await generateMcpToken();
-            return sessionRedirect(`${baseUrl}/dashboard`, {
-              userId: existing.result.user.id,
-              tenantId: existing.result.user.tenantId,
-              email: existing.result.user.email,
-              name: existing.result.user.name,
-              token: mcpToken,
-            });
-          }
-
-          // Check if Slack team already has a tenant
-          if (teamId) {
-            console.log("[auth] Checking tenant_identities for team:", teamId);
-            try {
-              // Direct DB query via the auth store's underlying connection
-              // We'll use a simple fetch to our own MCP endpoint to call @db-connections
-              // Actually, simpler: just query the DB directly via the server's context
-              // For now, use registry.call to a custom tool or direct SQL
-              // Simplest: call @auth list_tenants and check metadata
-              // Even simpler: direct SQL via globalThis.fetch to ourselves
-              const dbUrl = process.env.DATABASE_URL;
-              if (dbUrl) {
-                const { default: postgres } = await import("postgres");
-                const sql = postgres(dbUrl);
-                const rows = await sql`SELECT tenant_id FROM tenant_identities WHERE provider = 'slack' AND provider_org_id = ${teamId} LIMIT 1`;
-                await sql.end();
-                if (rows.length > 0) {
-                  const existingTenantId = rows[0].tenant_id;
-                  console.log("[auth] Found existing tenant for team:", existingTenantId);
-                  
-                  // Create user on existing tenant
-                  const userRes = await registry.call({ action: "execute_tool", path: "@users", callerType: "system", tool: "create_user", params: {
-                    email: profile.email, name: profile.name, tenantId: existingTenantId,
-                  }} as any) as any;
-                  const newUserId = userRes?.result?.id || userRes?.result?.user?.id;
-                  console.log("[auth] Created user on existing tenant:", newUserId);
-
-                  // Link identity
-                  if (newUserId) {
-                    await registry.call({ action: "execute_tool", path: "@users", callerType: "system", tool: "link_identity", params: {
-                      userId: newUserId, provider: "slack", providerUserId: profile.sub,
-                      email: profile.email, name: profile.name,
-                      metadata: { slackTeamId: teamId, slackTeamName: teamName },
-                    }} as any);
-                  }
-
-                  // Generate token and go to dashboard
-                  const mcpToken = await generateMcpToken();
-                  return sessionRedirect(`${baseUrl}/dashboard`, {
-                    userId: newUserId, tenantId: existingTenantId,
-                    email: profile.email, name: profile.name, token: mcpToken,
-                  });
-                }
-              }
-            } catch (e: any) {
-              console.error("[auth] tenant_identity lookup error:", e.message);
-            }
-          }
-
-          // New user — redirect to setup
-          return sessionRedirect(`${baseUrl}/setup`, {
-            email: profile.email,
-            name: profile.name,
-            picture: profile.picture,
-            slackUserId: profile.sub,
-            slackTeamId: teamId,
-            slackTeamName: teamName,
-          });
+          const authUrl = connectResult?.result?.authUrl;
+          if (!authUrl) return htmlRes("<h1>Failed to generate Slack OAuth URL</h1>");
+          return Response.redirect(authUrl, 302);
         } catch (err: any) {
-          console.error("[auth] callback error:", err);
-          return Response.redirect(`${baseUrl}/?error=oauth_failed`, 302);
+          console.error("[auth] Slack connect error:", err);
+          return htmlRes(`<h1>Slack OAuth Error</h1><p>${err.message}</p>`);
         }
       }
 

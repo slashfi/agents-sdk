@@ -488,6 +488,13 @@ export interface IntegrationsAgentOptions {
   /** Integration store backend */
   store: IntegrationStore;
 
+  /**
+   * Callback to list all registered agents.
+   * Used by list_integrations to discover agents with integrationMethods.
+   * Typically wired to registry.list().
+   */
+  getAgents?: () => AgentDefinition[];
+
   /** Secret store for storing/resolving client credentials and tokens */
   secretStore: {
     store(value: string, ownerId: string): Promise<string>;
@@ -518,7 +525,7 @@ const SYSTEM_OWNER = "__integrations__";
 export function createIntegrationsAgent(
   options: IntegrationsAgentOptions,
 ): AgentDefinition {
-  const { store, callbackBaseUrl, secretStore } = options;
+  const { store, callbackBaseUrl, secretStore, getAgents } = options;
 
   // ---- setup_integration ----
   const setupTool = defineTool({
@@ -668,6 +675,104 @@ export function createIntegrationsAgent(
     },
   });
 
+
+  // ---- discover_integrations ----
+  const discoverTool = defineTool({
+    name: "discover_integrations",
+    description:
+      "Discover available integration types that can be set up. " +
+      "Returns a catalog of integrations with their setup/connect schemas " +
+      "so you know what parameters to pass to setup_integration.",
+    visibility: "public" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        query: {
+          type: "string",
+          description: "Search query to filter integrations by name or description",
+        },
+        category: {
+          type: "string",
+          description: "Filter by category (e.g. 'infrastructure', 'communication')",
+        },
+      },
+    },
+    execute: async (
+      input: { query?: string; category?: string },
+      _ctx: ToolContext,
+    ) => {
+      const catalog: Array<{
+        provider: string;
+        agentPath?: string;
+        displayName: string;
+        icon?: string;
+        category?: string;
+        description?: string;
+        setupSchema?: Record<string, unknown>;
+        connectSchema?: Record<string, unknown>;
+        hasOAuth?: boolean;
+      }> = [];
+
+      // 1. Agent-backed integrations
+      if (getAgents) {
+        for (const agent of getAgents()) {
+          if (agent.config?.integration) {
+            const ic = agent.config.integration;
+            catalog.push({
+              provider: ic.provider,
+              agentPath: agent.path,
+              displayName: ic.displayName,
+              icon: ic.icon,
+              category: ic.category,
+              description: ic.description,
+              setupSchema: ic.setupSchema,
+              connectSchema: ic.connectSchema,
+            });
+          }
+        }
+      }
+
+      // 2. DB-stored providers (legacy OAuth)
+      const providers = await store.listProviders();
+      for (const p of providers) {
+        // Skip if already in catalog from agent scan
+        if (catalog.some((c) => c.provider === p.id)) continue;
+        catalog.push({
+          provider: p.id,
+          displayName: p.name,
+          agentPath: p.agentPath,
+          hasOAuth: !!p.auth,
+          connectSchema: p.auth
+            ? {
+                type: "object",
+                description: "OAuth flow — use connect_integration to start",
+                properties: {
+                  provider: { type: "string", const: p.id },
+                },
+              }
+            : undefined,
+        });
+      }
+
+      // 3. Filter
+      let results = catalog;
+      if (input.query) {
+        const q = input.query.toLowerCase();
+        results = results.filter(
+          (r) =>
+            r.provider.toLowerCase().includes(q) ||
+            r.displayName.toLowerCase().includes(q) ||
+            (r.description?.toLowerCase().includes(q) ?? false),
+        );
+      }
+      if (input.category) {
+        results = results.filter((r) => r.category === input.category);
+      }
+
+      return { integrations: results };
+    },
+  });
+
   // ---- list_integrations ----
   const listTool = defineTool({
     name: "list_integrations",
@@ -688,15 +793,64 @@ export function createIntegrationsAgent(
       const userId = input.userId ?? ctx.callerId;
       const connections = userId ? await store.listConnections(userId) : [];
 
-      return {
-        providers: providers.map((p) => ({
+      // Build unified integrations list
+      const integrations: Array<Record<string, unknown>> = [];
+
+      // 1. DB-stored providers (legacy OAuth integrations)
+      for (const p of providers) {
+        integrations.push({
           id: p.id,
           name: p.name,
+          provider: p.id,
           agentPath: p.agentPath,
           scope: p.scope ?? "user",
           hasOAuth: !!p.auth,
           connected: connections.some((c) => c.providerId === p.id),
-        })),
+        });
+      }
+
+      // 2. Agent-backed integrations (agents with config.integration + integrationMethods)
+      if (getAgents) {
+        const agents = getAgents();
+        for (const agent of agents) {
+          if (agent.integrationMethods?.list && agent.config?.integration) {
+            const meta = {
+              provider: agent.config.integration.provider,
+              agentPath: agent.path,
+              displayName: agent.config.integration.displayName,
+              icon: agent.config.integration.icon,
+              category: agent.config.integration.category,
+              description: agent.config.integration.description,
+            };
+            try {
+              const result = await agent.integrationMethods.list({}, { ...ctx, provider: agent.config.integration.provider });
+              if (result.success && result.data) {
+                // Flatten: if data has an array field, each item becomes an integration
+                const items = Array.isArray(result.data)
+                  ? result.data
+                  : Object.values(result.data as Record<string, unknown>).find(Array.isArray) as unknown[] ?? [];
+                for (const item of items) {
+                  integrations.push({
+                    ...meta,
+                    ...(typeof item === "object" && item !== null ? item as Record<string, unknown> : { value: item }),
+                  });
+                }
+                // If no items found but agent exists, include it as a provider entry
+                if (items.length === 0) {
+                  integrations.push({ ...meta, id: meta.provider });
+                }
+              } else {
+                integrations.push({ ...meta, id: meta.provider });
+              }
+            } catch {
+              integrations.push({ ...meta, id: meta.provider });
+            }
+          }
+        }
+      }
+
+      return {
+        integrations,
         connections: connections.map((c) => ({
           providerId: c.providerId,
           connectedAt: c.connectedAt,
@@ -1175,6 +1329,7 @@ export function createIntegrationsAgent(
     visibility: "public",
     tools: [
       setupTool,
+      discoverTool,
       listTool,
       getTool,
       connectTool,

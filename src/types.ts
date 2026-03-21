@@ -89,7 +89,11 @@ export interface IntegrationConfig {
   /** Brief description of what connecting this integration enables */
   description?: string;
 
+  /** JSON Schema for the setup/create params. Used by discover_integrations. */
+  setupSchema?: Record<string, unknown>;
 
+  /** JSON Schema for the connect params (e.g., OAuth scopes). */
+  connectSchema?: Record<string, unknown>;
 }
 
 // ============================================
