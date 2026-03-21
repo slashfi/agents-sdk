@@ -32,7 +32,7 @@ import {
   type SecretStore,
   processSecretParams,
 } from "./agent-definitions/secrets.js";
-import { verifyJwt, verifyJwtLocal, verifyJwtFromIssuer, buildJwks, generateSigningKey, type SigningKey } from "./jwt.js";
+import { verifyJwt, verifyJwtLocal, verifyJwtFromIssuer, buildJwks, generateSigningKey, exportSigningKey, importSigningKey, type SigningKey } from "./jwt.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 import { renderLoginPage, renderDashboardPage, renderTenantPage } from "./web-pages.js";
@@ -398,9 +398,10 @@ export function createAgentServer(
     secretStore,
   } = options;
 
-  // Signing keys for ES256 JWT (asymmetric auth)
+  // Signing keys loaded from store (populated in start())
   const serverSigningKeys: SigningKey[] = [];
-  const trustedIssuers: string[] = (options as any)?.trustedIssuers ?? [];
+  // Trusted issuers from config (store can add more at runtime)
+  const configTrustedIssuers: string[] = options.trustedIssuers ?? [];
 
   let serverInstance: ReturnType<typeof Bun.serve> | null = null;
   let serverUrl: string | null = null;
@@ -691,7 +692,8 @@ export function createAgentServer(
             // Decode payload to read iss (without verifying — verification happens next)
             const [, payloadB64] = credential.split(".");
             const decoded = JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/")));
-            if (decoded.iss && trustedIssuers.includes(decoded.iss)) {
+            const storedIssuers = await authConfig?.store?.listTrustedIssuers?.() ?? configTrustedIssuers;
+            if (decoded.iss && storedIssuers.includes(decoded.iss)) {
               const verified = await verifyJwtFromIssuer(credential, decoded.iss);
               if (verified) {
                 auth = {
@@ -1288,15 +1290,26 @@ export function createAgentServer(
     async start(): Promise<void> {
       if (serverInstance) throw new Error("Server is already running");
 
-      // Initialize signing keys
-      if (serverSigningKeys.length === 0) {
-        if (options.signingKey) {
-          serverSigningKeys.push(options.signingKey);
-        } else {
-          const key = await generateSigningKey();
-          serverSigningKeys.push(key);
-          console.log(`[auth] Generated ES256 signing key: ${key.kid}`);
+      // Load signing keys from store, or generate one
+      if (authConfig?.store) {
+        const stored = await authConfig.store.getSigningKeys?.() ?? [];
+        for (const exported of stored) {
+          serverSigningKeys.push(await importSigningKey(exported));
         }
+        // Seed trusted issuers from config into store
+        for (const issuer of configTrustedIssuers) {
+          await authConfig.store.addTrustedIssuer?.(issuer);
+        }
+      }
+      if (serverSigningKeys.length === 0) {
+        const key = await generateSigningKey();
+        serverSigningKeys.push(key);
+        if (authConfig?.store) {
+          await authConfig.store.storeSigningKey?.(await exportSigningKey(key));
+        }
+        console.log(`[auth] Generated ES256 signing key: ${key.kid}`);
+      } else {
+        console.log(`[auth] Loaded ${serverSigningKeys.length} signing key(s) from store`);
       }
 
       serverInstance = Bun.serve({ port, hostname, fetch });
@@ -1313,8 +1326,9 @@ export function createAgentServer(
       console.log("  MCP tools: call_agent, list_agents");
       console.log("  GET  /.well-known/jwks.json - JWKS endpoint");
       console.log("  GET  /.well-known/configuration - Discovery");
-      if (trustedIssuers.length > 0) {
-        console.log(`  Trusted issuers: ${trustedIssuers.join(", ")}`);
+      const allIssuers = await authConfig?.store?.listTrustedIssuers?.() ?? configTrustedIssuers;
+      if (allIssuers.length > 0) {
+        console.log(`  Trusted issuers: ${allIssuers.join(", ")}`);
       }
     },
 

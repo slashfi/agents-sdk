@@ -25,7 +25,7 @@
  */
 
 import { defineAgent, defineTool } from "../define.js";
-import { signJwt } from "../jwt.js";
+import { signJwt, generateSigningKey, exportSigningKey, type ExportedKeyPair } from "../jwt.js";
 import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 
 // ============================================
@@ -124,6 +124,34 @@ export interface AuthStore {
   /** Revoke a specific token. */
   revokeToken(tokenString: string): Promise<boolean>;
 
+  // --- Signing Keys ---
+
+  /** Store a signing key pair (exported JWK format). */
+  storeSigningKey?(key: ExportedKeyPair): Promise<void>;
+
+  /** Get all signing keys (active + deprecated, not revoked). */
+  getSigningKeys?(): Promise<ExportedKeyPair[]>;
+
+  /** Get the current active signing key. */
+  getActiveSigningKey?(): Promise<ExportedKeyPair | null>;
+
+  /** Deprecate a signing key by kid. */
+  deprecateSigningKey?(kid: string): Promise<boolean>;
+
+  /** Revoke (remove) a signing key by kid. */
+  revokeSigningKey?(kid: string): Promise<boolean>;
+
+  // --- Trusted Issuers ---
+
+  /** Add a trusted issuer URL. */
+  addTrustedIssuer?(issuerUrl: string): Promise<void>;
+
+  /** Remove a trusted issuer. */
+  removeTrustedIssuer?(issuerUrl: string): Promise<boolean>;
+
+  /** List all trusted issuer URLs. */
+  listTrustedIssuers?(): Promise<string[]>;
+
   /** Register a user under a tenant. Returns a refresh token. */
   registerUser?(
     tenantId: string,
@@ -188,6 +216,8 @@ export function createMemoryAuthStore(): AuthStore {
   const tenants = new Map<string, AuthTenant>();
   const clients = new Map<string, AuthClient>();
   const tokens = new Map<string, AuthToken>();
+  const signingKeys = new Map<string, ExportedKeyPair>();
+  const trustedIssuers = new Set<string>();
 
   return {
     async createTenant(name) {
@@ -273,6 +303,48 @@ export function createMemoryAuthStore(): AuthStore {
 
     async revokeToken(tokenString) {
       return tokens.delete(tokenString);
+    },
+
+    // --- Signing Keys ---
+
+    async storeSigningKey(key) {
+      signingKeys.set(key.kid, key);
+    },
+
+    async getSigningKeys() {
+      return Array.from(signingKeys.values()).filter(k => k.status !== "revoked");
+    },
+
+    async getActiveSigningKey() {
+      for (const key of signingKeys.values()) {
+        if (key.status === "active") return key;
+      }
+      return null;
+    },
+
+    async deprecateSigningKey(kid) {
+      const key = signingKeys.get(kid);
+      if (!key) return false;
+      key.status = "deprecated";
+      return true;
+    },
+
+    async revokeSigningKey(kid) {
+      return signingKeys.delete(kid);
+    },
+
+    // --- Trusted Issuers ---
+
+    async addTrustedIssuer(issuerUrl) {
+      trustedIssuers.add(issuerUrl);
+    },
+
+    async removeTrustedIssuer(issuerUrl) {
+      return trustedIssuers.delete(issuerUrl);
+    },
+
+    async listTrustedIssuers() {
+      return Array.from(trustedIssuers);
     },
   };
 }
@@ -574,6 +646,85 @@ export function createAuthAgent(
 
   // --- Assemble tools ---
 
+  // --- Key Management Tools ---
+
+  const rotateKeysTool = defineTool({
+    name: "rotate_keys",
+    description:
+      "Generate a new ES256 signing key and deprecate the current active key. The old key remains valid for verification during the overlap period.",
+    visibility: "private" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+    execute: async () => {
+      if (!store.storeSigningKey || !store.getActiveSigningKey || !store.deprecateSigningKey)
+        throw new Error("Store does not support signing key management");
+
+      // Deprecate current active key
+      const current = await store.getActiveSigningKey();
+      if (current) {
+        await store.deprecateSigningKey(current.kid);
+      }
+
+      // Generate and store new key
+      const newKey = await generateSigningKey();
+      const exported = await exportSigningKey(newKey);
+      await store.storeSigningKey(exported);
+
+      return {
+        newKid: newKey.kid,
+        deprecatedKid: current?.kid ?? null,
+        message: "New signing key generated. Old key deprecated but still valid for verification.",
+      };
+    },
+  });
+
+  const trustIssuerTool = defineTool({
+    name: "trust_issuer",
+    description:
+      "Add or remove a trusted issuer URL. JWTs from trusted issuers are verified against their JWKS endpoint.",
+    visibility: "private" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        action: {
+          type: "string" as const,
+          enum: ["add", "remove", "list"],
+          description: "Action to perform",
+        },
+        issuerUrl: {
+          type: "string" as const,
+          description: "Issuer URL (required for add/remove)",
+        },
+      },
+      required: ["action"],
+    },
+    execute: async (
+      input: { action: "add" | "remove" | "list"; issuerUrl?: string },
+    ) => {
+      if (!store.addTrustedIssuer || !store.removeTrustedIssuer || !store.listTrustedIssuers)
+        throw new Error("Store does not support trusted issuer management");
+
+      switch (input.action) {
+        case "add": {
+          if (!input.issuerUrl) throw new Error("issuerUrl is required");
+          await store.addTrustedIssuer(input.issuerUrl);
+          return { success: true, message: `Added trusted issuer: ${input.issuerUrl}` };
+        }
+        case "remove": {
+          if (!input.issuerUrl) throw new Error("issuerUrl is required");
+          const removed = await store.removeTrustedIssuer(input.issuerUrl);
+          return { success: removed, message: removed ? "Removed" : "Not found" };
+        }
+        case "list": {
+          const issuers = await store.listTrustedIssuers();
+          return { issuers };
+        }
+      }
+    },
+  });
+
   const tools = [
     createTenantTool,
     tokenTool,
@@ -583,6 +734,8 @@ export function createAuthAgent(
     listClientsTool,
     revokeClientTool,
     rotateSecretTool,
+    rotateKeysTool,
+    trustIssuerTool,
   ];
 
   const agent = defineAgent({
