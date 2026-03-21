@@ -685,19 +685,25 @@ export function createAgentServer(
             break;
           }
         }
-        // Try trusted issuers' JWKS
+        // Try trusted issuers' JWKS — check the JWT's iss claim
         if (!auth) {
-          for (const issuerUrl of trustedIssuers) {
-            const verified = await verifyJwtFromIssuer(credential, issuerUrl);
-            if (verified) {
-              auth = {
-                callerId: verified.userId || verified.sub || verified.name || "unknown",
-                callerType: "agent",
-                scopes: verified.scopes || [],
-                isRoot: false,
-              };
-              break;
+          try {
+            // Decode payload to read iss (without verifying — verification happens next)
+            const [, payloadB64] = credential.split(".");
+            const decoded = JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/")));
+            if (decoded.iss && trustedIssuers.includes(decoded.iss)) {
+              const verified = await verifyJwtFromIssuer(credential, decoded.iss);
+              if (verified) {
+                auth = {
+                  callerId: verified.userId || verified.sub || verified.name || "unknown",
+                  callerType: "agent",
+                  scopes: verified.scopes || [],
+                  isRoot: false,
+                };
+              }
             }
+          } catch {
+            // Not a valid JWT, skip
           }
         }
       }
