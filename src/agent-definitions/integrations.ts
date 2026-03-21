@@ -24,7 +24,7 @@
  */
 
 import { defineAgent, defineTool } from "../define.js";
-import { pendingCollections, generateCollectionToken } from "../server.js";
+import { pendingCollections, generateCollectionToken } from "../secret-collection.js";
 import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 
 // ============================================
