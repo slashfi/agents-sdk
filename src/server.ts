@@ -1080,14 +1080,6 @@ export function createAgentServer(
         }
       }
 
-      // GET /auth/slack/callback — backward compat, redirects through /oauth/callback
-      if (path === "/auth/slack/callback" && req.method === "GET") {
-        // This shouldn't be hit anymore since redirectUri is now /oauth/callback,
-        // but kept for backward compat.
-        const params = reqUrl.search;
-        return Response.redirect(`${baseUrl}/oauth/callback${params}`, 302);
-      }
-
       // GET /setup — tenant creation page
       if (path === "/setup" && req.method === "GET") {
         const session = getSession(req);
