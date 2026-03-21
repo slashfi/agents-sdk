@@ -32,7 +32,7 @@ import {
   type SecretStore,
   processSecretParams,
 } from "./agent-definitions/secrets.js";
-import { verifyJwt } from "./jwt.js";
+import { verifyJwt, verifyJwtLocal, verifyJwtFromIssuer, buildJwks, generateSigningKey, type SigningKey } from "./jwt.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 import { renderLoginPage, renderDashboardPage, renderTenantPage } from "./web-pages.js";
@@ -64,6 +64,10 @@ export interface AgentServerOptions {
 
   /** Secret store for handling secret: refs in tool params */
   secretStore?: SecretStore;
+  /** Trusted issuer URLs for cross-registry JWT verification */
+  trustedIssuers?: string[];
+  /** Pre-generated signing key (otherwise auto-generated on start) */
+  signingKey?: SigningKey;
 }
 
 export interface AgentServer {
@@ -291,8 +295,10 @@ async function resolveAuth(
         }
       }
     } catch {
-      // Not a valid JWT, fall through to legacy token validation
+      // Not a valid JWT, fall through to HMAC
     }
+
+
   }
 
   // Legacy: opaque token validation (backwards compat)
@@ -391,6 +397,10 @@ export function createAgentServer(
     serverVersion = "1.0.0",
     secretStore,
   } = options;
+
+  // Signing keys for ES256 JWT (asymmetric auth)
+  const serverSigningKeys: SigningKey[] = [];
+  const trustedIssuers: string[] = (options as any)?.trustedIssuers ?? [];
 
   let serverInstance: ReturnType<typeof Bun.serve> | null = null;
   let serverUrl: string | null = null;
@@ -655,7 +665,43 @@ export function createAgentServer(
       });
     };
 
-    const auth = authConfig ? await resolveAuth(req, authConfig) : null;
+    let auth = authConfig ? await resolveAuth(req, authConfig) : null;
+
+    // If HMAC auth failed, try ES256 verification (asymmetric keys)
+    if (!auth) {
+      const authHeader = req.headers.get("Authorization");
+      const credential = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+      if (credential) {
+        // Try own signing keys
+        for (const sk of serverSigningKeys) {
+          const verified = await verifyJwtLocal(credential, sk.publicKey);
+          if (verified) {
+            auth = {
+              callerId: verified.userId || verified.sub || verified.name || "unknown",
+              callerType: "agent",
+              scopes: verified.scopes || [],
+              isRoot: false,
+            };
+            break;
+          }
+        }
+        // Try trusted issuers' JWKS
+        if (!auth) {
+          for (const issuerUrl of trustedIssuers) {
+            const verified = await verifyJwtFromIssuer(credential, issuerUrl);
+            if (verified) {
+              auth = {
+                callerId: verified.userId || verified.sub || verified.name || "unknown",
+                callerType: "agent",
+                scopes: verified.scopes || [],
+                isRoot: false,
+              };
+              break;
+            }
+          }
+        }
+      }
+    }
 
     try {
       // MCP endpoint: POST / or POST /mcp
@@ -673,6 +719,35 @@ export function createAgentServer(
       // Health check
       if (path === "/health" && req.method === "GET") {
         return addCors(jsonResponse({ status: "ok" }));
+      }
+
+      // JWKS endpoint — public keys for JWT verification
+      if (path === "/.well-known/jwks.json" && req.method === "GET") {
+        const jwks = serverSigningKeys.length > 0
+          ? await buildJwks(serverSigningKeys)
+          : { keys: [] };
+        return addCors(jsonResponse(jwks));
+      }
+
+      // Discovery endpoint — registry metadata
+      if (path === "/.well-known/configuration" && req.method === "GET") {
+        const reqUrl = new URL(req.url);
+        const baseUrl = resolveBaseUrl(req, reqUrl);
+        const agents = registry.list();
+        return addCors(jsonResponse({
+          issuer: baseUrl,
+          jwks_uri: `${baseUrl}/.well-known/jwks.json`,
+          call_endpoint: "/call",
+          list_endpoint: "/list",
+          token_endpoint: "/oauth/token",
+          health_endpoint: "/health",
+          agents: agents.map(a => ({
+            path: a.path,
+            name: a.config?.name,
+            description: a.config?.description,
+            integration: a.config?.integration || null,
+          })),
+        }));
       }
 
       // Backwards compat: GET /list (returns agents directly)
@@ -1207,6 +1282,17 @@ export function createAgentServer(
     async start(): Promise<void> {
       if (serverInstance) throw new Error("Server is already running");
 
+      // Initialize signing keys
+      if (serverSigningKeys.length === 0) {
+        if (options.signingKey) {
+          serverSigningKeys.push(options.signingKey);
+        } else {
+          const key = await generateSigningKey();
+          serverSigningKeys.push(key);
+          console.log(`[auth] Generated ES256 signing key: ${key.kid}`);
+        }
+      }
+
       serverInstance = Bun.serve({ port, hostname, fetch });
       serverUrl = `http://${hostname}:${port}${basePath}`;
 
@@ -1219,6 +1305,11 @@ export function createAgentServer(
         console.log("  Auth: enabled");
       }
       console.log("  MCP tools: call_agent, list_agents");
+      console.log("  GET  /.well-known/jwks.json - JWKS endpoint");
+      console.log("  GET  /.well-known/configuration - Discovery");
+      if (trustedIssuers.length > 0) {
+        console.log(`  Trusted issuers: ${trustedIssuers.join(", ")}`);
+      }
     },
 
     async stop(): Promise<void> {

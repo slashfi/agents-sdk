@@ -54,5 +54,8 @@
   "types": "dist/index.d.ts",
   "workspaces": [
     "examples/*"
-  ]
+  ],
+  "dependencies": {
+    "jose": "^6.2.2"
+  }
 }
