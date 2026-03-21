@@ -271,7 +271,7 @@ app.get("/", (c) => {
     <body>
       <div class="page">
         <div class="header">
-          <h1>\uD83D\uDD17 Agent Registry</h1>
+          <h1>Agent Registry</h1>
           <p>MCP-compatible agent server built with <code>@slashfi/agents-sdk</code> + <code>hono</code></p>
         </div>
 
