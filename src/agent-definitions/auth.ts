@@ -644,6 +644,75 @@ export function createAuthAgent(
     },
   });
 
+  // --- API Keys ---
+
+  const apiKeyTool = defineTool({
+    name: "api_key",
+    description:
+      "Manage API keys. Actions: create (generate a new long-lived API key), revoke (revoke a specific key).",
+    visibility: "internal" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        action: {
+          type: "string",
+          enum: ["create", "revoke"],
+          description: "Action to perform",
+        },
+        name: {
+          type: "string",
+          description: "Name/label for the API key (create only)",
+        },
+        scopes: {
+          type: "array",
+          items: { type: "string" },
+          description: "Scopes to grant (create only, default: ['*'])",
+        },
+        key: {
+          type: "string",
+          description: "API key to revoke (revoke only)",
+        },
+      },
+      required: ["action"],
+    },
+    execute: async (
+      input: {
+        action: "create" | "revoke";
+        name?: string;
+        scopes?: string[];
+        key?: string;
+      },
+      ctx: ToolContext,
+    ) => {
+      if (input.action === "create") {
+        const bytes = new Uint8Array(32);
+        crypto.getRandomValues(bytes);
+        const key =
+          "sk_" +
+          Array.from(bytes, (b) => b.toString(36).padStart(2, "0"))
+            .join("")
+            .slice(0, 40);
+        const scopes = input.scopes ?? ["*"];
+        await store.storeToken({
+          token: key,
+          clientId: ctx.callerId ?? "unknown",
+          scopes,
+          issuedAt: Date.now(),
+          expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000,
+        });
+        return { key, name: input.name ?? "default", scopes };
+      }
+
+      if (input.action === "revoke") {
+        if (!input.key) throw new Error("key is required for revoke");
+        const revoked = await store.revokeToken(input.key);
+        return { revoked, key: input.key };
+      }
+
+      return { error: `Unknown action: ${input.action}` };
+    },
+  });
+
   // --- Assemble tools ---
 
   // --- Key Management Tools ---
@@ -736,6 +805,7 @@ export function createAuthAgent(
     rotateSecretTool,
     rotateKeysTool,
     trustIssuerTool,
+    apiKeyTool,
   ];
 
   const agent = defineAgent({
