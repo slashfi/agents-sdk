@@ -145,8 +145,8 @@ export type {
 export { encryptSecret, decryptSecret } from "./crypto.js";
 
 // JWT
-export { signJwt, verifyJwt } from "./jwt.js";
-export type { JwtPayload } from "./jwt.js";
+export { signJwt, verifyJwt, signJwtES256, verifyJwtLocal, verifyJwtFromIssuer, generateSigningKey, exportSigningKey, importSigningKey, buildJwks } from "./jwt.js";
+export type { JwtPayload, AgentJwtPayload, SigningKey, ExportedKeyPair } from "./jwt.js";
 
 // Postgres Secret Store
 

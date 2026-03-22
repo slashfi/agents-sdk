@@ -31,6 +31,8 @@ import {
   processSecretParams,
 } from "./agent-definitions/secrets.js";
 import { verifyJwt } from "./jwt.js";
+import type { SigningKey } from "./jwt.js";
+import { generateSigningKey, importSigningKey, exportSigningKey, buildJwks, verifyJwtLocal, verifyJwtFromIssuer } from "./jwt.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 
@@ -53,6 +55,10 @@ export interface AgentServerOptions {
   serverVersion?: string;
   /** Secret store for handling secret: refs in tool params */
   secretStore?: SecretStore;
+  /** URLs of trusted registries for cross-registry JWT verification */
+  trustedIssuers?: string[];
+  /** Pre-generated signing key (if not provided, one is generated on start) */
+  signingKey?: SigningKey;
 }
 
 export interface AgentServer {
@@ -191,6 +197,7 @@ export function detectAuth(registry: AgentRegistry): AuthConfig | null {
 export async function resolveAuth(
   req: Request,
   authConfig: AuthConfig,
+  jwksOptions?: { signingKeys?: SigningKey[]; trustedIssuers?: string[] },
 ): Promise<ResolvedAuth | null> {
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) return null;
@@ -208,8 +215,46 @@ export async function resolveAuth(
     };
   }
 
-  // Try JWT verification (stateless)
+  // Try ES256 verification against own signing keys
   const parts = credential.split(".");
+  if (parts.length === 3 && jwksOptions?.signingKeys?.length) {
+    for (const key of jwksOptions.signingKeys) {
+      try {
+        const verified = await verifyJwtLocal(credential, key.publicKey);
+        if (verified) {
+          return {
+            callerId: verified.sub ?? verified.name ?? "unknown",
+            callerType: "agent",
+            scopes: verified.scopes ?? ["*"],
+            isRoot: false,
+          };
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  // Try trusted issuers (remote JWKS verification)
+  if (parts.length === 3 && jwksOptions?.trustedIssuers?.length) {
+    for (const issuer of jwksOptions.trustedIssuers) {
+      try {
+        const verified = await verifyJwtFromIssuer(credential, issuer);
+        if (verified) {
+          return {
+            callerId: verified.sub ?? verified.name ?? "unknown",
+            callerType: "agent",
+            scopes: verified.scopes ?? ["*"],
+            isRoot: false,
+          };
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  // Try HMAC JWT verification (legacy, stateless)
   if (parts.length === 3) {
     try {
       const payloadB64 = parts[1];
@@ -337,6 +382,10 @@ export function createAgentServer(
     serverVersion = "1.0.0",
     secretStore,
   } = options;
+
+  // Signing keys for JWKS-based auth
+  const serverSigningKeys: SigningKey[] = [];
+  const configTrustedIssuers: string[] = options.trustedIssuers ?? [];
 
   const authConfig = detectAuth(registry);
   let serverInstance: ReturnType<typeof Bun.serve> | null = null;
@@ -563,7 +612,10 @@ export function createAgentServer(
       }
 
       // Resolve auth for all requests
-      const auth = authConfig ? await resolveAuth(req, authConfig) : null;
+      const auth = authConfig ? await resolveAuth(req, authConfig, {
+        signingKeys: serverSigningKeys,
+        trustedIssuers: configTrustedIssuers,
+      }) : null;
 
       // Also check header-based identity (for proxied requests)
       const headerAuth: ResolvedAuth | null = !auth
@@ -600,6 +652,30 @@ export function createAgentServer(
       // ── GET /health → Health check ──
       if (path === "/health" && req.method === "GET") {
         const res = jsonResponse({ status: "ok", agents: registry.listPaths() });
+        return cors ? addCors(res) : res;
+      }
+
+      // ── GET /.well-known/jwks.json → JWKS public keys ──
+      if (path === "/.well-known/jwks.json" && req.method === "GET") {
+        const jwks = serverSigningKeys.length > 0
+          ? await buildJwks(serverSigningKeys)
+          : { keys: [] };
+        const res = jsonResponse(jwks);
+        return cors ? addCors(res) : res;
+      }
+
+      // ── GET /.well-known/configuration → Server discovery ──
+      if (path === "/.well-known/configuration" && req.method === "GET") {
+        const baseUrl = new URL(req.url).origin;
+        const res = jsonResponse({
+          issuer: baseUrl,
+          jwks_uri: `${baseUrl}/.well-known/jwks.json`,
+          token_endpoint: `${baseUrl}/oauth/token`,
+          agents_endpoint: `${baseUrl}/list`,
+          call_endpoint: baseUrl,
+          supported_grant_types: ["client_credentials"],
+          agents: registry.listPaths(),
+        });
         return cors ? addCors(res) : res;
       }
 
@@ -670,6 +746,23 @@ export function createAgentServer(
     registry,
 
     async start() {
+      // Load or generate signing key for JWKS
+      if (options.signingKey) {
+        serverSigningKeys.push(options.signingKey);
+      } else if (authConfig?.store?.getSigningKeys) {
+        const stored = await authConfig.store.getSigningKeys() ?? [];
+        for (const exported of stored) {
+          serverSigningKeys.push(await importSigningKey(exported));
+        }
+      }
+      if (serverSigningKeys.length === 0) {
+        const key = await generateSigningKey();
+        serverSigningKeys.push(key);
+        if (authConfig?.store?.storeSigningKey) {
+          await authConfig.store.storeSigningKey(await exportSigningKey(key));
+        }
+      }
+
       serverInstance = Bun.serve({
         port,
         hostname,
