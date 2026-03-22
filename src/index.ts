@@ -97,8 +97,19 @@ export { createAgentRegistry } from "./registry.js";
 export type { AgentRegistry, AgentRegistryOptions } from "./registry.js";
 
 // Server
-export { createAgentServer } from "./server.js";
-export type { AgentServer, AgentServerOptions } from "./server.js";
+export { createAgentServer, detectAuth, resolveAuth, canSeeAgent } from "./server.js";
+export type { AgentServer, AgentServerOptions, AuthConfig, ResolvedAuth } from "./server.js";
+
+// Secret Collection
+export {
+  pendingCollections,
+  generateCollectionToken,
+  cleanupExpiredCollections,
+} from "./secret-collection.js";
+export type {
+  PendingCollection,
+  PendingCollectionField,
+} from "./secret-collection.js";
 
 // Auth
 export {
