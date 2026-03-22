@@ -100,6 +100,9 @@ export type { AgentRegistry, AgentRegistryOptions } from "./registry.js";
 export { createAgentServer, detectAuth, resolveAuth, canSeeAgent } from "./server.js";
 export type { AgentServer, AgentServerOptions, AuthConfig, ResolvedAuth } from "./server.js";
 
+export { KeyManager, createMemoryKeyStore } from "./keys.js";
+export type { KeyPair, SerializedKeyPair, KeyStore, KeyManagerOptions } from "./keys.js";
+
 // Secret Collection
 export {
   pendingCollections,
