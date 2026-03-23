@@ -82,6 +82,12 @@ export interface AgentRegistry {
  * });
  * ```
  */
+/**
+ * Factory function that enriches the base ToolContext with application-specific data.
+ * Called before every tool execution.
+ */
+export type ContextFactory = (baseCtx: import("./types.js").ToolContext) => import("./types.js").ToolContext;
+
 export function createAgentRegistry(
   options: AgentRegistryOptions = {},
 ): AgentRegistry {

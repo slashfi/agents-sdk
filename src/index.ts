@@ -192,3 +192,4 @@ export type {
 } from "./agent-definitions/users.js";
 export * from "./integrations-store.js";
 export * from "./integration-interface.js";
+export type { ContextFactory } from "./registry.js";

@@ -195,6 +195,9 @@ export interface ToolContext extends CoreContext {
 
   /** Type of caller (required for tools) */
   callerType: CallerType;
+
+  /** Application-specific extensions (e.g., OS services, stores) */
+  [key: string]: unknown;
 }
 
 // ============================================
