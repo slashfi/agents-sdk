@@ -105,9 +105,9 @@ interface JsonRpcResponse {
 // ============================================
 
 export interface AuthConfig {
-  store: AuthStore;
-  rootKey: string;
-  tokenTtl: number;
+  store?: AuthStore;
+  rootKey?: string;
+  tokenTtl?: number;
 }
 
 export interface ResolvedAuth {
@@ -184,7 +184,7 @@ function mcpResult(value: unknown, isError = false) {
 // Auth Detection & Resolution
 // ============================================
 
-export function detectAuth(registry: AgentRegistry): AuthConfig | null {
+export function detectAuth(registry: AgentRegistry): AuthConfig {
   const authAgent = registry.get("@auth") as
     | (AgentDefinition & {
         __authStore?: AuthStore;
@@ -193,7 +193,7 @@ export function detectAuth(registry: AgentRegistry): AuthConfig | null {
       })
     | undefined;
 
-  if (!authAgent?.__authStore || !authAgent.__rootKey) return null;
+  if (!authAgent?.__authStore || !authAgent.__rootKey) return {};
 
   return {
     store: authAgent.__authStore,
@@ -204,7 +204,7 @@ export function detectAuth(registry: AgentRegistry): AuthConfig | null {
 
 export async function resolveAuth(
   req: Request,
-  authConfig: AuthConfig | null,
+  authConfig: AuthConfig,
   jwksOptions?: { signingKeys?: SigningKey[]; trustedIssuers?: TrustedIssuer[] },
 ): Promise<ResolvedAuth | null> {
   const authHeader = req.headers.get("Authorization");
@@ -214,7 +214,7 @@ export async function resolveAuth(
   if (scheme?.toLowerCase() !== "bearer" || !credential) return null;
 
   // Root key check
-  if (authConfig && credential === authConfig.rootKey) {
+  if (authConfig.rootKey && credential === authConfig.rootKey) {
     return {
       callerId: "root",
       callerType: "system",
@@ -285,7 +285,7 @@ export async function resolveAuth(
         exp?: number;
       };
 
-      if (payload.sub && authConfig) {
+      if (payload.sub && authConfig.store) {
         const client = await authConfig.store.getClient(payload.sub);
         if (client) {
           const verified = await verifyJwt(credential, client.clientSecretHash);
@@ -305,7 +305,7 @@ export async function resolveAuth(
   }
 
   // Legacy: opaque token validation (backwards compat)
-  if (!authConfig) return null;
+  if (!authConfig.store) return null;
   const token = await authConfig.store.validateToken(credential);
   if (!token) return null;
 
@@ -636,13 +636,10 @@ export function createAgentServer(
       }
 
       // Resolve auth for all requests
-      // Run resolveAuth when authConfig OR trustedIssuers are present
-      const auth = (authConfig || configTrustedIssuers.length > 0)
-        ? await resolveAuth(req, authConfig, {
-            signingKeys: serverSigningKeys,
-            trustedIssuers: configTrustedIssuers,
-          })
-        : null;
+      const auth = await resolveAuth(req, authConfig, {
+        signingKeys: serverSigningKeys,
+        trustedIssuers: configTrustedIssuers,
+      });
 
       // Also check header-based identity (for proxied requests)
       const headerAuth: ResolvedAuth | null = !auth
