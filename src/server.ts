@@ -40,6 +40,14 @@ import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 // Server Types
 // ============================================
 
+/** A trusted JWT issuer with scopes granted to its tokens */
+export interface TrustedIssuer {
+  /** JWKS endpoint base URL (appends /.well-known/jwks.json) */
+  issuer: string;
+  /** Scopes granted to tokens from this issuer */
+  scopes: string[];
+}
+
 export interface AgentServerOptions {
   /** Port to listen on (default: 3000) */
   port?: number;
@@ -55,8 +63,8 @@ export interface AgentServerOptions {
   serverVersion?: string;
   /** Secret store for handling secret: refs in tool params */
   secretStore?: SecretStore;
-  /** URLs of trusted registries for cross-registry JWT verification */
-  trustedIssuers?: string[];
+  /** Trusted JWT issuers with per-issuer scopes */
+  trustedIssuers?: (TrustedIssuer | string)[];
   /** Pre-generated signing key (if not provided, one is generated on start) */
   signingKey?: SigningKey;
 }
@@ -197,7 +205,7 @@ export function detectAuth(registry: AgentRegistry): AuthConfig | null {
 export async function resolveAuth(
   req: Request,
   authConfig: AuthConfig,
-  jwksOptions?: { signingKeys?: SigningKey[]; trustedIssuers?: string[] },
+  jwksOptions?: { signingKeys?: SigningKey[]; trustedIssuers?: TrustedIssuer[] },
 ): Promise<ResolvedAuth | null> {
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) return null;
@@ -236,21 +244,32 @@ export async function resolveAuth(
   }
 
   // Try trusted issuers (remote JWKS verification)
+  // Trusted issuer verification: decode iss claim, look up in config, verify JWKS
   if (parts.length === 3 && jwksOptions?.trustedIssuers?.length) {
-    for (const issuer of jwksOptions.trustedIssuers) {
-      try {
-        const verified = await verifyJwtFromIssuer(credential, issuer);
-        if (verified) {
-          return {
-            callerId: verified.sub ?? verified.name ?? "unknown",
-            callerType: "agent",
-            scopes: verified.scopes ?? ["*"],
-            isRoot: false,
-          };
+    try {
+      // Peek at unverified payload to read iss
+      const payloadB64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      const unverified = JSON.parse(atob(payloadB64)) as { iss?: string };
+      if (unverified.iss) {
+        const issuerConfig = jwksOptions.trustedIssuers.find(
+          (i) => i.issuer === unverified.iss
+        );
+        if (issuerConfig) {
+          const verified = await verifyJwtFromIssuer(credential, issuerConfig.issuer);
+          if (verified) {
+            const scopes = issuerConfig.scopes;
+            const isSystem = scopes.includes("*") || scopes.includes("agents:admin");
+            return {
+              callerId: verified.sub ?? verified.name ?? "unknown",
+              callerType: isSystem ? "system" : "agent",
+              scopes,
+              isRoot: isSystem,
+            };
+          }
         }
-      } catch {
-        continue;
       }
+    } catch {
+      // Failed to decode/verify, fall through
     }
   }
 
@@ -385,7 +404,10 @@ export function createAgentServer(
 
   // Signing keys for JWKS-based auth
   const serverSigningKeys: SigningKey[] = [];
-  const configTrustedIssuers: string[] = options.trustedIssuers ?? [];
+  // Normalize trustedIssuers to TrustedIssuer objects
+  const configTrustedIssuers: TrustedIssuer[] = (options.trustedIssuers ?? []).map(
+    (i) => typeof i === 'string' ? { issuer: i, scopes: ['*'] } : i
+  );
 
   const authConfig = detectAuth(registry);
   let serverInstance: ReturnType<typeof Bun.serve> | null = null;

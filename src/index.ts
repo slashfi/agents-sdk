@@ -98,7 +98,7 @@ export type { AgentRegistry, AgentRegistryOptions } from "./registry.js";
 
 // Server
 export { createAgentServer, detectAuth, resolveAuth, canSeeAgent } from "./server.js";
-export type { AgentServer, AgentServerOptions, AuthConfig, ResolvedAuth } from "./server.js";
+export type { AgentServer, AgentServerOptions, AuthConfig, ResolvedAuth, TrustedIssuer } from "./server.js";
 
 // Secret Collection
 export {
