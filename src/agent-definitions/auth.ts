@@ -680,6 +680,37 @@ export function createAuthAgent(
     },
   });
 
+
+  const apiKeyTool = defineTool({
+    name: "api_key",
+    description: "Create or list API keys for MCP access.",
+    visibility: "internal" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        action: { type: "string", enum: ["create", "list"], description: "Action" },
+        name: { type: "string", description: "Key name" },
+        scopes: { type: "array", items: { type: "string" }, description: "Scopes" },
+      },
+      required: ["action"],
+    },
+    execute: async (input: { action: string; name?: string; scopes?: string[] }) => {
+      if (input.action === "create") {
+        const result = await store.createClient(
+          input.name ?? "api-key",
+          input.scopes ?? ["*"],
+          false,
+        );
+        return { key: result.clientSecret, clientId: result.clientId };
+      }
+      if (input.action === "list") {
+        const clients = await store.listClients();
+        return { keys: clients.map(c => ({ id: c.clientId, name: c.name, scopes: c.scopes })) };
+      }
+      return { error: "Unknown action" };
+    },
+  });
+
   const trustIssuerTool = defineTool({
     name: "trust_issuer",
     description:
@@ -736,6 +767,7 @@ export function createAuthAgent(
     rotateSecretTool,
     rotateKeysTool,
     trustIssuerTool,
+    apiKeyTool,
   ];
 
   const agent = defineAgent({

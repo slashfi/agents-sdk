@@ -1190,6 +1190,7 @@ export function createIntegrationsAgent(
         provider: config.id,
         userId,
         connectedAt: connection.connectedAt,
+        accessToken: result.accessToken,
       };
     },
   });
