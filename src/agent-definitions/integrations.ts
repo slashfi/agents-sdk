@@ -495,6 +495,11 @@ export interface IntegrationsAgentOptions {
    */
   getAgents?: () => AgentDefinition[];
 
+  /** Registry instance for calling other agents' internal tools */
+  registry?: {
+    call(request: any): Promise<any>;
+  };
+
   /** Secret store for storing/resolving client credentials and tokens */
   secretStore: {
     store(value: string, ownerId: string): Promise<string>;
@@ -1317,6 +1322,81 @@ export function createIntegrationsAgent(
     },
   });
 
+
+  // ---- Facade: discover_integrations (aggregates from all agents) ----
+  const discoverFacadeTool = defineTool({
+    name: "discover_integrations",
+    description: "Discover all available integrations across all registered agents.",
+    visibility: "public" as const,
+    inputSchema: { type: "object" as const, properties: {} },
+    execute: async () => {
+      const agents = getAgents?.() ?? [];
+      const results: any[] = [];
+      if (options.registry) {
+        for (const agent of agents) {
+          const hasDiscoverTool = agent.tools?.some((t: any) => t.name === 'discover_integrations');
+          if (hasDiscoverTool) {
+            try {
+              const res = await options.registry.call({
+                action: 'execute_tool',
+                path: agent.path,
+                tool: 'discover_integrations',
+                params: {},
+                callerId: '@integrations',
+                callerType: 'system',
+              });
+              if (res?.result && Array.isArray(res.result)) {
+                results.push(...res.result);
+              }
+            } catch {}
+          }
+        }
+      }
+      return results;
+    },
+  });
+
+  // ---- Facade: list_integrations (aggregates from all agents) ----
+  const listFacadeTool = defineTool({
+    name: "list_integrations",
+    description: "List all installed integrations across all agents.",
+    visibility: "public" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        agent_path: { type: "string", description: "Filter by agent path" },
+      },
+    },
+    execute: async (input: { agent_path?: string }) => {
+      const agents = getAgents?.() ?? [];
+      const results: any[] = [];
+      if (options.registry) {
+        const targetAgents = input.agent_path
+          ? agents.filter((a: any) => a.path === input.agent_path)
+          : agents;
+        for (const agent of targetAgents) {
+          const hasListTool = agent.tools?.some((t: any) => t.name === 'list_integrations');
+          if (hasListTool) {
+            try {
+              const res = await options.registry.call({
+                action: 'execute_tool',
+                path: agent.path,
+                tool: 'list_integrations',
+                params: {},
+                callerId: '@integrations',
+                callerType: 'system',
+              });
+              if (res?.result && Array.isArray(res.result)) {
+                results.push(...res.result);
+              }
+            } catch {}
+          }
+        }
+      }
+      return results;
+    },
+  });
+
   return defineAgent({
     path: "@integrations",
     entrypoint:
@@ -1337,6 +1417,8 @@ export function createIntegrationsAgent(
       callTool,
       callbackTool,
       collectSecretsTool,
+      discoverFacadeTool,
+      listFacadeTool,
     ] as ToolDefinition[],
   });
 }
