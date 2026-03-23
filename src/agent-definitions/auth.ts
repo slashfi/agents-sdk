@@ -684,7 +684,7 @@ export function createAuthAgent(
   const apiKeyTool = defineTool({
     name: "api_key",
     description: "Create or list API keys for MCP access.",
-    visibility: "public" as const,
+    visibility: "authenticated" as const,
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -695,6 +695,7 @@ export function createAuthAgent(
       required: ["action"],
     },
     execute: async (input: { action: string; name?: string; scopes?: string[] }) => {
+
       if (input.action === "create") {
         const result = await store.createClient(
           input.name ?? "api-key",

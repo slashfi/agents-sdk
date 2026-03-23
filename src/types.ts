@@ -388,7 +388,7 @@ export interface AgentRuntime {
 /**
  * Visibility level for tools and agents.
  */
-export type Visibility = "public" | "internal" | "private";
+export type Visibility = "public" | "authenticated" | "internal" | "private";
 
 /**
  * A tool definition with execute function.

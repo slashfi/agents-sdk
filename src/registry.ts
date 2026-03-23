@@ -165,6 +165,8 @@ export function createAgentRegistry(
         return (
           callerType === "agent" || (callerType != null && callerId != null)
         );
+      case "authenticated":
+        return callerId != null && callerId !== "anonymous";
       case "private":
         return callerId === agent.path;
       default:
