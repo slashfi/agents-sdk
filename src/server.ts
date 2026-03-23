@@ -505,6 +505,7 @@ export function createAgentServer(
                 const tv = t.visibility ?? "internal";
                 if (auth?.isRoot) return true;
                 if (tv === "public") return true;
+                if (tv === "authenticated" && auth?.callerId && auth.callerId !== "anonymous") return true;
                 if (tv === "internal" && auth) return true;
                 return false;
               })
