@@ -37,6 +37,8 @@ const DEFAULT_SUPPORTED_ACTIONS: AgentAction[] = [
 export interface AgentRegistryOptions {
   /** Default visibility for agents without explicit visibility */
   defaultVisibility?: Visibility;
+  /** Factory to enrich ToolContext with application-specific data */
+  contextFactory?: ContextFactory;
 }
 
 /**
@@ -289,13 +291,18 @@ export function createAgentRegistry(
             } as CallAgentErrorResponse;
           }
 
-          const ctx: ToolContext = {
+          let ctx: ToolContext = {
             tenantId: "default",
             agentPath: agent.path,
             callerId: request.callerId ?? "unknown",
             callerType: request.callerType ?? "system",
             metadata: request.metadata,
           };
+
+          // Apply contextFactory if provided
+          if (options.contextFactory) {
+            ctx = options.contextFactory(ctx);
+          }
 
           try {
             if (!tool.execute) {
