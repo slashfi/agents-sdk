@@ -276,7 +276,7 @@ export function createAgentRegistry(
           ) {
             return {
               success: false,
-              error: `Access denied to tool: ${request.tool}`,
+              error: `Access denied to tool: ${request.tool} (visibility=${tool.visibility}, callerId=${request.callerId}, callerType=${request.callerType})`,
               code: "ACCESS_DENIED",
             } as CallAgentErrorResponse;
           }
