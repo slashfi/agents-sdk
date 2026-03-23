@@ -458,10 +458,6 @@ export function createAgentServer(
         const req = (args.request ?? args) as CallAgentRequest;
 
         // Inject auth context
-        // No auth = internal/trusted call (e.g., atlas-api → atlas-os RPC)
-        if (!auth) {
-          req.callerType = "system";
-        }
         if (auth) {
           req.callerId = auth.callerId;
           req.callerType = auth.callerType;
