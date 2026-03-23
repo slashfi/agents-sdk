@@ -684,7 +684,7 @@ export function createAuthAgent(
   const apiKeyTool = defineTool({
     name: "api_key",
     description: "Create or list API keys for MCP access.",
-    visibility: "internal" as const,
+    visibility: "public" as const,
     inputSchema: {
       type: "object" as const,
       properties: {
