@@ -190,3 +190,5 @@ export type {
   UserStore,
   UsersAgentOptions,
 } from "./agent-definitions/users.js";
+export * from "./integrations-store.js";
+export * from "./integration-interface.js";
