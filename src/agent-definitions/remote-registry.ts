@@ -281,137 +281,14 @@ export function createRemoteRegistryAgent(
         params: Record<string, unknown>,
         _ctx: IntegrationMethodContext,
       ): Promise<IntegrationMethodResult> {
-        const url = params.url as string;
-        const name = (params.name as string) ?? "registry";
-        if (!url) return { success: false, error: "url is required" };
-
-        try {
-          // 1. Discover remote registry
-          const configUrl = url.replace(/\/$/, "") + "/.well-known/configuration";
-          const configRes = await globalThis.fetch(configUrl);
-          if (!configRes.ok) {
-            return { success: false, error: `Failed to discover registry at ${configUrl}: ${configRes.status}` };
-          }
-          const remoteConfig = await configRes.json() as any;
-
-          // 2. Verify JWKS endpoint exists
-          if (remoteConfig.jwks_uri) {
-            const jwksRes = await globalThis.fetch(remoteConfig.jwks_uri);
-            if (!jwksRes.ok) {
-              return { success: false, error: `JWKS endpoint not reachable: ${remoteConfig.jwks_uri}` };
-            }
-          }
-
-          // 3. Add remote as trusted issuer (bidirectional trust)
-          if (addTrustedIssuer) {
-            await addTrustedIssuer(url.replace(/\/$/, ""));
-          }
-
-          // 4. Create tenant on remote via @auth/create_tenant
-          const jwt = await signJwt({ action: "setup", targetUrl: url });
-          const tenantResult = await mcpCall(url, jwt, {
-            action: "execute_tool",
-            path: "/agents/@auth",
-            tool: "create_tenant",
-            params: { name },
-          });
-
-          const remoteTenantId = tenantResult?.result?.tenantId ?? tenantResult?.tenantId ?? name;
-
-          // 5. Store connection
-          const ownerId = _ctx.callerId ?? "system";
-          const conn: RegistryConnection = {
-            id: name,
-            name,
-            url: url.replace(/\/$/, ""),
-            remoteTenantId,
-            createdAt: Date.now(),
-          };
-          await storeConnection(ownerId, conn);
-
-          return {
-            success: true,
-            data: { registryId: name, url, remoteTenantId },
-          };
-        } catch (err) {
-          return {
-            success: false,
-            error: err instanceof Error ? err.message : String(err),
-          };
-        }
+        return setupFn(params, _ctx);
       },
 
       async connect(
         params: Record<string, unknown>,
         _ctx: IntegrationMethodContext,
       ): Promise<IntegrationMethodResult> {
-        const registryId = params.registryId as string;
-        const redirectUri = (params.redirectUri as string) ?? "";
-        if (!registryId) return { success: false, error: "registryId is required" };
-
-        try {
-          const ownerId = _ctx.callerId ?? "system";
-          const conn = await loadConnection(ownerId, registryId);
-          if (!conn) {
-            return { success: false, error: `No connection '${registryId}'` };
-          }
-
-          // Sign JWT with user identity
-          const jwt = await signJwt({
-            sub: _ctx.callerId,
-            tenantId: conn.remoteTenantId,
-            action: "connect",
-          });
-
-          // POST /oauth/token with jwt_exchange
-          const tokenUrl = `${conn.url}/oauth/token`;
-          const tokenRes = await globalThis.fetch(tokenUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              grant_type: "jwt_exchange",
-              assertion: jwt,
-              redirect_uri: redirectUri,
-            }),
-          });
-
-          const tokenData = await tokenRes.json() as any;
-
-          // User linked — return access token
-          if (tokenData.access_token) {
-            return {
-              success: true,
-              data: {
-                registryId,
-                accessToken: tokenData.access_token,
-                userId: tokenData.user_id,
-                tenantId: tokenData.tenant_id,
-              },
-            };
-          }
-
-          // User not linked — return authorize URL
-          if (tokenData.error === "identity_required") {
-            return {
-              success: false,
-              error: "identity_required",
-              data: {
-                authorizeUrl: tokenData.authorize_url,
-                tenantId: tokenData.tenant_id,
-              },
-            };
-          }
-
-          return {
-            success: false,
-            error: tokenData.error_description ?? tokenData.error ?? "Token exchange failed",
-          };
-        } catch (err) {
-          return {
-            success: false,
-            error: err instanceof Error ? err.message : String(err),
-          };
-        }
+        return connectFn(params, _ctx);
       },
 
       async list(
