@@ -204,12 +204,15 @@ export function createRemoteRegistryAgent(
   const connectFn = async (params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult> => {
     const registryId = params.registryId as string;
     const redirectUri = (params.redirectUri as string) ?? "";
+    const oidcUserId = params.oidcUserId as string | undefined;
     if (!registryId) return { success: false, error: "registryId is required" };
     try {
       const ownerId = "system"; // tenant-scoped
       const conn = await loadConnection(ownerId, registryId);
       if (!conn) return { success: false, error: "No connection '" + registryId + "'" };
-      const jwt = await signJwt({ sub: ctx.callerId, tenantId: conn.remoteTenantId, action: "connect" });
+      // Use OIDC-issued identity if available, never send "anonymous" as sub
+      const sub = oidcUserId ?? (ctx.callerId !== "anonymous" ? ctx.callerId : undefined);
+      const jwt = await signJwt({ ...(sub ? { sub } : {}), tenantId: conn.remoteTenantId, action: "connect" });
       const tokenRes = await globalThis.fetch(conn.url + "/oauth/token", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ grant_type: "jwt_exchange", assertion: jwt, redirect_uri: redirectUri }),
@@ -249,6 +252,7 @@ export function createRemoteRegistryAgent(
       properties: {
         registryId: { type: "string", description: "Registry connection ID" },
         redirectUri: { type: "string", description: "Redirect URI after OAuth" },
+        oidcUserId: { type: "string", description: "OIDC-issued user ID (from completed identity linking)" },
       },
       required: ["registryId"],
     },
