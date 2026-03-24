@@ -70,6 +70,8 @@ export interface AgentServerOptions {
 }
 
 export interface AgentServer {
+  /** Initialize signing keys without starting HTTP server */
+  initKeys(): Promise<void>;
   /** Start the server */
   start(): Promise<void>;
   /** Stop the server */
@@ -769,11 +771,11 @@ export function createAgentServer(
     url: null,
     registry,
 
-    async start() {
-      // Load or generate signing key for JWKS
-      if (options.signingKey) {
+    async initKeys() {
+      // Load or generate signing keys (without starting Bun.serve)
+      if (options.signingKey && serverSigningKeys.length === 0) {
         serverSigningKeys.push(options.signingKey);
-      } else if (authConfig?.store?.getSigningKeys) {
+      } else if (authConfig?.store?.getSigningKeys && serverSigningKeys.length === 0) {
         const stored = await authConfig.store.getSigningKeys() ?? [];
         for (const exported of stored) {
           serverSigningKeys.push(await importSigningKey(exported));
@@ -786,6 +788,10 @@ export function createAgentServer(
           await authConfig.store.storeSigningKey(await exportSigningKey(key));
         }
       }
+    },
+
+    async start() {
+      await this.initKeys();
 
       serverInstance = Bun.serve({
         port,
