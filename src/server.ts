@@ -675,7 +675,7 @@ export function createAgentServer(
       } catch (err) {
         console.error("[oauth] JWT exchange error:", err);
         return jsonResponse(
-          { error: "server_error", error_description: "JWT exchange failed" },
+          { error: "server_error", error_description: `JWT exchange failed: ${err instanceof Error ? err.message : String(err)}` },
           500,
         );
       }
