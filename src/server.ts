@@ -620,9 +620,17 @@ export function createAgentServer(
         });
 
         const exchangeResult = (result as any)?.result;
+        // If the tool call failed, forward the error
+        if ((result as any)?.success === false) {
+          return jsonResponse(
+            { error: "server_error", error_description: (result as any)?.error ?? "Exchange tool failed", raw: JSON.stringify(result)?.slice(0, 300) },
+            500,
+          );
+        }
+        console.error("[jwt_exchange] exchange_token raw result:", JSON.stringify(result, null, 0)?.slice(0, 500));
         if (!exchangeResult) {
           return jsonResponse(
-            { error: "server_error", error_description: "Exchange failed" },
+            { error: "server_error", error_description: `Exchange returned null: ${JSON.stringify(result)?.slice(0, 300)}` },
             500,
           );
         }
