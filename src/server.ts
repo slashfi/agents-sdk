@@ -32,7 +32,7 @@ import {
 } from "./agent-definitions/secrets.js";
 import { verifyJwt } from "./jwt.js";
 import type { SigningKey } from "./jwt.js";
-import { generateSigningKey, importSigningKey, exportSigningKey, buildJwks, verifyJwtLocal, verifyJwtFromIssuer } from "./jwt.js";
+import { generateSigningKey, importSigningKey, exportSigningKey, buildJwks, verifyJwtLocal, verifyJwtFromIssuer, signJwtES256 } from "./jwt.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 
@@ -82,6 +82,8 @@ export interface AgentServer {
   url: string | null;
   /** The agent registry this server uses */
   registry: AgentRegistry;
+  /** Sign a JWT with the server's signing key (for outbound calls) */
+  signJwt(claims: Record<string, unknown>): Promise<string>;
 }
 
 // ============================================
@@ -811,5 +813,19 @@ export function createAgentServer(
     },
 
     fetch,
+
+    async signJwt(claims: Record<string, unknown>): Promise<string> {
+      if (serverSigningKeys.length === 0) {
+        throw new Error('No signing keys available. Call start() or initKeys() first.');
+      }
+      const key = serverSigningKeys[0];
+      return signJwtES256(
+        { sub: 'system', name: 'atlas-os', scopes: ['*'], ...claims } as any,
+        key.privateKey,
+        key.kid,
+        options.serverName ?? 'agents-sdk',
+        '1h',
+      );
+    },
   };
 }
