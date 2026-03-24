@@ -368,6 +368,7 @@ export interface CreateAuthAgentOptions {
 
   /** Custom auth store. Default: in-memory */
   store?: AuthStore;
+
 }
 
 // ============================================
@@ -421,6 +422,7 @@ export function createAuthAgent(
     execute: async (input: { name: string; externalRef?: { issuer: string; tenantId: string } }) => {
       const result = await store.createTenant(input.name, input.externalRef);
       return { tenantId: result.tenantId, name: input.name, externalRef: input.externalRef };
+    
     },
   });
 

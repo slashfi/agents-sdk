@@ -124,7 +124,7 @@ export function createRemoteRegistryAgent(
     if (!conn) {
       return { success: false, error: `No connection '${registryId}'. Use setup_integration first.` };
     }
-    const jwt = await signJwt({ tenantId: conn.remoteTenantId, action: "proxy" });
+    const jwt = await signJwt({ tenantId: conn.remoteTenantId, action: "proxy", type: "agent-registry" });
     const result = await mcpCall(conn.url, jwt, request);
     return { success: true, result };
   }
@@ -190,8 +190,8 @@ export function createRemoteRegistryAgent(
         if (!jwksRes.ok) return { success: false, error: "JWKS not reachable" };
       }
       if (addTrustedIssuer) await addTrustedIssuer(url.replace(/\/$/, ""));
-      const jwt = await signJwt({ action: "setup", targetUrl: url });
-      const tenantResult = await mcpCall(url, jwt, { action: "execute_tool", path: "/agents/@auth", tool: "create_tenant", params: { name } });
+      const jwt = await signJwt({ action: "setup", type: "agent-registry", targetUrl: url });
+      const tenantResult = await mcpCall(url, jwt, { action: "execute_tool", path: "/agents/@auth", tool: "create_tenant", params: { name, reverseRegistration: true } });
       const remoteTenantId = tenantResult?.result?.tenantId ?? tenantResult?.tenantId ?? name;
       const ownerId = "system"; // tenant-scoped
       await storeConnection(ownerId, { id: name, name, url: url.replace(/\/$/, ""), remoteTenantId, createdAt: Date.now() });
@@ -212,7 +212,7 @@ export function createRemoteRegistryAgent(
       if (!conn) return { success: false, error: "No connection '" + registryId + "'" };
       // Use OIDC-issued identity if available, never send "anonymous" as sub
       const sub = oidcUserId ?? (ctx.callerId !== "anonymous" ? ctx.callerId : undefined);
-      const jwt = await signJwt({ ...(sub ? { sub } : {}), tenantId: conn.remoteTenantId, action: "connect" });
+      const jwt = await signJwt({ ...(sub ? { sub } : {}), tenantId: conn.remoteTenantId, action: "connect", type: "agent-registry" });
       const tokenRes = await globalThis.fetch(conn.url + "/oauth/token", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ grant_type: "jwt_exchange", assertion: jwt, redirect_uri: redirectUri }),

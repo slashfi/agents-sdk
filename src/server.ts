@@ -115,6 +115,8 @@ export interface AgentServer {
   registry: AgentRegistry;
   /** Sign a JWT with the server's signing key (for outbound calls) */
   signJwt(claims: Record<string, unknown>): Promise<string>;
+  /** Dynamically add a trusted JWT issuer at runtime */
+  addTrustedIssuer(issuerUrl: string, scopes?: string[]): void;
 }
 
 // ============================================
@@ -146,6 +148,7 @@ export interface AuthConfig {
 }
 
 export interface ResolvedAuth {
+  issuer?: string;
   callerId: string;
   callerType: "agent" | "user" | "system";
   scopes: string[];
@@ -523,6 +526,7 @@ export function createAgentServer(
           if (!req.metadata) req.metadata = {};
           req.metadata.scopes = auth.scopes;
           req.metadata.isRoot = auth.isRoot;
+          if (auth.issuer) req.metadata.issuer = auth.issuer;
         }
         if (auth?.isRoot) {
           req.callerType = "system";
@@ -627,7 +631,39 @@ export function createAgentServer(
             500,
           );
         }
-        console.error("[jwt_exchange] exchange_token raw result:", JSON.stringify(result, null, 0)?.slice(0, 500));
+
+        // ── Reverse registration: if caller is an agent-registry, auto-store connection ──
+        try {
+          const assertionParts = assertion.split(".");
+          if (assertionParts.length === 3) {
+            const assertionPayload = JSON.parse(atob(assertionParts[1].replace(/-/g, "+").replace(/_/g, "/"))) as any;
+            if (assertionPayload.type === "agent-registry" && assertionPayload.iss) {
+              // Find or create @remote-registry agent and store the reverse connection
+              const rrAgent = registry.get("@remote-registry") ?? registry.get("/agents/@remote-registry");
+              if (rrAgent) {
+                const setupTool = (rrAgent as any).tools?.find((t: any) => t.name === "setup_integration");
+                if (setupTool?.execute) {
+                  try {
+                    await setupTool.execute(
+                      { url: assertionPayload.iss, name: assertionPayload.name ?? "remote-registry" },
+                      { callerId: "system", callerType: "system", tenantId: "default", agentPath: "@remote-registry" },
+                    );
+                    console.error(`[jwt_exchange] Reverse connection stored for ${assertionPayload.iss}`);
+                  } catch (setupErr) {
+                    console.error(`[jwt_exchange] Reverse registration setup failed:`, setupErr);
+                  }
+                } else {
+                  console.error("[jwt_exchange] @remote-registry has no setup_integration tool — reverse registration skipped");
+                }
+              } else {
+                console.error("[jwt_exchange] @remote-registry agent not found — reverse registration skipped");
+              }
+            }
+          }
+        } catch (reverseErr) {
+          console.error("[jwt_exchange] Reverse registration check failed:", reverseErr);
+        }
+
         if (!exchangeResult) {
           return jsonResponse(
             { error: "server_error", error_description: `Exchange returned null: ${JSON.stringify(result)?.slice(0, 300)}` },
@@ -1011,6 +1047,15 @@ export function createAgentServer(
         options.serverName ?? 'agents-sdk',
         '1h',
       );
+    },
+
+    addTrustedIssuer(issuerUrl: string, scopes?: string[]): void {
+      // Avoid duplicates
+      const existing = configTrustedIssuers.find(i => i.issuer === issuerUrl);
+      if (!existing) {
+        configTrustedIssuers.push({ issuer: issuerUrl, scopes: scopes ?? ['*'] });
+        console.error(`[agent-server] Added trusted issuer: ${issuerUrl}`);
+      }
     },
   };
 }
