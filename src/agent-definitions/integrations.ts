@@ -692,20 +692,19 @@ export function createIntegrationsAgent(
         } catch {}
       }
 
-      // Delegate to agent's integrationMethods.setup() if agentPath is set
-      if (config.agentPath && getAgents) {
-        const agents = getAgents();
-        const agent = agents.find((a: any) => a.path === config.agentPath || a.path === "/@remote-registry" || a.path?.endsWith(config.agentPath));
-        if (agent?.integrationMethods?.setup) {
-          try {
-            const setupResult = await agent.integrationMethods.setup(
-              input.config ?? input,
-              { callerId: _ctx.callerId, callerType: _ctx.callerType ?? 'user', tenantId: ((_ctx as any).tenantId ?? 'system'), agentPath: config.agentPath, provider: config.id },
-            );
-            result.setupResult = setupResult;
-          } catch (err) {
-            result.setupError = err instanceof Error ? err.message : String(err);
-          }
+      // Delegate to agent's setup_integration tool via registry.call()
+      if (config.agentPath && options.registry) {
+        try {
+          const setupResult = await options.registry.call({
+            action: 'execute_tool',
+            path: config.agentPath,
+            tool: 'setup_integration',
+            params: input.config ?? input,
+            callerType: 'system',
+          });
+          result.setupResult = (setupResult as any)?.result ?? setupResult;
+        } catch (err) {
+          result.setupError = err instanceof Error ? err.message : String(err);
         }
       }
 
@@ -848,11 +847,12 @@ export function createIntegrationsAgent(
         });
       }
 
-      // 2. Agent-backed integrations (agents with config.integration + integrationMethods)
+      // 2. Agent-backed integrations (agents with config.integration + list_integrations tool)
       if (getAgents) {
         const agents = getAgents();
         for (const agent of agents) {
-          if (agent.integrationMethods?.list && agent.config?.integration) {
+          const hasListTool = agent.tools?.some((t: any) => t.name === 'list_integrations');
+          if (hasListTool && agent.config?.integration) {
             const meta = {
               provider: agent.config.integration.provider,
               agentPath: agent.path,
@@ -862,7 +862,8 @@ export function createIntegrationsAgent(
               description: agent.config.integration.description,
             };
             try {
-              const result = await agent.integrationMethods.list({}, { ...ctx, provider: agent.config.integration.provider });
+              const callResult = options.registry ? await options.registry.call({ action: 'execute_tool', path: agent.path!, tool: 'list_integrations', params: {}, callerType: 'system' }) : null;
+              const result = (callResult as any)?.result ?? callResult ?? { success: false };
               if (result.success && result.data) {
                 // Flatten: if data has an array field, each item becomes an integration
                 const items = Array.isArray(result.data)
@@ -947,16 +948,16 @@ export function createIntegrationsAgent(
       const config = await store.getProvider(input.provider);
       if (!config) return { error: `Provider '${input.provider}' not found` };
 
-      // Delegate to agent's integrationMethods.connect() if available
-      if (config.agentPath && getAgents) {
-        const agents = getAgents();
-        const agent = agents.find((a: any) => a.path === config.agentPath || a.path?.endsWith(config.agentPath));
-        if (agent?.integrationMethods?.connect) {
-          return agent.integrationMethods.connect(
-            { ...input, registryId: config.id },
-            { callerId: ctx.callerId, callerType: ctx.callerType ?? 'user', tenantId: ((ctx as any).tenantId ?? 'system'), agentPath: config.agentPath, provider: config.id },
-          );
-        }
+      // Delegate to agent's connect_integration tool via registry.call()
+      if (config.agentPath && options.registry) {
+        const connectResult = await options.registry.call({
+          action: 'execute_tool',
+          path: config.agentPath,
+          tool: 'connect_integration',
+          params: { ...input, registryId: config.id },
+          callerType: 'system',
+        });
+        return (connectResult as any)?.result ?? connectResult;
       }
 
       if (!config.auth)
@@ -1189,16 +1190,16 @@ export function createIntegrationsAgent(
       const config = await store.getProvider(input.provider);
       if (!config) return { error: `Provider '${input.provider}' not found` };
 
-      // Delegate to agent's integrationMethods.connect() if available
-      if (config.agentPath && getAgents) {
-        const agents = getAgents();
-        const agent = agents.find((a: any) => a.path === config.agentPath || a.path?.endsWith(config.agentPath));
-        if (agent?.integrationMethods?.connect) {
-          return agent.integrationMethods.connect(
-            { ...input, registryId: config.id },
-            { callerId: ctx.callerId, callerType: ctx.callerType ?? 'user', tenantId: ((ctx as any).tenantId ?? 'system'), agentPath: config.agentPath, provider: config.id },
-          );
-        }
+      // Delegate to agent's connect_integration tool via registry.call()
+      if (config.agentPath && options.registry) {
+        const connectResult = await options.registry.call({
+          action: 'execute_tool',
+          path: config.agentPath,
+          tool: 'connect_integration',
+          params: { ...input, registryId: config.id },
+          callerType: 'system',
+        });
+        return (connectResult as any)?.result ?? connectResult;
       }
 
       if (!config.auth)
