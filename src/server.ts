@@ -48,6 +48,35 @@ export interface TrustedIssuer {
   scopes: string[];
 }
 
+
+
+/** OAuth identity provider for /oauth/authorize + /oauth/callback flows */
+export interface OAuthIdentityProvider {
+  /**
+   * Handle /oauth/authorize — redirect the user to an external IdP.
+   * Return a Response (typically a 302 redirect).
+   */
+  authorize(req: Request, params: {
+    /** The verified JWT from the foreign registry */
+    token: string;
+    /** Claims from the verified JWT */
+    claims: Record<string, unknown>;
+    /** Where to redirect after completion */
+    redirectUri: string;
+    /** Base URL of this server */
+    baseUrl: string;
+  }): Promise<Response>;
+
+  /**
+   * Handle /oauth/callback — process the IdP response.
+   * Should link the foreign identity to a local user and redirect back.
+   * Return a Response (typically a 302 redirect to redirectUri).
+   */
+  callback(req: Request, params: {
+    /** Base URL of this server */
+    baseUrl: string;
+  }): Promise<Response>;
+}
 export interface AgentServerOptions {
   /** Port to listen on (default: 3000) */
   port?: number;
@@ -67,6 +96,8 @@ export interface AgentServerOptions {
   trustedIssuers?: (TrustedIssuer | string)[];
   /** Pre-generated signing key (if not provided, one is generated on start) */
   signingKey?: SigningKey;
+  /** OAuth identity provider for cross-registry user linking */
+  oauthIdentityProvider?: OAuthIdentityProvider;
 }
 
 export interface AgentServer {
@@ -405,6 +436,7 @@ export function createAgentServer(
     serverName = "agents-sdk",
     serverVersion = "1.0.0",
     secretStore,
+    oauthIdentityProvider,
   } = options;
 
   // Signing keys for JWKS-based auth
@@ -556,73 +588,150 @@ export function createAgentServer(
     }
 
     const contentType = req.headers.get("Content-Type") ?? "";
-    let grantType: string;
-    let clientId: string;
-    let clientSecret: string;
+    let params: Record<string, string>;
 
     if (contentType.includes("application/x-www-form-urlencoded")) {
       const body = await req.text();
-      const params = new URLSearchParams(body);
-      grantType = params.get("grant_type") ?? "";
-      clientId = params.get("client_id") ?? "";
-      clientSecret = params.get("client_secret") ?? "";
+      const urlParams = new URLSearchParams(body);
+      params = Object.fromEntries(urlParams.entries());
     } else {
-      const body = (await req.json()) as Record<string, string>;
-      grantType = body.grant_type ?? "";
-      clientId = body.client_id ?? "";
-      clientSecret = body.client_secret ?? "";
+      params = (await req.json()) as Record<string, string>;
     }
 
-    if (grantType !== "client_credentials") {
-      return jsonResponse(
-        {
-          error: "unsupported_grant_type",
-          error_description: "Only client_credentials is supported",
-        },
-        400,
-      );
-    }
+    const grantType = params.grant_type ?? "";
 
-    if (!clientId || !clientSecret) {
-      return jsonResponse(
-        {
-          error: "invalid_request",
-          error_description: "Missing client_id or client_secret",
-        },
-        400,
-      );
-    }
-
-    try {
-      const result = await registry.call({
-        action: "execute_tool",
-        path: "@auth",
-        tool: "token",
-        params: { clientId, clientSecret },
-        callerType: "system",
-      });
-
-      const tokenResult = (result as any)?.result;
-      if (!tokenResult?.accessToken) {
+    // ── jwt_exchange grant: verify foreign JWT, resolve local identity ──
+    if (grantType === "jwt_exchange") {
+      const assertion = params.assertion ?? "";
+      if (!assertion) {
         return jsonResponse(
-          { error: "invalid_client", error_description: "Authentication failed" },
-          401,
+          { error: "invalid_request", error_description: "Missing assertion parameter" },
+          400,
         );
       }
 
-      return jsonResponse({
-        access_token: tokenResult.accessToken,
-        token_type: "Bearer",
-        expires_in: tokenResult.expiresIn ?? authConfig.tokenTtl,
-        refresh_token: tokenResult.refreshToken,
-      });
-    } catch (err) {
-      console.error("[oauth] Token error:", err);
-      return jsonResponse(
-        { error: "server_error", error_description: "Token exchange failed" },
-        500,
-      );
+      try {
+        const result = await registry.call({
+          action: "execute_tool",
+          path: "@auth",
+          tool: "exchange_token",
+          params: { token: assertion },
+          callerType: "system",
+        });
+
+        const exchangeResult = (result as any)?.result;
+        if (!exchangeResult) {
+          return jsonResponse(
+            { error: "server_error", error_description: "Exchange failed" },
+            500,
+          );
+        }
+
+        // User not linked yet — needs OAuth identity linking
+        if (exchangeResult.needsAuth) {
+          const baseUrl = new URL(req.url).origin;
+          const authorizeUrl = new URL(`${baseUrl}${basePath}/oauth/authorize`);
+          authorizeUrl.searchParams.set("token", assertion);
+          if (params.redirect_uri) {
+            authorizeUrl.searchParams.set("redirect_uri", params.redirect_uri);
+          }
+          return jsonResponse(
+            {
+              error: "identity_required",
+              error_description: "User identity not linked. Redirect to authorize_url to complete linking.",
+              authorize_url: authorizeUrl.toString(),
+              tenant_id: exchangeResult.tenantId,
+            },
+            403,
+          );
+        }
+
+        // User found — sign a local access token
+        if (exchangeResult.userId && serverSigningKeys.length > 0) {
+          const sigKey = serverSigningKeys[0];
+          const token = await signJwtES256(
+            {
+              sub: exchangeResult.userId,
+              name: exchangeResult.userId,
+              scopes: ["*"],
+              tenantId: exchangeResult.tenantId,
+            },
+            sigKey.privateKey,
+            sigKey.kid,
+            new URL(req.url).origin,
+            `${authConfig.tokenTtl ?? 3600}s`,
+          );
+
+          return jsonResponse({
+            access_token: token,
+            token_type: "Bearer",
+            expires_in: authConfig.tokenTtl ?? 3600,
+            user_id: exchangeResult.userId,
+            tenant_id: exchangeResult.tenantId,
+          });
+        }
+
+        return jsonResponse(exchangeResult);
+      } catch (err) {
+        console.error("[oauth] JWT exchange error:", err);
+        return jsonResponse(
+          { error: "server_error", error_description: "JWT exchange failed" },
+          500,
+        );
+      }
     }
+
+    // ── client_credentials grant ──
+    if (grantType === "client_credentials") {
+      const clientId = params.client_id ?? "";
+      const clientSecret = params.client_secret ?? "";
+
+      if (!clientId || !clientSecret) {
+        return jsonResponse(
+          { error: "invalid_request", error_description: "Missing client_id or client_secret" },
+          400,
+        );
+      }
+
+      try {
+        const result = await registry.call({
+          action: "execute_tool",
+          path: "@auth",
+          tool: "token",
+          params: { clientId, clientSecret },
+          callerType: "system",
+        });
+
+        const tokenResult = (result as any)?.result;
+        if (!tokenResult?.accessToken) {
+          return jsonResponse(
+            { error: "invalid_client", error_description: "Authentication failed" },
+            401,
+          );
+        }
+
+        return jsonResponse({
+          access_token: tokenResult.accessToken,
+          token_type: "Bearer",
+          expires_in: tokenResult.expiresIn ?? authConfig.tokenTtl,
+          refresh_token: tokenResult.refreshToken,
+        });
+      } catch (err) {
+        console.error("[oauth] Token error:", err);
+        return jsonResponse(
+          { error: "server_error", error_description: "Token exchange failed" },
+          500,
+        );
+      }
+    }
+
+    return jsonResponse(
+      {
+        error: "unsupported_grant_type",
+        error_description: "Supported grant types: client_credentials, jwt_exchange",
+      },
+      400,
+    );
   }
 
   // ──────────────────────────────────────────
@@ -671,9 +780,76 @@ export function createAgentServer(
         return cors ? addCors(jsonResponse(result)) : jsonResponse(result);
       }
 
-      // ── POST /oauth/token → OAuth2 client_credentials ──
+      // ── POST /oauth/token → OAuth2 token exchange ──
       if (path === "/oauth/token" && req.method === "POST") {
         const res = await handleOAuthToken(req);
+        return cors ? addCors(res) : res;
+      }
+
+      // ── GET /oauth/authorize → Identity linking redirect (browser flow) ──
+      if (path === "/oauth/authorize" && req.method === "GET") {
+        if (!oauthIdentityProvider) {
+          const res = jsonResponse(
+            { error: "not_configured", error_description: "No OAuth identity provider configured" },
+            404,
+          );
+          return cors ? addCors(res) : res;
+        }
+        const url = new URL(req.url);
+        const token = url.searchParams.get("token") ?? "";
+        const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+
+        if (!token) {
+          const res = jsonResponse(
+            { error: "invalid_request", error_description: "Missing token parameter" },
+            400,
+          );
+          return cors ? addCors(res) : res;
+        }
+
+        // Verify the JWT against trusted issuers
+        let claims: Record<string, unknown> | null = null;
+        const issuerUrls = configTrustedIssuers.map(i => typeof i === "string" ? i : i.issuer);
+        for (const issuerUrl of issuerUrls) {
+          try {
+            const result = await verifyJwtFromIssuer(token, issuerUrl);
+            if (result) {
+              claims = result as unknown as Record<string, unknown>;
+              break;
+            }
+          } catch { /* try next issuer */ }
+        }
+        if (!claims) {
+          const res = jsonResponse(
+            { error: "invalid_token", error_description: "JWT verification failed against all trusted issuers" },
+            401,
+          );
+          return cors ? addCors(res) : res;
+        }
+
+        const baseUrl = new URL(req.url).origin;
+        const res = await oauthIdentityProvider.authorize(req, {
+          token,
+          claims,
+          redirectUri,
+          baseUrl: baseUrl + basePath,
+        });
+        return cors ? addCors(res) : res;
+      }
+
+      // ── GET /oauth/callback → Identity linking callback ──
+      if (path === "/oauth/callback" && req.method === "GET") {
+        if (!oauthIdentityProvider) {
+          const res = jsonResponse(
+            { error: "not_configured", error_description: "No OAuth identity provider configured" },
+            404,
+          );
+          return cors ? addCors(res) : res;
+        }
+        const baseUrl = new URL(req.url).origin;
+        const res = await oauthIdentityProvider.callback(req, {
+          baseUrl: baseUrl + basePath,
+        });
         return cors ? addCors(res) : res;
       }
 
@@ -701,7 +877,8 @@ export function createAgentServer(
           token_endpoint: `${baseUrl}/oauth/token`,
           agents_endpoint: `${baseUrl}/list`,
           call_endpoint: baseUrl,
-          supported_grant_types: ["client_credentials"],
+          supported_grant_types: ["client_credentials", "jwt_exchange"],
+          authorization_endpoint: `${baseUrl}/oauth/authorize`,
           agents: registry.listPaths(),
         });
         return cors ? addCors(res) : res;
