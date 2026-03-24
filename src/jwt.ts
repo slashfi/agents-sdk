@@ -80,7 +80,7 @@ export interface ExportedKeyPair {
  * Generate a new ES256 signing key pair.
  */
 export async function generateSigningKey(kid?: string): Promise<SigningKey> {
-  const { privateKey, publicKey } = await generateKeyPair("ES256");
+  const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
   return {
     kid: kid ?? `key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     privateKey,
