@@ -81,7 +81,7 @@ export interface AuthTenant {
 
 export interface AuthStore {
   /** Create a tenant. */
-  createTenant(name: string): Promise<{ tenantId: string }>;
+  createTenant(name: string, externalRef?: { issuer: string; tenantId: string }): Promise<{ tenantId: string }>;
 
   /** Get tenant by ID. */
   getTenant(tenantId: string): Promise<AuthTenant | null>;
@@ -220,7 +220,7 @@ export function createMemoryAuthStore(): AuthStore {
   const trustedIssuers = new Set<string>();
 
   return {
-    async createTenant(name) {
+    async createTenant(name, _externalRef) {
       const id = `tenant_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       tenants.set(id, { id, name, createdAt: Date.now() });
       return { tenantId: id };
@@ -406,12 +406,21 @@ export function createAuthAgent(
       type: "object" as const,
       properties: {
         name: { type: "string" as const, description: "Tenant name" },
+        externalRef: {
+          type: "object" as const,
+          description: "Link to a tenant on a remote system (for cross-registry trust)",
+          properties: {
+            issuer: { type: "string" as const, description: "Issuer URL of the remote system" },
+            tenantId: { type: "string" as const, description: "Tenant ID on the remote system" },
+          },
+          required: ["issuer", "tenantId"],
+        },
       },
       required: ["name"],
     },
-    execute: async (input: { name: string }) => {
-      const result = await store.createTenant(input.name);
-      return { tenantId: result.tenantId, name: input.name };
+    execute: async (input: { name: string; externalRef?: { issuer: string; tenantId: string } }) => {
+      const result = await store.createTenant(input.name, input.externalRef);
+      return { tenantId: result.tenantId, name: input.name, externalRef: input.externalRef };
     },
   });
 

@@ -250,10 +250,30 @@ export function createUsersAgent(options: UsersAgentOptions): AgentDefinition {
         name: { type: "string", description: "Display name" },
         avatarUrl: { type: "string", description: "Avatar URL" },
         metadata: { type: "object", description: "Additional metadata" },
+        externalRef: {
+          type: "object",
+          description: "Link to a user on a remote system. Creates identity automatically.",
+          properties: {
+            issuer: { type: "string", description: "Issuer URL of the remote system" },
+            userId: { type: "string", description: "User ID on the remote system" },
+          },
+        },
       },
       required: ["tenantId"],
     },
     execute: async (input: any, __ctx: ToolContext) => {
+      // If externalRef provided, check if identity already exists
+      if (input.externalRef) {
+        const existing = await store.findIdentityByProviderUserId(
+          input.externalRef.issuer,
+          input.externalRef.userId,
+        );
+        if (existing) {
+          const user = await store.getUser(existing.userId);
+          return { success: true, user, identity: existing, alreadyLinked: true };
+        }
+      }
+
       const user = await store.createUser({
         id: input.id ?? generateId("user_"),
         tenantId: input.tenantId,
@@ -262,7 +282,21 @@ export function createUsersAgent(options: UsersAgentOptions): AgentDefinition {
         avatarUrl: input.avatarUrl,
         metadata: input.metadata,
       });
-      return { success: true, user };
+
+      // Auto-create identity link if externalRef provided
+      let identity: UserIdentity | undefined;
+      if (input.externalRef) {
+        identity = await store.createIdentity({
+          id: generateId("uid_"),
+          userId: user.id,
+          provider: input.externalRef.issuer,
+          providerUserId: input.externalRef.userId,
+          email: input.email,
+          name: input.name,
+        });
+      }
+
+      return { success: true, user, identity };
     },
   });
 
