@@ -85,6 +85,7 @@ export type {
   IntegrationMethods,
   IntegrationMethodResult,
   IntegrationMethodContext,
+  IntegrationHooks,
   Visibility,
 } from "./types.js";
 

@@ -5,10 +5,10 @@
  */
 
 import type {
+  IntegrationHooks,
   AgentConfig,
   AgentDefinition,
   AgentRuntime,
-  IntegrationMethods,
   JsonSchema,
   ToolContext,
   ToolDefinition,
@@ -115,10 +115,15 @@ export interface DefineAgentOptions<
   allowedCallers?: string[];
 
   /**
-   * Integration method callbacks.
-   * Implement these when this agent acts as an integration.
+   * Integration hooks. When provided, defineAgent auto-generates
+   * setup_integration, connect_integration, etc. as tools.
    */
-  integrationMethods?: IntegrationMethods;
+  integration?: IntegrationHooks;
+
+  /**
+   * @deprecated Use `integration` instead.
+   * Integration method callbacks.
+   */
 }
 
 /**
@@ -148,14 +153,97 @@ export interface DefineAgentOptions<
 export function defineAgent<TContext extends ToolContext = ToolContext>(
   options: DefineAgentOptions<TContext>,
 ): AgentDefinition<TContext> {
+  const tools = [...(options.tools ?? [])];
+  let config = options.config;
+
+  // Auto-generate integration tools from hooks
+  if (options.integration) {
+    const h = options.integration;
+
+    // Set config.integration metadata if not already set
+    if (!config?.integration) {
+      config = {
+        ...config,
+        integration: {
+          provider: h.provider,
+          displayName: h.displayName,
+          icon: h.icon,
+          category: h.category,
+          description: h.description,
+        },
+      };
+    }
+
+    if (h.setup) {
+      const fn = h.setup;
+      tools.push(defineTool({
+        name: "setup_integration",
+        description: `Set up ${h.displayName} integration.`,
+        visibility: "public" as const,
+        inputSchema: { type: "object" as const, properties: { url: { type: "string" }, name: { type: "string" }, config: { type: "object" } } },
+        execute: (input: any, ctx: any) => fn(input, ctx),
+      }) as any);
+    }
+    if (h.connect) {
+      const fn = h.connect;
+      tools.push(defineTool({
+        name: "connect_integration",
+        description: `Connect a user to ${h.displayName}.`,
+        visibility: "public" as const,
+        inputSchema: { type: "object" as const, properties: { registryId: { type: "string" }, oidcUserId: { type: "string" }, redirectUri: { type: "string" } }, required: ["registryId"] as const },
+        execute: (input: any, ctx: any) => fn(input, ctx),
+      }) as any);
+    }
+    if (h.discover) {
+      const fn = h.discover;
+      tools.push(defineTool({
+        name: "discover_integrations",
+        description: `Discover available ${h.displayName} instances.`,
+        visibility: "public" as const,
+        inputSchema: { type: "object" as const, properties: { url: { type: "string" } } },
+        execute: (input: any, ctx: any) => fn(input, ctx),
+      }) as any);
+    }
+    if (h.list) {
+      const fn = h.list;
+      tools.push(defineTool({
+        name: "list_integrations",
+        description: `List connected ${h.displayName} instances.`,
+        visibility: "public" as const,
+        inputSchema: { type: "object" as const, properties: {} },
+        execute: (input: any, ctx: any) => fn(input, ctx),
+      }) as any);
+    }
+    if (h.get) {
+      const fn = h.get;
+      tools.push(defineTool({
+        name: "get_integration",
+        description: `Get details of a ${h.displayName} instance.`,
+        visibility: "public" as const,
+        inputSchema: { type: "object" as const, properties: { registryId: { type: "string" } }, required: ["registryId"] as const },
+        execute: (input: any, ctx: any) => fn(input, ctx),
+      }) as any);
+    }
+    if (h.update) {
+      const fn = h.update;
+      tools.push(defineTool({
+        name: "update_integration",
+        description: `Update a ${h.displayName} instance.`,
+        visibility: "public" as const,
+        inputSchema: { type: "object" as const, properties: { registryId: { type: "string" }, name: { type: "string" }, url: { type: "string" } }, required: ["registryId"] as const },
+        execute: (input: any, ctx: any) => fn(input, ctx),
+      }) as any);
+    }
+  }
+
+
   return {
     path: options.path,
     entrypoint: options.entrypoint,
-    config: options.config,
-    tools: options.tools ?? [],
+    config,
+    tools,
     runtime: options.runtime,
     visibility: options.visibility,
     allowedCallers: options.allowedCallers,
-    integrationMethods: options.integrationMethods,
   };
 }

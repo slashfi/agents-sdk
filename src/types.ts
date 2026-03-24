@@ -73,6 +73,30 @@ export interface IntegrationMethods {
   update(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
 }
 
+
+
+/** Hooks for agents that implement the integrations interface. */
+export interface IntegrationHooks {
+  /** Provider metadata */
+  provider: string;
+  displayName: string;
+  icon?: string;
+  category?: string;
+  description?: string;
+
+  /** Set up this integration (discover, configure, establish trust) */
+  setup?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+  /** Connect a user to this integration (OAuth, identity linking) */
+  connect?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+  /** Discover available instances of this integration */
+  discover?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+  /** List connected instances */
+  list?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+  /** Get details of a specific instance */
+  get?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+  /** Update an existing instance config */
+  update?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+}
 export interface IntegrationConfig {
   /** Provider identifier (e.g., "databases", "slack", "github") */
   provider: string;
@@ -492,7 +516,6 @@ export interface AgentDefinition<TContext extends ToolContext = ToolContext> {
    * When set alongside config.integration, this agent can be called
    * by @integrations via standard methods (setup, list, connect, get, update).
    */
-  integrationMethods?: IntegrationMethods;
 
   /**
    * Lazy loader for lifecycle listeners.

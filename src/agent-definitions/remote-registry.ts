@@ -226,95 +226,6 @@ export function createRemoteRegistryAgent(
     }
   };
 
-  const setupTool = defineTool({
-    name: "setup_integration",
-    description: "Set up a connection to a remote registry. Discovers JWKS, establishes trust, creates tenant.",
-    visibility: "public" as const,
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        url: { type: "string", description: "Remote registry URL" },
-        name: { type: "string", description: "Connection name" },
-      },
-      required: ["url"],
-    },
-    execute: async (input: any, _ctx: ToolContext) => {
-      return setupFn(input, { callerId: _ctx.callerId, callerType: _ctx.callerType ?? "user", provider: "remote-registry", tenantId: ((_ctx) as any).tenantId ?? "system", agentPath: "@remote-registry" });
-    },
-  });
-
-  const connectTool = defineTool({
-    name: "connect_integration",
-    description: "Connect a user to a remote registry via jwt_exchange. Returns access_token or identity_required.",
-    visibility: "public" as const,
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        registryId: { type: "string", description: "Registry connection ID" },
-        redirectUri: { type: "string", description: "Redirect URI after OAuth" },
-        oidcUserId: { type: "string", description: "OIDC-issued user ID (from completed identity linking)" },
-      },
-      required: ["registryId"],
-    },
-    execute: async (input: any, _ctx: ToolContext) => {
-      return connectFn(input, { callerId: _ctx.callerId, callerType: _ctx.callerType ?? "user", provider: "remote-registry", tenantId: ((_ctx) as any).tenantId ?? "system", agentPath: "@remote-registry" });
-    },
-  });
-
-
-  const discoverTool = defineTool({
-    name: "discover_integrations",
-    description: "Discover available remote registries by probing well-known endpoints.",
-    visibility: "public" as const,
-    inputSchema: { type: "object" as const, properties: { url: { type: "string", description: "URL to probe" } }, required: ["url"] },
-    execute: async (input: { url: string }) => {
-      try {
-        const configRes = await globalThis.fetch(input.url.replace(/\/$/, "") + "/.well-known/configuration");
-        if (!configRes.ok) return { success: false, error: "No configuration endpoint at " + input.url };
-        const config = await configRes.json() as any;
-        return { success: true, data: { url: input.url, issuer: config.issuer, grantTypes: config.supported_grant_types, jwksUri: config.jwks_uri } };
-      } catch (err) { return { success: false, error: err instanceof Error ? err.message : String(err) }; }
-    },
-  });
-
-  const listIntegrationsTool = defineTool({
-    name: "list_integrations",
-    description: "List all connected remote registries.",
-    visibility: "public" as const,
-    inputSchema: { type: "object" as const, properties: {} },
-    execute: async () => {
-      const all = await loadAllConnections("system");
-      return { success: true, data: { connections: Object.values(all).map(c => ({ id: c.id, name: c.name, url: c.url, remoteTenantId: c.remoteTenantId })) } };
-    },
-  });
-
-  const getIntegrationTool = defineTool({
-    name: "get_integration",
-    description: "Get details of a specific remote registry connection.",
-    visibility: "public" as const,
-    inputSchema: { type: "object" as const, properties: { registryId: { type: "string", description: "Registry ID" } }, required: ["registryId"] },
-    execute: async (input: { registryId: string }) => {
-      const conn = await loadConnection("system", input.registryId);
-      if (!conn) return { success: false, error: "No connection '" + input.registryId + "'" };
-      return { success: true, data: conn };
-    },
-  });
-
-  const updateIntegrationTool = defineTool({
-    name: "update_integration",
-    description: "Update a remote registry connection config.",
-    visibility: "public" as const,
-    inputSchema: { type: "object" as const, properties: { registryId: { type: "string" }, name: { type: "string" }, url: { type: "string" } }, required: ["registryId"] },
-    execute: async (input: { registryId: string; name?: string; url?: string }) => {
-      const conn = await loadConnection("system", input.registryId);
-      if (!conn) return { success: false, error: "No connection '" + input.registryId + "'" };
-      if (input.name) conn.name = input.name;
-      if (input.url) conn.url = input.url;
-      await storeConnection("system", conn);
-      return { success: true, data: conn };
-    },
-  });
-
   return defineAgent({
     path: "@remote-registry",
     entrypoint:
@@ -325,15 +236,45 @@ export function createRemoteRegistryAgent(
       name: "Remote Registry",
       description: "Connect to remote agent registries via JWKS trust + jwt_exchange",
       supportedActions: ["execute_tool", "describe_tools", "load"],
-      integration: {
-        provider: "remote-registry",
-        displayName: "Agent Registry",
-        icon: "server",
-        category: "infrastructure",
-        description: "Connect to a remote agent registry via JWKS trust exchange.",
-      },
     },
     visibility: "public",
-    tools: [setupTool, connectTool, proxyTool, listTool, discoverTool, listIntegrationsTool, getIntegrationTool, updateIntegrationTool] as any[],
+    integration: {
+      provider: "remote-registry",
+      displayName: "Agent Registry",
+      icon: "server",
+      category: "infrastructure",
+      description: "Connect to a remote agent registry via JWKS trust exchange.",
+      setup: (params, ctx) => setupFn(params, ctx as any),
+      connect: (params, ctx) => connectFn(params, ctx as any),
+      async discover(params) {
+        const url = (params.url as string) ?? "";
+        try {
+          const res = await globalThis.fetch(url.replace(/\/$/, "") + "/.well-known/configuration");
+          if (!res.ok) return { success: false, error: "No configuration endpoint at " + url };
+          const config = await res.json() as any;
+          return { success: true, data: { url, issuer: config.issuer, grantTypes: config.supported_grant_types, jwksUri: config.jwks_uri } };
+        } catch (err) { return { success: false, error: err instanceof Error ? err.message : String(err) }; }
+      },
+      async list() {
+        const all = await loadAllConnections("system");
+        return { success: true, data: { connections: Object.values(all).map(c => ({ id: c.id, name: c.name, url: c.url, remoteTenantId: c.remoteTenantId })) } };
+      },
+      async get(params) {
+        const id = (params.registryId as string) ?? "";
+        const conn = await loadConnection("system", id);
+        if (!conn) return { success: false, error: "No connection '" + id + "'" };
+        return { success: true, data: conn };
+      },
+      async update(params) {
+        const id = (params.registryId as string) ?? "";
+        const conn = await loadConnection("system", id);
+        if (!conn) return { success: false, error: "No connection '" + id + "'" };
+        if (params.name) conn.name = params.name as string;
+        if (params.url) conn.url = params.url as string;
+        await storeConnection("system", conn);
+        return { success: true, data: conn };
+      },
+    },
+    tools: [proxyTool, listTool] as any[],
   });
 }
