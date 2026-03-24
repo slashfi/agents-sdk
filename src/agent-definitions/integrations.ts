@@ -692,6 +692,23 @@ export function createIntegrationsAgent(
         } catch {}
       }
 
+      // Delegate to agent's integrationMethods.setup() if agentPath is set
+      if (config.agentPath && getAgents) {
+        const agents = getAgents();
+        const agent = agents.find((a: any) => a.path === config.agentPath || a.path === "/@remote-registry" || a.path?.endsWith(config.agentPath));
+        if (agent?.integrationMethods?.setup) {
+          try {
+            const setupResult = await agent.integrationMethods.setup(
+              input.config ?? input,
+              { callerId: _ctx.callerId, callerType: _ctx.callerType ?? 'user', tenantId: ((_ctx as any).tenantId ?? 'system'), agentPath: config.agentPath, provider: config.id },
+            );
+            result.setupResult = setupResult;
+          } catch (err) {
+            result.setupError = err instanceof Error ? err.message : String(err);
+          }
+        }
+      }
+
       result.provider = config;
       return result;
     },
@@ -929,6 +946,19 @@ export function createIntegrationsAgent(
     ) => {
       const config = await store.getProvider(input.provider);
       if (!config) return { error: `Provider '${input.provider}' not found` };
+
+      // Delegate to agent's integrationMethods.connect() if available
+      if (config.agentPath && getAgents) {
+        const agents = getAgents();
+        const agent = agents.find((a: any) => a.path === config.agentPath || a.path?.endsWith(config.agentPath));
+        if (agent?.integrationMethods?.connect) {
+          return agent.integrationMethods.connect(
+            { ...input, registryId: config.id },
+            { callerId: ctx.callerId, callerType: ctx.callerType ?? 'user', tenantId: ((ctx as any).tenantId ?? 'system'), agentPath: config.agentPath, provider: config.id },
+          );
+        }
+      }
+
       if (!config.auth)
         return { error: `Provider '${input.provider}' has no OAuth config` };
       if (!callbackBaseUrl)
@@ -1158,6 +1188,19 @@ export function createIntegrationsAgent(
     ) => {
       const config = await store.getProvider(input.provider);
       if (!config) return { error: `Provider '${input.provider}' not found` };
+
+      // Delegate to agent's integrationMethods.connect() if available
+      if (config.agentPath && getAgents) {
+        const agents = getAgents();
+        const agent = agents.find((a: any) => a.path === config.agentPath || a.path?.endsWith(config.agentPath));
+        if (agent?.integrationMethods?.connect) {
+          return agent.integrationMethods.connect(
+            { ...input, registryId: config.id },
+            { callerId: ctx.callerId, callerType: ctx.callerType ?? 'user', tenantId: ((ctx as any).tenantId ?? 'system'), agentPath: config.agentPath, provider: config.id },
+          );
+        }
+      }
+
       if (!config.auth)
         return { error: `Provider '${input.provider}' has no OAuth config` };
       if (!callbackBaseUrl) return { error: "No callbackBaseUrl configured" };
