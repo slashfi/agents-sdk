@@ -61,6 +61,7 @@ export function createRemoteRegistryAgent(
   // --- Connection storage (KV via SecretStore) ---
 
   async function storeConnection(ownerId: string, conn: RegistryConnection): Promise<void> {
+    console.error("[remote-registry] storeConnection for owner:", ownerId, "conn:", conn.id);
     const all = await loadAllConnections(ownerId);
     all[conn.id] = conn;
     const value = JSON.stringify(all);
@@ -72,6 +73,7 @@ export function createRemoteRegistryAgent(
   }
 
   async function loadAllConnections(ownerId: string): Promise<Record<string, RegistryConnection>> {
+    console.error("[remote-registry] loadAllConnections for owner:", ownerId);
     if (secretStore.resolveByEntity) {
       const scope = { tenantId: ownerId };
       const secretIds = await secretStore.resolveByEntity(ENTITY_TYPE, ownerId, scope);
@@ -144,8 +146,8 @@ export function createRemoteRegistryAgent(
       },
       required: ["registryId", "action", "path", "tool"],
     },
-    execute: async (input: any, ctx: ToolContext) => {
-      return proxyCall(ctx.callerId ?? "system", input.registryId, {
+    execute: async (input: any, _ctx: ToolContext) => {
+      return proxyCall("system", input.registryId, {
         action: input.action,
         path: input.path,
         tool: input.tool,
@@ -159,8 +161,8 @@ export function createRemoteRegistryAgent(
     description: "List all connected remote registries.",
     visibility: "public" as const,
     inputSchema: { type: "object" as const, properties: {} },
-    execute: async (_input: any, ctx: ToolContext) => {
-      const all = await loadAllConnections(ctx.callerId ?? "system");
+    execute: async (_input: any, _ctx: ToolContext) => {
+      const all = await loadAllConnections("system");
       return {
         connections: Object.values(all).map(c => ({
           id: c.id,
@@ -174,7 +176,7 @@ export function createRemoteRegistryAgent(
 
 
   // Extract setup/connect as standalone functions to avoid circular reference
-  const setupFn = async (params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult> => {
+  const setupFn = async (params: Record<string, unknown>, _ctx: IntegrationMethodContext): Promise<IntegrationMethodResult> => {
     const url = params.url as string;
     const name = (params.name as string) ?? "registry";
     if (!url) return { success: false, error: "url is required" };
@@ -191,7 +193,7 @@ export function createRemoteRegistryAgent(
       const jwt = await signJwt({ action: "setup", targetUrl: url });
       const tenantResult = await mcpCall(url, jwt, { action: "execute_tool", path: "/agents/@auth", tool: "create_tenant", params: { name } });
       const remoteTenantId = tenantResult?.result?.tenantId ?? tenantResult?.tenantId ?? name;
-      const ownerId = ctx.callerId ?? "system";
+      const ownerId = "system"; // tenant-scoped
       await storeConnection(ownerId, { id: name, name, url: url.replace(/\/$/, ""), remoteTenantId, createdAt: Date.now() });
       return { success: true, data: { registryId: name, url, remoteTenantId } };
     } catch (err) {
@@ -204,7 +206,7 @@ export function createRemoteRegistryAgent(
     const redirectUri = (params.redirectUri as string) ?? "";
     if (!registryId) return { success: false, error: "registryId is required" };
     try {
-      const ownerId = ctx.callerId ?? "system";
+      const ownerId = "system"; // tenant-scoped
       const conn = await loadConnection(ownerId, registryId);
       if (!conn) return { success: false, error: "No connection '" + registryId + "'" };
       const jwt = await signJwt({ sub: ctx.callerId, tenantId: conn.remoteTenantId, action: "connect" });
@@ -233,8 +235,8 @@ export function createRemoteRegistryAgent(
       },
       required: ["url"],
     },
-    execute: async (input: any, ctx: ToolContext) => {
-      return setupFn(input, { callerId: ctx.callerId, callerType: ctx.callerType ?? "user", provider: "remote-registry", tenantId: (ctx as any).tenantId ?? "system", agentPath: "@remote-registry" });
+    execute: async (input: any, _ctx: ToolContext) => {
+      return setupFn(input, { callerId: _ctx.callerId, callerType: _ctx.callerType ?? "user", provider: "remote-registry", tenantId: ((_ctx) as any).tenantId ?? "system", agentPath: "@remote-registry" });
     },
   });
 
@@ -250,8 +252,8 @@ export function createRemoteRegistryAgent(
       },
       required: ["registryId"],
     },
-    execute: async (input: any, ctx: ToolContext) => {
-      return connectFn(input, { callerId: ctx.callerId, callerType: ctx.callerType ?? "user", provider: "remote-registry", tenantId: (ctx as any).tenantId ?? "system", agentPath: "@remote-registry" });
+    execute: async (input: any, _ctx: ToolContext) => {
+      return connectFn(input, { callerId: _ctx.callerId, callerType: _ctx.callerType ?? "user", provider: "remote-registry", tenantId: ((_ctx) as any).tenantId ?? "system", agentPath: "@remote-registry" });
     },
   });
 
@@ -416,7 +418,7 @@ export function createRemoteRegistryAgent(
         _params: Record<string, unknown>,
         _ctx: IntegrationMethodContext,
       ): Promise<IntegrationMethodResult> {
-        const all = await loadAllConnections(_ctx.callerId ?? "system");
+        const all = await loadAllConnections("system");
         return {
           success: true,
           data: {
