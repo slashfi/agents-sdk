@@ -766,6 +766,46 @@ export function createAuthAgent(
     },
   });
 
+
+  const exchangeTokenTool = defineTool({
+    name: "exchange_token",
+    description:
+      "Exchange a foreign JWT for a local identity. Verifies the JWT via JWKS, " +
+      "resolves the tenant and user to local IDs. If the user is not yet linked, " +
+      "returns needsAuth=true with a connect URL for OAuth identity linking.",
+    visibility: "public" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        token: {
+          type: "string" as const,
+          description: "JWT signed by a trusted issuer",
+        },
+        connectBaseUrl: {
+          type: "string" as const,
+          description: "Base URL for the OAuth connect flow (returned in needsAuth response)",
+        },
+      },
+      required: ["token"],
+    },
+    execute: async (
+      _input: { token: string; connectBaseUrl?: string },
+    ) => {
+      // This tool is a stub — the actual implementation needs:
+      // 1. JWT verification (via verifyJwtFromIssuer)
+      // 2. Tenant resolution (via tenant_identity table)
+      // 3. User resolution (via user_identity table)
+      // These depend on the store having identity lookup methods.
+      //
+      // For now, return the structure so the flow can be wired.
+      // The atlas-environments CockroachDB implementation overrides this.
+      return {
+        error: "exchange_token requires a store with identity resolution support",
+        hint: "Override this tool in your environment implementation",
+      };
+    },
+  });
+
   const tools = [
     createTenantTool,
     tokenTool,
@@ -778,6 +818,7 @@ export function createAuthAgent(
     rotateKeysTool,
     trustIssuerTool,
     apiKeyTool,
+    exchangeTokenTool,
   ];
 
   const agent = defineAgent({
