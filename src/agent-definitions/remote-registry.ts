@@ -172,6 +172,89 @@ export function createRemoteRegistryAgent(
     },
   });
 
+
+  // Extract setup/connect as standalone functions to avoid circular reference
+  const setupFn = async (params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult> => {
+    const url = params.url as string;
+    const name = (params.name as string) ?? "registry";
+    if (!url) return { success: false, error: "url is required" };
+    try {
+      const configUrl = url.replace(/\/$/, "") + "/.well-known/configuration";
+      const configRes = await globalThis.fetch(configUrl);
+      if (!configRes.ok) return { success: false, error: "Failed to discover registry at " + configUrl };
+      const remoteConfig = await configRes.json() as any;
+      if (remoteConfig.jwks_uri) {
+        const jwksRes = await globalThis.fetch(remoteConfig.jwks_uri);
+        if (!jwksRes.ok) return { success: false, error: "JWKS not reachable" };
+      }
+      if (addTrustedIssuer) await addTrustedIssuer(url.replace(/\/$/, ""));
+      const jwt = await signJwt({ action: "setup", targetUrl: url });
+      const tenantResult = await mcpCall(url, jwt, { action: "execute_tool", path: "/agents/@auth", tool: "create_tenant", params: { name } });
+      const remoteTenantId = tenantResult?.result?.tenantId ?? tenantResult?.tenantId ?? name;
+      const ownerId = ctx.callerId ?? "system";
+      await storeConnection(ownerId, { id: name, name, url: url.replace(/\/$/, ""), remoteTenantId, createdAt: Date.now() });
+      return { success: true, data: { registryId: name, url, remoteTenantId } };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
+  const connectFn = async (params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult> => {
+    const registryId = params.registryId as string;
+    const redirectUri = (params.redirectUri as string) ?? "";
+    if (!registryId) return { success: false, error: "registryId is required" };
+    try {
+      const ownerId = ctx.callerId ?? "system";
+      const conn = await loadConnection(ownerId, registryId);
+      if (!conn) return { success: false, error: "No connection '" + registryId + "'" };
+      const jwt = await signJwt({ sub: ctx.callerId, tenantId: conn.remoteTenantId, action: "connect" });
+      const tokenRes = await globalThis.fetch(conn.url + "/oauth/token", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ grant_type: "jwt_exchange", assertion: jwt, redirect_uri: redirectUri }),
+      });
+      const tokenData = await tokenRes.json() as any;
+      if (tokenData.access_token) return { success: true, data: { registryId, accessToken: tokenData.access_token, userId: tokenData.user_id, tenantId: tokenData.tenant_id } };
+      if (tokenData.error === "identity_required") return { success: false, error: "identity_required", data: { authorizeUrl: tokenData.authorize_url, tenantId: tokenData.tenant_id } };
+      return { success: false, error: tokenData.error_description ?? tokenData.error ?? "Token exchange failed" };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
+  const setupTool = defineTool({
+    name: "setup",
+    description: "Set up a connection to a remote registry. Discovers JWKS, establishes trust, creates tenant.",
+    visibility: "public" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        url: { type: "string", description: "Remote registry URL" },
+        name: { type: "string", description: "Connection name" },
+      },
+      required: ["url"],
+    },
+    execute: async (input: any, ctx: ToolContext) => {
+      return setupFn(input, { callerId: ctx.callerId, callerType: ctx.callerType ?? "user", provider: "remote-registry", tenantId: (ctx as any).tenantId ?? "system", agentPath: "@remote-registry" });
+    },
+  });
+
+  const connectTool = defineTool({
+    name: "connect",
+    description: "Connect a user to a remote registry via jwt_exchange. Returns access_token or identity_required.",
+    visibility: "public" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        registryId: { type: "string", description: "Registry connection ID" },
+        redirectUri: { type: "string", description: "Redirect URI after OAuth" },
+      },
+      required: ["registryId"],
+    },
+    execute: async (input: any, ctx: ToolContext) => {
+      return connectFn(input, { callerId: ctx.callerId, callerType: ctx.callerType ?? "user", provider: "remote-registry", tenantId: (ctx as any).tenantId ?? "system", agentPath: "@remote-registry" });
+    },
+  });
+
   return defineAgent({
     path: "@remote-registry",
     entrypoint:
@@ -366,6 +449,6 @@ export function createRemoteRegistryAgent(
         return { success: false, error: "Not implemented" };
       },
     },
-    tools: [proxyTool, listTool] as any[],
+    tools: [setupTool, connectTool, proxyTool, listTool] as any[],
   });
 }
