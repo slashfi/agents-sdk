@@ -814,6 +814,11 @@ export function createAgentServer(
           try {
             const result = await verifyJwtFromIssuer(token, issuerUrl);
             if (result) {
+              // Verify the JWT's iss claim matches the trusted issuer
+              const jwtIss = (result as any).iss;
+              if (jwtIss && jwtIss !== issuerUrl) {
+                continue; // iss claim doesn't match this trusted issuer
+              }
               claims = result as unknown as Record<string, unknown>;
               break;
             }
