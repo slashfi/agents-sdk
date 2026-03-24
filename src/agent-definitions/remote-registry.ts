@@ -1,25 +1,26 @@
 /**
- * Remote Registry Agent
+ * Remote Registry Agent (JWKS Auth)
  *
  * Integration agent for connecting to remote agent registries.
- * Uses the IntegrationMethods pattern so @integrations can discover
- * and interact with it uniformly via setup/connect/list/get/update.
+ * Uses JWKS trust exchange + jwt_exchange for authentication.
+ * No client credentials stored — uses signJwt for outbound calls.
  *
- * Each remote registry connection stores:
- * - url: the registry's base URL
- * - tenantId: the tenant created on the remote registry
- * - clientId + clientSecret: credentials for authentication
+ * Flow:
+ *   setup: discover JWKS → add trusted issuer → call @auth/create_tenant → store connection
+ *   connect: POST /oauth/token jwt_exchange → identity_required → /oauth/authorize → linked
+ *   proxy: sign JWT → POST to remote MCP endpoint
  *
  * @example
  * ```typescript
- * import { createRemoteRegistryAgent, createAgentRegistry } from '@slashfi/agents-sdk';
+ * import { createRemoteRegistryAgent, createAgentServer } from '@slashfi/agents-sdk';
  *
- * const registry = createAgentRegistry();
- * registry.register(createRemoteRegistryAgent({ secretStore }));
+ * const server = createAgentServer(registry, { ... });
+ * await server.start();
  *
- * // Then via @integrations:
- * // setup_integration({ provider: 'remote-registry', params: { url: 'https://registry.slash.com', name: 'slash' } })
- * // connect_integration({ provider: 'remote-registry', params: { registryId: 'slash', userId: 'user_123' } })
+ * registry.register(createRemoteRegistryAgent({
+ *   secretStore,
+ *   signJwt: (claims) => server.signJwt(claims),
+ * }));
  * ```
  */
 
@@ -32,446 +33,220 @@ import type {
 } from "../types.js";
 import type { SecretStore } from "./secrets.js";
 
-// ============================================
-// Types
-// ============================================
-
 export interface RemoteRegistryAgentOptions {
-  /** Secret store for persisting registry credentials */
+  /** Secret store for persisting registry connections */
   secretStore: SecretStore;
+  /** Sign a JWT with this server's keys for outbound calls */
+  signJwt: (claims: Record<string, unknown>) => Promise<string>;
+  /** Add a trusted JWKS issuer (optional — for bidirectional trust) */
+  addTrustedIssuer?: (issuerUrl: string) => Promise<void>;
 }
 
 /** Stored connection to a remote registry */
 interface RegistryConnection {
-  /** Registry identifier (user-chosen name) */
   id: string;
-  /** Display name */
   name: string;
-  /** Registry base URL */
   url: string;
-  /** Tenant ID on the remote registry */
   remoteTenantId: string;
-  /** Client ID for authentication */
-  clientId: string;
-  /** When the connection was created */
   createdAt: number;
 }
 
-
-// ============================================
-// Helpers
-// ============================================
-
-
-/**
- * Make an MCP JSON-RPC call to a remote registry.
- */
-async function mcpCall(
-  url: string,
-  token: string,
-  request: {
-    action: string;
-    path: string;
-    tool: string;
-    params?: Record<string, unknown>;
-  },
-): Promise<any> {
-  const res = await globalThis.fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: Date.now(),
-      method: "tools/call",
-      params: {
-        name: "call_agent",
-        arguments: {
-          request: {
-            action: request.action,
-            path: request.path,
-            tool: request.tool,
-            params: request.params ?? {},
-          },
-        },
-      },
-    }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Registry call failed: ${res.status} ${res.statusText}`);
-  }
-
-  const json = (await res.json()) as any;
-  if (json.error) {
-    throw new Error(
-      `Registry RPC error: ${json.error.message ?? JSON.stringify(json.error)}`,
-    );
-  }
-
-  // Parse the tool result from MCP response
-  const text = json?.result?.content?.[0]?.text;
-  if (!text) return json?.result;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { raw: text };
-  }
-}
-
-/**
- * Get an access token from a remote registry via /oauth/token.
- */
-async function getRegistryToken(
-  url: string,
-  clientId: string,
-  clientSecret: string,
-): Promise<string> {
-  const tokenUrl = url.replace(/\/$/, "") + "/oauth/token";
-  const res = await globalThis.fetch(tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "client_credentials",
-      client_id: clientId,
-      client_secret: clientSecret,
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Token exchange failed: ${res.status} ${body}`);
-  }
-
-  const json = (await res.json()) as { access_token: string };
-  return json.access_token;
-}
-
-// ============================================
-// Create Remote Registry Agent
-// ============================================
+const ENTITY_TYPE = "remote-registry-connections";
 
 export function createRemoteRegistryAgent(
   options: RemoteRegistryAgentOptions,
 ): AgentDefinition {
-  const { secretStore } = options;
+  const { secretStore, signJwt, addTrustedIssuer } = options;
 
-  // We store all registry connections as a single JSON blob per owner.
-  // The secret ID is stored via associate/resolveByEntity for lookup.
-  const ENTITY_TYPE = "remote-registry-connections";
+  // --- Connection storage (KV via SecretStore) ---
 
-  /**
-   * Store a registry connection (metadata + credentials).
-   */
-  async function storeConnection(
-    ownerId: string,
-    conn: RegistryConnection,
-    clientSecret: string,
-  ): Promise<void> {
-    // Load existing connections, update, and store back
+  async function storeConnection(ownerId: string, conn: RegistryConnection): Promise<void> {
     const all = await loadAllConnections(ownerId);
-    all[conn.id] = { ...conn, clientSecret };
+    all[conn.id] = conn;
     const value = JSON.stringify(all);
-
-    // Store the blob
     const scope = { tenantId: ownerId };
     const secretId = await secretStore.store(value, ownerId);
-
-    // Link it so we can find it later
     if (secretStore.associate) {
       await secretStore.associate(secretId, ENTITY_TYPE, ownerId, scope);
     }
   }
 
-  /**
-   * Load all connections from the stored blob.
-   */
-  async function loadAllConnections(
-    ownerId: string,
-  ): Promise<Record<string, RegistryConnection & { clientSecret: string }>> {
-    // Try resolveByEntity first (v0.7.0+)
+  async function loadAllConnections(ownerId: string): Promise<Record<string, RegistryConnection>> {
     if (secretStore.resolveByEntity) {
       const scope = { tenantId: ownerId };
       const secretIds = await secretStore.resolveByEntity(ENTITY_TYPE, ownerId, scope);
-      if (secretIds && secretIds.length > 0) {
-        // Resolve the latest stored blob
-        const latestId = secretIds[secretIds.length - 1];
-        const raw = await secretStore.resolve(latestId, ownerId);
+      if (secretIds?.length) {
+        const raw = await secretStore.resolve(secretIds[secretIds.length - 1], ownerId);
         if (raw) {
-          try {
-            return JSON.parse(raw);
-          } catch {
-            return {};
-          }
+          try { return JSON.parse(raw); } catch { return {}; }
         }
       }
     }
     return {};
   }
 
-  /**
-   * Load a registry connection.
-   */
-  async function loadConnection(
-    ownerId: string,
-    registryId: string,
-  ): Promise<{ conn: RegistryConnection; clientSecret: string } | null> {
+  async function loadConnection(ownerId: string, registryId: string): Promise<RegistryConnection | null> {
     const all = await loadAllConnections(ownerId);
-    const entry = all[registryId];
-    if (!entry) return null;
-    const { clientSecret, ...conn } = entry;
-    return { conn, clientSecret };
+    return all[registryId] ?? null;
   }
 
-  /**
-   * List all registry connections for an owner.
-   */
-  async function listConnectionsList(
-    ownerId: string,
-  ): Promise<RegistryConnection[]> {
-    const all = await loadAllConnections(ownerId);
-    return Object.values(all).map(({ clientSecret: _, ...conn }) => conn);
+  // --- MCP call helper ---
+
+  async function mcpCall(url: string, jwt: string, request: Record<string, unknown>): Promise<any> {
+    const res = await globalThis.fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${jwt}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: Date.now(),
+        method: "tools/call",
+        params: { name: "call_agent", arguments: { request } },
+      }),
+    });
+    const rpc = await res.json() as any;
+    const text = rpc.result?.content?.[0]?.text;
+    return text ? JSON.parse(text) : rpc.result;
   }
 
-  /**
-   * Get an authenticated token for a registry connection.
-   */
-  async function getAuthenticatedToken(
+  // --- Proxy: sign JWT and call remote ---
+
+  async function proxyCall(
     ownerId: string,
     registryId: string,
-  ): Promise<{ token: string; conn: RegistryConnection }> {
-    const data = await loadConnection(ownerId, registryId);
-    if (!data) {
-      throw new Error(
-        `No registry connection '${registryId}'. Use setup_integration first.`,
-      );
+    request: { action: string; path: string; tool: string; params?: Record<string, unknown> },
+  ): Promise<{ success: boolean; result?: any; error?: string }> {
+    const conn = await loadConnection(ownerId, registryId);
+    if (!conn) {
+      return { success: false, error: `No connection '${registryId}'. Use setup_integration first.` };
     }
-    const token = await getRegistryToken(
-      data.conn.url,
-      data.conn.clientId,
-      data.clientSecret,
-    );
-    return { token, conn: data.conn };
+    const jwt = await signJwt({ tenantId: conn.remoteTenantId, action: "proxy" });
+    const result = await mcpCall(conn.url, jwt, request);
+    return { success: true, result };
   }
 
-  // ---- Tools ----
+  // --- Tools ---
 
-  const callRemoteTool = defineTool({
-    name: "call_remote",
-    description:
-      "Make an authenticated MCP call to a remote agent registry. " +
-      "Proxies the request with the stored tenant credentials.",
+  const proxyTool = defineTool({
+    name: "proxy_call",
+    description: "Proxy an MCP call to a connected remote registry.",
     visibility: "public" as const,
     inputSchema: {
       type: "object" as const,
       properties: {
-        registryId: {
-          type: "string",
-          description: "Registry connection ID",
-        },
-        agentPath: {
-          type: "string",
-          description: "Agent path on the remote registry (e.g. '@integrations')",
-        },
-        action: {
-          type: "string",
-          description: "Action to perform (e.g. 'execute_tool')",
-        },
-        tool: {
-          type: "string",
-          description: "Tool name to call",
-        },
-        params: {
-          type: "object",
-          description: "Tool parameters",
-        },
+        registryId: { type: "string", description: "Registry connection ID" },
+        action: { type: "string" },
+        path: { type: "string" },
+        tool: { type: "string" },
+        params: { type: "object" },
       },
-      required: ["registryId", "agentPath", "action", "tool"],
+      required: ["registryId", "action", "path", "tool"],
     },
-    execute: async (
-      input: {
-        registryId: string;
-        agentPath: string;
-        action: string;
-        tool: string;
-        params?: Record<string, unknown>;
-      },
-      ctx: ToolContext,
-    ) => {
-      const { token, conn } = await getAuthenticatedToken(
-        ctx.callerId,
-        input.registryId,
-      );
-      return mcpCall(conn.url, token, {
+    execute: async (input: any, ctx: ToolContext) => {
+      return proxyCall(ctx.callerId ?? "system", input.registryId, {
         action: input.action,
-        path: input.agentPath,
+        path: input.path,
         tool: input.tool,
         params: input.params,
       });
     },
   });
 
-  const listRemoteAgentsTool = defineTool({
-    name: "list_remote_agents",
-    description: "List agents available on a remote registry.",
+  const listTool = defineTool({
+    name: "list_connections",
+    description: "List all connected remote registries.",
     visibility: "public" as const,
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        registryId: {
-          type: "string",
-          description: "Registry connection ID",
-        },
-      },
-      required: ["registryId"],
-    },
-    execute: async (
-      input: { registryId: string },
-      ctx: ToolContext,
-    ) => {
-      const { token, conn } = await getAuthenticatedToken(
-        ctx.callerId,
-        input.registryId,
-      );
-
-      const listUrl = conn.url.replace(/\/$/, "") + "/list";
-      const res = await globalThis.fetch(listUrl, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to list agents: ${res.status}`);
-      }
-
-      return res.json();
+    inputSchema: { type: "object" as const, properties: {} },
+    execute: async (_input: any, ctx: ToolContext) => {
+      const all = await loadAllConnections(ctx.callerId ?? "system");
+      return {
+        connections: Object.values(all).map(c => ({
+          id: c.id,
+          name: c.name,
+          url: c.url,
+          remoteTenantId: c.remoteTenantId,
+        })),
+      };
     },
   });
-
-  // ---- Agent Definition ----
 
   return defineAgent({
     path: "@remote-registry",
     entrypoint:
       "You manage connections to remote agent registries. " +
-      "Use setup to connect a new registry, connect to register users, " +
-      "and call_remote to proxy authenticated MCP calls.",
+      "Use setup to connect a new registry, connect to link user identities, " +
+      "and proxy_call to make authenticated calls.",
     config: {
       name: "Remote Registry",
-      description:
-        "Connect to remote agent registries (MCP over HTTP) for federated integrations",
+      description: "Connect to remote agent registries via JWKS trust + jwt_exchange",
       supportedActions: ["execute_tool", "describe_tools", "load"],
       integration: {
         provider: "remote-registry",
         displayName: "Agent Registry",
         icon: "server",
         category: "infrastructure",
-        description:
-          "Connect to a remote agent registry to access its integrations, databases, and agents.",
+        description: "Connect to a remote agent registry via JWKS trust exchange.",
       },
     },
     visibility: "public",
     integrationMethods: {
       async setup(
         params: Record<string, unknown>,
-        ctx: IntegrationMethodContext,
+        _ctx: IntegrationMethodContext,
       ): Promise<IntegrationMethodResult> {
         const url = params.url as string;
         const name = (params.name as string) ?? "registry";
-
-        if (!url) {
-          return { success: false, error: "url is required" };
-        }
+        if (!url) return { success: false, error: "url is required" };
 
         try {
-          // 1. Create tenant on remote registry
-          const setupUrl = url.replace(/\/$/, "") + "/setup";
-          const setupRes = await globalThis.fetch(setupUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ tenant: name }),
-          });
+          // 1. Discover remote registry
+          const configUrl = url.replace(/\/$/, "") + "/.well-known/configuration";
+          const configRes = await globalThis.fetch(configUrl);
+          if (!configRes.ok) {
+            return { success: false, error: `Failed to discover registry at ${configUrl}: ${configRes.status}` };
+          }
+          const remoteConfig = await configRes.json() as any;
 
-          if (!setupRes.ok) {
-            const body = await setupRes.text();
-            return {
-              success: false,
-              error: `Failed to create tenant on registry: ${setupRes.status} ${body}`,
-            };
+          // 2. Verify JWKS endpoint exists
+          if (remoteConfig.jwks_uri) {
+            const jwksRes = await globalThis.fetch(remoteConfig.jwks_uri);
+            if (!jwksRes.ok) {
+              return { success: false, error: `JWKS endpoint not reachable: ${remoteConfig.jwks_uri}` };
+            }
           }
 
-          const setupResult = (await setupRes.json()) as {
-            success: boolean;
-            result?: {
-              tenantId: string;
-              token?: string;
-            };
-          };
-
-          if (!setupResult.success || !setupResult.result?.tenantId) {
-            return {
-              success: false,
-              error: "Registry /setup did not return a tenantId",
-            };
+          // 3. Add remote as trusted issuer (bidirectional trust)
+          if (addTrustedIssuer) {
+            await addTrustedIssuer(url.replace(/\/$/, ""));
           }
 
-          const remoteTenantId = setupResult.result.tenantId;
-
-          // 2. Register a client for this tenant
-          // Use the setup token (or root key) to create client credentials
-          const token = setupResult.result.token;
-          if (!token) {
-            return {
-              success: false,
-              error: "Registry /setup did not return a token for client creation",
-            };
-          }
-
-          const registerResult = await mcpCall(url, token, {
+          // 4. Create tenant on remote via @auth/create_tenant
+          const jwt = await signJwt({ action: "setup", targetUrl: url });
+          const tenantResult = await mcpCall(url, jwt, {
             action: "execute_tool",
-            path: "@auth",
-            tool: "register",
-            params: {
-              name: `${name}-client`,
-              scopes: ["integrations", "secrets", "users"],
-            },
+            path: "/agents/@auth",
+            tool: "create_tenant",
+            params: { name },
           });
 
-          const clientId =
-            registerResult?.clientId ?? registerResult?.result?.clientId;
-          const clientSecret =
-            registerResult?.clientSecret?.value ??
-            registerResult?.result?.clientSecret?.value ??
-            registerResult?.clientSecret;
+          const remoteTenantId = tenantResult?.result?.tenantId ?? tenantResult?.tenantId ?? name;
 
-          if (!clientId || !clientSecret) {
-            return {
-              success: false,
-              error: `Failed to register client: ${JSON.stringify(registerResult)}`,
-            };
-          }
-
-          // 3. Store connection
+          // 5. Store connection
+          const ownerId = _ctx.callerId ?? "system";
           const conn: RegistryConnection = {
             id: name,
             name,
             url: url.replace(/\/$/, ""),
             remoteTenantId,
-            clientId,
             createdAt: Date.now(),
           };
-
-          await storeConnection(ctx.callerId, conn, clientSecret);
+          await storeConnection(ownerId, conn);
 
           return {
             success: true,
-            data: {
-              registryId: name,
-              url: conn.url,
-              remoteTenantId,
-              clientId,
-            },
+            data: { registryId: name, url, remoteTenantId },
           };
         } catch (err) {
           return {
@@ -483,36 +258,68 @@ export function createRemoteRegistryAgent(
 
       async connect(
         params: Record<string, unknown>,
-        ctx: IntegrationMethodContext,
+        _ctx: IntegrationMethodContext,
       ): Promise<IntegrationMethodResult> {
         const registryId = params.registryId as string;
-        const userId = (params.userId as string) ?? ctx.callerId;
-
-        if (!registryId) {
-          return { success: false, error: "registryId is required" };
-        }
+        const redirectUri = (params.redirectUri as string) ?? "";
+        if (!registryId) return { success: false, error: "registryId is required" };
 
         try {
-          const { token, conn } = await getAuthenticatedToken(
-            ctx.callerId,
-            registryId,
-          );
+          const ownerId = _ctx.callerId ?? "system";
+          const conn = await loadConnection(ownerId, registryId);
+          if (!conn) {
+            return { success: false, error: `No connection '${registryId}'` };
+          }
 
-          // Register user on the remote registry
-          const result = await mcpCall(conn.url, token, {
-            action: "execute_tool",
-            path: "@users",
-            tool: "create_user",
-            params: { name: userId, tenantId: conn.remoteTenantId },
+          // Sign JWT with user identity
+          const jwt = await signJwt({
+            sub: _ctx.callerId,
+            tenantId: conn.remoteTenantId,
+            action: "connect",
           });
 
+          // POST /oauth/token with jwt_exchange
+          const tokenUrl = `${conn.url}/oauth/token`;
+          const tokenRes = await globalThis.fetch(tokenUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              grant_type: "jwt_exchange",
+              assertion: jwt,
+              redirect_uri: redirectUri,
+            }),
+          });
+
+          const tokenData = await tokenRes.json() as any;
+
+          // User linked — return access token
+          if (tokenData.access_token) {
+            return {
+              success: true,
+              data: {
+                registryId,
+                accessToken: tokenData.access_token,
+                userId: tokenData.user_id,
+                tenantId: tokenData.tenant_id,
+              },
+            };
+          }
+
+          // User not linked — return authorize URL
+          if (tokenData.error === "identity_required") {
+            return {
+              success: false,
+              error: "identity_required",
+              data: {
+                authorizeUrl: tokenData.authorize_url,
+                tenantId: tokenData.tenant_id,
+              },
+            };
+          }
+
           return {
-            success: true,
-            data: {
-              registryId,
-              userId,
-              remoteUser: result,
-            },
+            success: false,
+            error: tokenData.error_description ?? tokenData.error ?? "Token exchange failed",
           };
         } catch (err) {
           return {
@@ -524,98 +331,41 @@ export function createRemoteRegistryAgent(
 
       async list(
         _params: Record<string, unknown>,
-        ctx: IntegrationMethodContext,
+        _ctx: IntegrationMethodContext,
       ): Promise<IntegrationMethodResult> {
-        try {
-          const conns = await listConnectionsList(ctx.callerId);
-          return {
-            success: true,
-            data: conns.map((c) => ({
+        const all = await loadAllConnections(_ctx.callerId ?? "system");
+        return {
+          success: true,
+          data: {
+            connections: Object.values(all).map(c => ({
               id: c.id,
               name: c.name,
               url: c.url,
               remoteTenantId: c.remoteTenantId,
-              createdAt: c.createdAt,
             })),
-          };
-        } catch (err) {
-          return {
-            success: false,
-            error: err instanceof Error ? err.message : String(err),
-          };
-        }
+          },
+        };
       },
 
       async get(
         params: Record<string, unknown>,
-        ctx: IntegrationMethodContext,
+        _ctx: IntegrationMethodContext,
       ): Promise<IntegrationMethodResult> {
         const registryId = params.registryId as string;
-        if (!registryId) {
-          return { success: false, error: "registryId is required" };
-        }
-
-        try {
-          const data = await loadConnection(ctx.callerId, registryId);
-          if (!data) {
-            return {
-              success: false,
-              error: `No registry connection '${registryId}'`,
-            };
-          }
-
-          return {
-            success: true,
-            data: {
-              id: data.conn.id,
-              name: data.conn.name,
-              url: data.conn.url,
-              remoteTenantId: data.conn.remoteTenantId,
-              clientId: data.conn.clientId,
-              createdAt: data.conn.createdAt,
-            },
-          };
-        } catch (err) {
-          return {
-            success: false,
-            error: err instanceof Error ? err.message : String(err),
-          };
-        }
+        if (!registryId) return { success: false, error: "registryId is required" };
+        const ownerId = _ctx.callerId ?? "system";
+        const conn = await loadConnection(ownerId, registryId);
+        if (!conn) return { success: false, error: `No connection '${registryId}'` };
+        return { success: true, data: conn };
       },
 
       async update(
-        params: Record<string, unknown>,
-        ctx: IntegrationMethodContext,
+        _params: Record<string, unknown>,
+        _ctx: IntegrationMethodContext,
       ): Promise<IntegrationMethodResult> {
-        const registryId = params.registryId as string;
-        if (!registryId) {
-          return { success: false, error: "registryId is required" };
-        }
-
-        try {
-          const data = await loadConnection(ctx.callerId, registryId);
-          if (!data) {
-            return {
-              success: false,
-              error: `No registry connection '${registryId}'`,
-            };
-          }
-
-          // Update mutable fields
-          if (params.name) data.conn.name = params.name as string;
-          if (params.url) data.conn.url = (params.url as string).replace(/\/$/, "");
-
-          await storeConnection(ctx.callerId, data.conn, data.clientSecret);
-
-          return { success: true, data: { id: data.conn.id, updated: true } };
-        } catch (err) {
-          return {
-            success: false,
-            error: err instanceof Error ? err.message : String(err),
-          };
-        }
+        return { success: false, error: "Not implemented" };
       },
     },
-    tools: [callRemoteTool as any, listRemoteAgentsTool as any],
+    tools: [proxyTool, listTool] as any[],
   });
 }
