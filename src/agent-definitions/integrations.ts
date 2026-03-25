@@ -342,7 +342,10 @@ export async function exchangeCodeForToken(
     throw new Error(`Token exchange failed (${response.status}): ${text}`);
   }
 
-  const data = (await response.json()) as Record<string, unknown>;
+  const responseText = await response.text();
+  console.log("[token-exchange] Slack response:", responseText.substring(0, 500));
+  let data: Record<string, unknown>;
+  try { data = JSON.parse(responseText); } catch (e) { throw new Error(`Failed to parse JSON: ${responseText.substring(0, 200)}`); }
 
   return {
     accessToken: String(data[oauth.accessTokenField ?? "access_token"] ?? ""),
@@ -408,7 +411,10 @@ export async function refreshAccessToken(
     throw new Error(`Token refresh failed (${response.status}): ${text}`);
   }
 
-  const data = (await response.json()) as Record<string, unknown>;
+  const responseText = await response.text();
+  console.log("[token-exchange] Slack response:", responseText.substring(0, 500));
+  let data: Record<string, unknown>;
+  try { data = JSON.parse(responseText); } catch (e) { throw new Error(`Failed to parse JSON: ${responseText.substring(0, 200)}`); }
 
   return {
     accessToken: String(data[oauth.accessTokenField ?? "access_token"] ?? ""),

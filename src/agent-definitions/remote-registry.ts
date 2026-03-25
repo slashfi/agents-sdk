@@ -177,6 +177,7 @@ export function createRemoteRegistryAgent(
 
   // Extract setup/connect as standalone functions to avoid circular reference
   const setupFn = async (params: Record<string, unknown>, _ctx: IntegrationMethodContext): Promise<IntegrationMethodResult> => {
+    console.log("[remote-registry] setupFn called with:", JSON.stringify(params));
     const url = params.url as string;
     const name = (params.name as string) ?? "registry";
     const oidcUserId = params.oidcUserId as string | undefined;
@@ -189,7 +190,7 @@ export function createRemoteRegistryAgent(
         const jwt = await signJwt({ sub: oidcUserId, action: "setup", type: "agent-registry" });
         const tokenRes = await globalThis.fetch(baseUrl + "/oauth/token", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ grant_type: "jwt_exchange", assertion: jwt, scope: "setup" }),
+          body: JSON.stringify({ grant_type: "jwt_exchange", assertion: jwt, scope: "setup", redirect_uri: params.redirect_uri ?? "" }),
         });
         const tokenData = await tokenRes.json() as any;
         if (!tokenData.access_token && !tokenData.tenant_id) {
@@ -203,22 +204,30 @@ export function createRemoteRegistryAgent(
 
       // Phase 1: Discover JWKS, establish trust, then request OIDC
       const configUrl = baseUrl + "/.well-known/configuration";
+      console.log("[setupFn] fetching config:", configUrl);
       const configRes = await globalThis.fetch(configUrl);
+      console.log("[setupFn] config status:", configRes.status);
       if (!configRes.ok) return { success: false, error: "Failed to discover registry at " + configUrl };
       const remoteConfig = await configRes.json() as any;
       if (remoteConfig.jwks_uri) {
+        console.log("[setupFn] fetching JWKS:", remoteConfig.jwks_uri);
         const jwksRes = await globalThis.fetch(remoteConfig.jwks_uri);
+        console.log("[setupFn] JWKS status:", jwksRes.status);
         if (!jwksRes.ok) return { success: false, error: "JWKS not reachable" };
       }
-      if (addTrustedIssuer) await addTrustedIssuer(baseUrl);
+      if (addTrustedIssuer) { console.log("[setupFn] adding trusted issuer:", baseUrl); await addTrustedIssuer(baseUrl); console.log("[setupFn] added trusted issuer"); }
 
       // Request identity — atlas will return authorize URL for Slack OIDC
+      console.log("[setupFn] Phase 1: requesting identity via jwt_exchange");
       const jwt = await signJwt({ action: "setup", type: "agent-registry", targetUrl: url });
+      console.log("[setupFn] POSTing to:", baseUrl + "/oauth/token");
       const tokenRes = await globalThis.fetch(baseUrl + "/oauth/token", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ grant_type: "jwt_exchange", assertion: jwt, scope: "setup" }),
+        body: JSON.stringify({ grant_type: "jwt_exchange", assertion: jwt, scope: "setup", redirect_uri: params.redirect_uri ?? "" }),
       });
+      console.log("[setupFn] token status:", tokenRes.status);
       const tokenData = await tokenRes.json() as any;
+      console.log("[setupFn] tokenData:", JSON.stringify(tokenData).substring(0, 300));
 
       // If already set up (user linked), store connection directly
       if (tokenData.access_token) {
