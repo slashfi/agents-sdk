@@ -65,6 +65,8 @@ export interface OAuthIdentityProvider {
     redirectUri: string;
     /** Base URL of this server */
     baseUrl: string;
+    /** OAuth scope (e.g. "setup" for tenant creation flow) */
+    scope?: string;
   }): Promise<Response>;
 
   /**
@@ -679,6 +681,9 @@ export function createAgentServer(
           if (params.redirect_uri) {
             authorizeUrl.searchParams.set("redirect_uri", params.redirect_uri);
           }
+          if (params.scope) {
+            authorizeUrl.searchParams.set("scope", params.scope);
+          }
           return jsonResponse(
             {
               error: "identity_required",
@@ -872,11 +877,13 @@ export function createAgentServer(
         }
 
         const baseUrl = new URL(req.url).origin;
+        const scope = url.searchParams.get("scope") ?? undefined;
         const res = await oauthIdentityProvider.authorize(req, {
           token,
           claims,
           redirectUri,
           baseUrl: baseUrl + basePath,
+          scope,
         });
         return cors ? addCors(res) : res;
       }

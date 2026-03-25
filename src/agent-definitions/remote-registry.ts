@@ -179,9 +179,30 @@ export function createRemoteRegistryAgent(
   const setupFn = async (params: Record<string, unknown>, _ctx: IntegrationMethodContext): Promise<IntegrationMethodResult> => {
     const url = params.url as string;
     const name = (params.name as string) ?? "registry";
+    const oidcUserId = params.oidcUserId as string | undefined;
     if (!url) return { success: false, error: "url is required" };
     try {
-      const configUrl = url.replace(/\/$/, "") + "/.well-known/configuration";
+      const baseUrl = url.replace(/\/$/, "");
+
+      // Phase 2: Complete setup after OIDC — store connection with resolved tenant
+      if (oidcUserId) {
+        const jwt = await signJwt({ sub: oidcUserId, action: "setup", type: "agent-registry" });
+        const tokenRes = await globalThis.fetch(baseUrl + "/oauth/token", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ grant_type: "jwt_exchange", assertion: jwt, scope: "setup" }),
+        });
+        const tokenData = await tokenRes.json() as any;
+        if (!tokenData.access_token && !tokenData.tenant_id) {
+          return { success: false, error: tokenData.error_description ?? tokenData.error ?? "Setup completion failed" };
+        }
+        const remoteTenantId = tokenData.tenant_id ?? name;
+        const ownerId = "system";
+        await storeConnection(ownerId, { id: name, name, url: baseUrl, remoteTenantId, createdAt: Date.now() });
+        return { success: true, data: { registryId: name, url, remoteTenantId } };
+      }
+
+      // Phase 1: Discover JWKS, establish trust, then request OIDC
+      const configUrl = baseUrl + "/.well-known/configuration";
       const configRes = await globalThis.fetch(configUrl);
       if (!configRes.ok) return { success: false, error: "Failed to discover registry at " + configUrl };
       const remoteConfig = await configRes.json() as any;
@@ -189,13 +210,30 @@ export function createRemoteRegistryAgent(
         const jwksRes = await globalThis.fetch(remoteConfig.jwks_uri);
         if (!jwksRes.ok) return { success: false, error: "JWKS not reachable" };
       }
-      if (addTrustedIssuer) await addTrustedIssuer(url.replace(/\/$/, ""));
+      if (addTrustedIssuer) await addTrustedIssuer(baseUrl);
+
+      // Request identity — atlas will return authorize URL for Slack OIDC
       const jwt = await signJwt({ action: "setup", type: "agent-registry", targetUrl: url });
-      const tenantResult = await mcpCall(url, jwt, { action: "execute_tool", path: "/agents/@auth", tool: "create_tenant", params: { name, reverseRegistration: true } });
-      const remoteTenantId = tenantResult?.result?.tenantId ?? tenantResult?.tenantId ?? name;
-      const ownerId = "system"; // tenant-scoped
-      await storeConnection(ownerId, { id: name, name, url: url.replace(/\/$/, ""), remoteTenantId, createdAt: Date.now() });
-      return { success: true, data: { registryId: name, url, remoteTenantId } };
+      const tokenRes = await globalThis.fetch(baseUrl + "/oauth/token", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ grant_type: "jwt_exchange", assertion: jwt, scope: "setup" }),
+      });
+      const tokenData = await tokenRes.json() as any;
+
+      // If already set up (user linked), store connection directly
+      if (tokenData.access_token) {
+        const remoteTenantId = tokenData.tenant_id ?? name;
+        const ownerId = "system";
+        await storeConnection(ownerId, { id: name, name, url: baseUrl, remoteTenantId, createdAt: Date.now() });
+        return { success: true, data: { registryId: name, url, remoteTenantId } };
+      }
+
+      // Need OIDC — return authorize URL to caller
+      if (tokenData.error === "identity_required") {
+        return { success: false, error: "identity_required", data: { authorizeUrl: tokenData.authorize_url, registryId: name, url } };
+      }
+
+      return { success: false, error: tokenData.error_description ?? tokenData.error ?? "Unexpected response from token endpoint" };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
