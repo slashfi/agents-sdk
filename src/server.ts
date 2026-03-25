@@ -639,7 +639,7 @@ export function createAgentServer(
           const assertionParts = assertion.split(".");
           if (assertionParts.length === 3) {
             const assertionPayload = JSON.parse(atob(assertionParts[1].replace(/-/g, "+").replace(/_/g, "/"))) as any;
-            if (assertionPayload.type === "agent-registry" && assertionPayload.iss) {
+            if (assertionPayload.type === "agent-registry" && assertionPayload.iss && false /* disabled: causes infinite loop */) {
               // Find or create @remote-registry agent and store the reverse connection
               const rrAgent = registry.get("@remote-registry") ?? registry.get("/agents/@remote-registry");
               if (rrAgent) {
