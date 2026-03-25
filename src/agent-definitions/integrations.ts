@@ -489,14 +489,10 @@ export interface IntegrationsAgentOptions {
   store: IntegrationStore;
 
   /**
-   * Callback to list all registered agents.
-   * Used by list_integrations to discover agents with integrationMethods.
-   * Typically wired to registry.list().
-   */
-  getAgents?: () => AgentDefinition[];
 
   /** Registry instance for calling other agents' internal tools */
   registry?: {
+    list?(): AgentDefinition[];
     call(request: any): Promise<any>;
   };
 
@@ -535,7 +531,7 @@ const SYSTEM_OWNER = "__integrations__";
 export function createIntegrationsAgent(
   options: IntegrationsAgentOptions,
 ): AgentDefinition {
-  const { store, callbackBaseUrl, secretStore, getAgents, integrationsStore } = options;
+  const { store, callbackBaseUrl, secretStore, integrationsStore } = options;
 
   // ---- setup_integration ----
   const setupTool = defineTool({
@@ -752,8 +748,8 @@ export function createIntegrationsAgent(
       }> = [];
 
       // 1. Agent-backed integrations
-      if (getAgents) {
-        for (const agent of getAgents()) {
+      if (options.registry) {
+        for (const agent of (options.registry.list?.() ?? [])) {
           if (agent.config?.integration) {
             const ic = agent.config.integration;
             catalog.push({
@@ -848,8 +844,8 @@ export function createIntegrationsAgent(
       }
 
       // 2. Agent-backed integrations (agents with config.integration + list_integrations tool)
-      if (getAgents) {
-        const agents = getAgents();
+      if (options.registry) {
+        const agents = options.registry.list?.() ?? [];
         for (const agent of agents) {
           const hasListTool = agent.tools?.some((t: any) => t.name === 'list_integrations');
           if (hasListTool && agent.config?.integration) {
@@ -1391,7 +1387,7 @@ export function createIntegrationsAgent(
     visibility: "public" as const,
     inputSchema: { type: "object" as const, properties: {} },
     execute: async () => {
-      const agents = getAgents?.() ?? [];
+      const agents = options.registry?.list?.() ?? [];
       const results: any[] = [];
       if (options.registry) {
         for (const agent of agents) {
@@ -1429,7 +1425,7 @@ export function createIntegrationsAgent(
       },
     },
     execute: async (input: { agent_path?: string }) => {
-      const agents = getAgents?.() ?? [];
+      const agents = options.registry?.list?.() ?? [];
       const results: any[] = [];
       if (options.registry) {
         const targetAgents = input.agent_path
