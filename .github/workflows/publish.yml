@@ -21,7 +21,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
 
       # Remove workspaces before install to avoid resolving example deps
       - run: |
@@ -34,4 +33,7 @@ jobs:
 
       - run: bun run build
 
-      - run: npm publish --access public --provenance
+      # Configure npm for OIDC trusted publishing (no token needed)
+      - run: |
+          echo "//registry.npmjs.org/:_authToken=" > .npmrc
+          npm publish --access public --provenance
