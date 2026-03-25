@@ -588,6 +588,14 @@ export function createAgentServer(
   // OAuth2 token handler
   // ──────────────────────────────────────────
 
+  // Resolve public-facing base URL, respecting reverse proxy headers
+  const resolveBaseUrl = (r: Request): string => {
+    const fwdProto = r.headers.get("x-forwarded-proto");
+    const fwdHost = r.headers.get("x-forwarded-host");
+    if (fwdProto && fwdHost) return `${fwdProto}://${fwdHost}`;
+    return new URL(r.url).origin;
+  };
+
   async function handleOAuthToken(req: Request): Promise<Response> {
     if (!authConfig) {
       return jsonResponse({ error: "auth_not_configured" }, 404);
@@ -675,7 +683,7 @@ export function createAgentServer(
 
         // User not linked yet — needs OAuth identity linking
         if (exchangeResult.needsAuth) {
-          const baseUrl = new URL(req.url).origin;
+          const baseUrl = resolveBaseUrl(req);
           const authorizeUrl = new URL(`${baseUrl}${basePath}/oauth/authorize`);
           authorizeUrl.searchParams.set("token", assertion);
           if (params.redirect_uri) {
@@ -707,7 +715,7 @@ export function createAgentServer(
             },
             sigKey.privateKey,
             sigKey.kid,
-            new URL(req.url).origin,
+            resolveBaseUrl(req),
             `${authConfig.tokenTtl ?? 3600}s`,
           );
 
@@ -789,6 +797,7 @@ export function createAgentServer(
 
   async function fetch(req: Request): Promise<Response> {
     try {
+
       const url = new URL(req.url);
       const path = url.pathname.replace(basePath, "") || "/";
 
@@ -876,7 +885,7 @@ export function createAgentServer(
           return cors ? addCors(res) : res;
         }
 
-        const baseUrl = new URL(req.url).origin;
+        const baseUrl = resolveBaseUrl(req);
         const scope = url.searchParams.get("scope") ?? undefined;
         const res = await oauthIdentityProvider.authorize(req, {
           token,
@@ -897,7 +906,7 @@ export function createAgentServer(
           );
           return cors ? addCors(res) : res;
         }
-        const baseUrl = new URL(req.url).origin;
+        const baseUrl = resolveBaseUrl(req);
         const res = await oauthIdentityProvider.callback(req, {
           baseUrl: baseUrl + basePath,
         });
@@ -921,7 +930,7 @@ export function createAgentServer(
 
       // ── GET /.well-known/configuration → Server discovery ──
       if (path === "/.well-known/configuration" && req.method === "GET") {
-        const baseUrl = new URL(req.url).origin;
+        const baseUrl = resolveBaseUrl(req);
         const res = jsonResponse({
           issuer: baseUrl,
           jwks_uri: `${baseUrl}/.well-known/jwks.json`,
