@@ -120,6 +120,9 @@ export interface DefineAgentOptions<
    */
   integration?: IntegrationHooks;
 
+  /** Lazy loader for event listeners (e.g. entrypoint.ts) */
+  loadListeners?: () => Promise<unknown>;
+
   /**
    * @deprecated Use `integration` instead.
    * Integration method callbacks.
@@ -245,5 +248,6 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
     runtime: options.runtime,
     visibility: options.visibility,
     allowedCallers: options.allowedCallers,
+    loadListeners: options.loadListeners,
   };
 }
