@@ -20,6 +20,11 @@ export type JsonSchema = {
   enum?: unknown[];
   default?: unknown;
   additionalProperties?: boolean | JsonSchema;
+  /** Agent refs (paths to other agents this agent can call) */
+  refs?: Record<string, { description?: string }>;
+
+  /** Tools to expose publicly (by name) */
+  public?: { tools?: string[] };
   [key: string]: unknown;
 };
 
@@ -158,6 +163,11 @@ export interface AgentConfig {
   modelParams?: {
     maxTokens?: number;
     temperature?: number;
+  /** Agent refs (paths to other agents this agent can call) */
+  refs?: Record<string, { description?: string }>;
+
+  /** Tools to expose publicly (by name) */
+  public?: { tools?: string[] };
     [key: string]: unknown;
   };
 
@@ -169,6 +179,11 @@ export interface AgentConfig {
   integration?: IntegrationConfig;
 
   /** Additional configuration */
+  /** Agent refs (paths to other agents this agent can call) */
+  refs?: Record<string, { description?: string }>;
+
+  /** Tools to expose publicly (by name) */
+  public?: { tools?: string[] };
   [key: string]: unknown;
 }
 
@@ -221,6 +236,11 @@ export interface ToolContext extends CoreContext {
   callerType: CallerType;
 
   /** Application-specific extensions (e.g., OS services, stores) */
+  /** Agent refs (paths to other agents this agent can call) */
+  refs?: Record<string, { description?: string }>;
+
+  /** Tools to expose publicly (by name) */
+  public?: { tools?: string[] };
   [key: string]: unknown;
 }
 
