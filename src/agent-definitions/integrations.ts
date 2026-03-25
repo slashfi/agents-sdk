@@ -496,10 +496,6 @@ export interface IntegrationsAgentOptions {
     call(request: any): Promise<any>;
   };
 
-  /** Integrations store for tracking installed integrations */
-  integrationsStore?: {
-    create(input: { agentPath: string; config: Record<string, unknown>; installedBy?: string; tenantId?: string }): Promise<any>;
-  };
 
   /** Secret store for storing/resolving client credentials and tokens */
   secretStore: {
@@ -531,7 +527,7 @@ const SYSTEM_OWNER = "__integrations__";
 export function createIntegrationsAgent(
   options: IntegrationsAgentOptions,
 ): AgentDefinition {
-  const { store, callbackBaseUrl, secretStore, integrationsStore } = options;
+  const { store, callbackBaseUrl, secretStore } = options;
 
   // ---- setup_integration ----
   const setupTool = defineTool({
@@ -676,17 +672,6 @@ export function createIntegrationsAgent(
       }
 
       await store.upsertProvider(config);
-
-      // Also track in integrations table
-      if (integrationsStore) {
-        try {
-          await integrationsStore.create({
-            agentPath: config.agentPath ?? `@${config.id}`,
-            config: { providerId: config.id, ...input },
-            installedBy: _ctx.callerId,
-          });
-        } catch {}
-      }
 
       // Delegate to agent's setup_integration tool via registry.call()
       if (config.agentPath && options.registry) {
