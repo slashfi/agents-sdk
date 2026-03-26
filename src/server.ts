@@ -868,7 +868,7 @@ export function createAgentServer(
 
         // Verify the JWT against trusted issuers (from store, falling back to config)
         let claims: Record<string, unknown> | null = null;
-        const storeIssuers = authConfig?.store?.listTrustedIssuers
+        const storeIssuers = authConfig?.store
           ? await authConfig.store.listTrustedIssuers()
           : [];
         const configIssuerUrls = configTrustedIssuers.map(i => typeof i === "string" ? i : i.issuer);
@@ -1021,7 +1021,7 @@ export function createAgentServer(
       // Load or generate signing keys (without starting Bun.serve)
       if (options.signingKey && serverSigningKeys.length === 0) {
         serverSigningKeys.push(options.signingKey);
-      } else if (authConfig?.store?.getSigningKeys && serverSigningKeys.length === 0) {
+      } else if (authConfig?.store && serverSigningKeys.length === 0) {
         const stored = await authConfig.store.getSigningKeys() ?? [];
         for (const exported of stored) {
           serverSigningKeys.push(await importSigningKey(exported));
@@ -1030,7 +1030,7 @@ export function createAgentServer(
       if (serverSigningKeys.length === 0) {
         const key = await generateSigningKey();
         serverSigningKeys.push(key);
-        if (authConfig?.store?.storeSigningKey) {
+        if (authConfig?.store) {
           await authConfig.store.storeSigningKey(await exportSigningKey(key));
         }
       }

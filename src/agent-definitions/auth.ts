@@ -127,45 +127,45 @@ export interface AuthStore {
   // --- Signing Keys ---
 
   /** Store a signing key pair (exported JWK format). */
-  storeSigningKey?(key: ExportedKeyPair): Promise<void>;
+  storeSigningKey(key: ExportedKeyPair): Promise<void>;
 
   /** Get all signing keys (active + deprecated, not revoked). */
-  getSigningKeys?(): Promise<ExportedKeyPair[]>;
+  getSigningKeys(): Promise<ExportedKeyPair[]>;
 
   /** Get the current active signing key. */
-  getActiveSigningKey?(): Promise<ExportedKeyPair | null>;
+  getActiveSigningKey(): Promise<ExportedKeyPair | null>;
 
   /** Deprecate a signing key by kid. */
-  deprecateSigningKey?(kid: string): Promise<boolean>;
+  deprecateSigningKey(kid: string): Promise<boolean>;
 
   /** Revoke (remove) a signing key by kid. */
-  revokeSigningKey?(kid: string): Promise<boolean>;
+  revokeSigningKey(kid: string): Promise<boolean>;
 
   // --- Trusted Issuers ---
 
   /** Add a trusted issuer URL. */
-  addTrustedIssuer?(issuerUrl: string): Promise<void>;
+  addTrustedIssuer(issuerUrl: string): Promise<void>;
 
   /** Remove a trusted issuer. */
-  removeTrustedIssuer?(issuerUrl: string): Promise<boolean>;
+  removeTrustedIssuer(issuerUrl: string): Promise<boolean>;
 
   /** List all trusted issuer URLs. */
-  listTrustedIssuers?(): Promise<string[]>;
+  listTrustedIssuers(): Promise<string[]>;
 
   /** Register a user under a tenant. Returns a refresh token. */
-  registerUser?(
+  registerUser(
     tenantId: string,
     userId: string,
     clientId: string,
   ): Promise<{ refreshToken: string }>;
 
   /** Validate a refresh token. Returns user info. */
-  validateRefreshToken?(
+  validateRefreshToken(
     refreshToken: string,
   ): Promise<{ tenantId: string; userId: string; clientId: string } | null>;
 
   /** Rotate a refresh token. */
-  rotateRefreshToken?(
+  rotateRefreshToken(
     oldToken: string,
   ): Promise<{
     refreshToken: string;
@@ -177,18 +177,18 @@ export interface AuthStore {
   // --- Tenant Identity ---
 
   /** Store a tenant identity mapping (foreign issuer + ID -> local tenant). */
-  storeTenantIdentity?(tenantId: string, provider: string, providerTenantId: string): Promise<void>;
+  storeTenantIdentity(tenantId: string, provider: string, providerTenantId: string): Promise<void>;
 
   /** Resolve a local tenant ID from a foreign identity. */
-  resolveTenantByIdentity?(provider: string, providerTenantId: string): Promise<string | null>;
+  resolveTenantByIdentity(provider: string, providerTenantId: string): Promise<string | null>;
 
   // --- User Identity ---
 
   /** Store a user identity mapping (foreign issuer + ID -> local user). */
-  storeUserIdentity?(userId: string, provider: string, providerUserId: string): Promise<void>;
+  storeUserIdentity(userId: string, provider: string, providerUserId: string): Promise<void>;
 
   /** Resolve a local user ID from a foreign identity. */
-  resolveUserByIdentity?(provider: string, providerUserId: string): Promise<string | null>;
+  resolveUserByIdentity(provider: string, providerUserId: string): Promise<string | null>;
 
   // --- Transaction ---
 
@@ -244,6 +244,7 @@ export function createMemoryAuthStore(): AuthStore {
   const trustedIssuers = new Set<string>();
   const tenantIdentities = new Map<string, string>(); // "provider:providerTenantId" -> tenantId
   const userIdentities = new Map<string, string>(); // "provider:providerUserId" -> userId
+  const refreshTokens = new Map<string, { tenantId: string; userId: string; clientId: string }>();
 
   return {
     async createTenant(name, _externalRef) {
@@ -389,6 +390,25 @@ export function createMemoryAuthStore(): AuthStore {
       return userIdentities.get(`${provider}:${providerUserId}`) ?? null;
     },
 
+    async registerUser(tenantId, userId, clientId) {
+      const refreshToken = `rt_${generateId("rt")}`;
+      refreshTokens.set(refreshToken, { tenantId, userId, clientId });
+      return { refreshToken };
+    },
+
+    async validateRefreshToken(refreshToken) {
+      return refreshTokens.get(refreshToken) ?? null;
+    },
+
+    async rotateRefreshToken(oldToken) {
+      const data = refreshTokens.get(oldToken);
+      if (!data) return null;
+      refreshTokens.delete(oldToken);
+      const refreshToken = `rt_${generateId("rt")}`;
+      refreshTokens.set(refreshToken, data);
+      return { refreshToken, ...data };
+    },
+
     async transaction<T>(fn: () => Promise<T>): Promise<T> {
       // In-memory: just run sequentially (single-threaded, no concurrency issues)
       return fn();
@@ -501,8 +521,6 @@ export function createAuthAgent(
       if (input.grantType === "refresh_token") {
         if (!input.refreshToken)
           throw new Error("refreshToken is required for refresh_token grant");
-        if (!store.rotateRefreshToken)
-          throw new Error("Refresh tokens not supported by this store");
         const result = await store.rotateRefreshToken(input.refreshToken);
         if (!result) throw new Error("Invalid or expired refresh token");
         const now = Math.floor(Date.now() / 1000);
@@ -716,9 +734,6 @@ export function createAuthAgent(
       properties: {},
     },
     execute: async () => {
-      if (!store.storeSigningKey || !store.getActiveSigningKey || !store.deprecateSigningKey)
-        throw new Error("Store does not support signing key management");
-
       // Deprecate current active key
       const current = await store.getActiveSigningKey();
       if (current) {
@@ -793,9 +808,6 @@ export function createAuthAgent(
     execute: async (
       input: { action: "add" | "remove" | "list"; issuerUrl?: string },
     ) => {
-      if (!store.addTrustedIssuer || !store.removeTrustedIssuer || !store.listTrustedIssuers)
-        throw new Error("Store does not support trusted issuer management");
-
       switch (input.action) {
         case "add": {
           if (!input.issuerUrl) throw new Error("issuerUrl is required");
@@ -837,13 +849,6 @@ export function createAuthAgent(
     execute: async (
       input: { token: string },
     ) => {
-      if (!store.resolveTenantByIdentity || !store.resolveUserByIdentity) {
-        return {
-          error: "exchange_token requires a store with identity resolution support",
-          hint: "Implement storeTenantIdentity/resolveUserByIdentity on your AuthStore",
-        };
-      }
-
       // 1. Decode JWT to read iss claim (no verification yet)
       const parts = input.token.split(".");
       if (parts.length !== 3) {
@@ -864,7 +869,7 @@ export function createAuthAgent(
       }
 
       // 2. Match issuer against trusted issuers
-      const trustedIssuers = store.listTrustedIssuers ? await store.listTrustedIssuers() : [];
+      const trustedIssuers = await store.listTrustedIssuers();
       if (!trustedIssuers.includes(issuer)) {
         return { success: false, error: `Issuer ${issuer} is not trusted` };
       }
@@ -884,17 +889,15 @@ export function createAuthAgent(
       return store.transaction(async () => {
         const localTenantId = await (async () => {
           if (!foreignTenantId) return null;
-          const existing = await store.resolveTenantByIdentity!(issuer, foreignTenantId);
+          const existing = await store.resolveTenantByIdentity(issuer, foreignTenantId);
           if (existing) return existing;
           // Auto-create tenant identity link on first encounter
-          if (store.storeTenantIdentity) {
-            await store.storeTenantIdentity(foreignTenantId, issuer, foreignTenantId);
-          }
+          await store.storeTenantIdentity(foreignTenantId, issuer, foreignTenantId);
           return foreignTenantId;
         })();
 
         // 5. Resolve user
-        const localUserId = await store.resolveUserByIdentity!(issuer, sub);
+        const localUserId = await store.resolveUserByIdentity(issuer, sub);
         if (localUserId) {
           return {
             success: true,
