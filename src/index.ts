@@ -194,3 +194,4 @@ export type {
 export * from "./integrations-store.js";
 export * from "./integration-interface.js";
 export type { ContextFactory } from "./registry.js";
+export { createKeyManager, type KeyManager, type KeyStore, type KeyManagerOptions, type StoredKey, type KeyStatus } from "./key-manager.js";

@@ -100,6 +100,8 @@ export interface AgentServerOptions {
   signingKey?: SigningKey;
   /** OAuth identity provider for cross-registry user linking */
   oauthIdentityProvider?: OAuthIdentityProvider;
+  /** Key store for managed key rotation (if provided, uses createKeyManager instead of simple key gen) */
+  keyStore?: import("./key-manager.js").KeyStore;
 }
 
 export interface AgentServer {
