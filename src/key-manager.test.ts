@@ -26,6 +26,30 @@ function createMemoryKeyStore(): KeyStore & { keys: StoredKey[] } {
       keys.push(...remaining);
       return before - remaining.length;
     },
+    // Transaction support: snapshot + rollback on error
+    async transaction<T>(fn: (store: any) => Promise<T>): Promise<T> {
+      const snapshot = keys.map((k) => ({ ...k }));
+      try {
+        const txStore = {
+          async insertKey(key: StoredKey) { keys.push(key); },
+          async deprecateAllActive() { for (const k of keys) { if (k.status === "active") k.status = "deprecated"; } },
+          async cleanupExpired() {
+            const now = Date.now();
+            const before = keys.length;
+            const remaining = keys.filter((k) => k.expiresAt.getTime() > now);
+            keys.length = 0;
+            keys.push(...remaining);
+            return before - remaining.length;
+          },
+        };
+        return await fn(txStore);
+      } catch (err) {
+        // Rollback
+        keys.length = 0;
+        keys.push(...snapshot);
+        throw err;
+      }
+    },
   };
 }
 
@@ -180,6 +204,51 @@ describe("KeyManager", () => {
 
     const activeKeys = store.keys.filter((k) => k.status === "active");
     expect(activeKeys).toHaveLength(1);
+  });
+
+  // ---- Transaction tests ----
+
+  test("transaction: rotate is atomic (rollback on failure)", async () => {
+    const store = createMemoryKeyStore();
+    km = await createKeyManager({
+      store,
+      issuer: "http://test:3000",
+      checkIntervalMs: 60_000,
+    });
+
+    const initialKid = store.keys[0].kid;
+
+    // Monkey-patch transaction to fail after deprecate
+    const origTx = store.transaction!;
+    store.transaction = async (fn: any) => {
+      const snapshot = store.keys.map((k) => ({ ...k }));
+      try {
+        return await fn({
+          async deprecateAllActive() {
+            for (const k of store.keys) {
+              if (k.status === "active") k.status = "deprecated";
+            }
+          },
+          async insertKey() { throw new Error("simulated failure"); },
+          async cleanupExpired() { return 0; },
+        });
+      } catch (err) {
+        store.keys.length = 0;
+        store.keys.push(...snapshot);
+        throw err;
+      }
+    };
+
+    // Rotation should fail, but state should be rolled back
+    try { await km.rotate(); } catch {}
+
+    // Original key should still be active (not deprecated)
+    const active = store.keys.filter((k) => k.status === "active");
+    expect(active).toHaveLength(1);
+    expect(active[0].kid).toBe(initialKid);
+
+    // Restore
+    store.transaction = origTx;
   });
 
   // ---- enableRotation option ----

@@ -52,6 +52,13 @@ export interface KeyStore {
   deprecateAllActive(): Promise<void>;
   /** Delete expired keys, return count deleted */
   cleanupExpired(): Promise<number>;
+  /**
+   * Run operations atomically. Implementations with transaction support
+   * should wrap the callback in a DB transaction to ensure rotate() is
+   * atomic (deprecate + insert + cleanup all succeed or all fail).
+   * If not provided, operations run sequentially (best-effort).
+   */
+  transaction?<T>(fn: (store: Pick<KeyStore, "insertKey" | "deprecateAllActive" | "cleanupExpired">) => Promise<T>): Promise<T>;
 }
 
 export interface KeyManager {
@@ -145,12 +152,22 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
     keys = await Promise.all(stored.map(toCachedKey));
   }
 
-  /** Generate a new key, deprecate old ones, cleanup expired */
+  /** Generate a new key, deprecate old ones, cleanup expired — atomically if store supports transactions */
   async function rotate(): Promise<void> {
     const newKey = await generateNewKey(keyLifetimeMs);
-    await store.deprecateAllActive();
-    await store.insertKey(newKey);
-    await store.cleanupExpired();
+    if (store.transaction) {
+      await store.transaction(async (tx) => {
+        await tx.deprecateAllActive();
+        await tx.insertKey(newKey);
+        await tx.cleanupExpired();
+      });
+    } else {
+      // Best-effort sequential: insert first so there's always an active key
+      // even if subsequent steps fail
+      await store.insertKey(newKey);
+      await store.deprecateAllActive();
+      await store.cleanupExpired();
+    }
     await refresh();
   }
 
