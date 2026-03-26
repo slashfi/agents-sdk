@@ -641,14 +641,25 @@ export interface CallAgentDescribeToolsResponse {
   tools: ToolSchema[];
 }
 
+/** A resolved agent ref with its discovered tools */
+export interface AgentRefEntry {
+  key: string;
+  path: string;
+  description: string;
+  tools: ToolSchema[];
+}
+
 /** Success response for load */
 export interface CallAgentLoadResponse {
   success: true;
   result: {
     path: string;
     entrypoint: string;
+    systemPrompt: string;
+    contextMessages: string[];
     config: AgentConfig | undefined;
     tools: ToolSchema[];
+    agentRefs: AgentRefEntry[];
   };
 }
 

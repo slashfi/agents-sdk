@@ -4,13 +4,16 @@
  * Manages registered agents and handles callAgent requests.
  */
 
+import { dirname, resolve } from "node:path";
 import type {
   AgentAction,
   AgentDefinition,
+  AgentRefEntry,
   CallAgentDescribeToolsResponse,
   CallAgentErrorResponse,
   CallAgentExecuteToolResponse,
   CallAgentLearnResponse,
+  CallAgentLoadRequest,
   CallAgentLoadResponse,
   CallAgentRequest,
   CallAgentResponse,
@@ -32,6 +35,18 @@ const DEFAULT_SUPPORTED_ACTIONS: AgentAction[] = [
 // ============================================
 
 /**
+ * Middleware hooks for registry lifecycle actions.
+ * Each hook receives the default handler fn and context,
+ * giving full control: call default, skip it, try/catch, or enhance.
+ */
+export interface RegistryMiddleware {
+  load?: (
+    defaultFn: (agent: AgentDefinition, request: CallAgentLoadRequest) => Promise<CallAgentLoadResponse>,
+    ctx: { agent: AgentDefinition; request: CallAgentLoadRequest; registry: AgentRegistry },
+  ) => Promise<CallAgentLoadResponse>;
+}
+
+/**
  * Options for creating an agent registry.
  */
 export interface AgentRegistryOptions {
@@ -39,6 +54,8 @@ export interface AgentRegistryOptions {
   defaultVisibility?: Visibility;
   /** Factory to enrich ToolContext with application-specific data */
   contextFactory?: ContextFactory;
+  /** Lifecycle middleware hooks */
+  middleware?: RegistryMiddleware;
 }
 
 /**
@@ -180,6 +197,112 @@ export function createAgentRegistry(
       default:
         return false;
     }
+  }
+
+  function resolveRefPath(currentPath: string, ref: string): string {
+    if (ref.startsWith("@") && !ref.includes("/")) {
+      return `/agents/${ref}`;
+    }
+    if (ref.startsWith("../") || ref.startsWith("./")) {
+      const dir = dirname(currentPath);
+      return resolve(dir, ref);
+    }
+    if (ref.startsWith("/")) {
+      return ref;
+    }
+    return `/agents/${ref}`;
+  }
+
+  function buildToolsSection(
+    ownTools: ToolSchema[],
+    agentRefs: AgentRefEntry[],
+  ): string {
+    const hasOwnTools = ownTools.length > 0;
+    const hasRefTools = agentRefs.some((ref) => ref.tools.length > 0);
+    if (!hasOwnTools && !hasRefTools) return "";
+
+    const lines: string[] = ["\n\n## Available Tools\n"];
+
+    if (hasOwnTools) {
+      lines.push("| Tool | Description |", "|------|-------------|");
+      for (const t of ownTools) {
+        lines.push(`| ${t.name} | ${t.description} |`);
+      }
+      lines.push("");
+    }
+
+    for (const ref of agentRefs) {
+      if (ref.tools.length > 0) {
+        lines.push(`### From ${ref.key} (${ref.path})\n`);
+        lines.push("| Tool | Description |", "|------|-------------|");
+        for (const t of ref.tools) {
+          lines.push(`| ${t.name} | ${t.description} |`);
+        }
+        lines.push("");
+      }
+    }
+
+    return lines.join("\n");
+  }
+
+  async function defaultLoad(
+    agent: AgentDefinition,
+    request: CallAgentLoadRequest,
+  ): Promise<CallAgentLoadResponse> {
+    const toolSchemas: ToolSchema[] = agent.tools
+      .filter((t: ToolDefinition) =>
+        checkToolAccess(agent, t.name, request.callerId, request.callerType),
+      )
+      .map((t: ToolDefinition) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+        ...(t.outputSchema && { outputSchema: t.outputSchema }),
+      }));
+
+    const agentRefs: AgentRefEntry[] = [];
+    const refs = agent.config?.refs;
+    if (refs) {
+      for (const [key, refConfig] of Object.entries(refs)) {
+        const refPath = resolveRefPath(agent.path, key);
+        const refAgent = agents.get(refPath);
+        const allTools = (refAgent?.tools ?? [])
+          .filter((t: ToolDefinition) =>
+            checkToolAccess(refAgent!, t.name, request.callerId, request.callerType),
+          )
+          .map((t: ToolDefinition) => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+            ...(t.outputSchema && { outputSchema: t.outputSchema }),
+          }));
+        const publicFilter = refAgent?.config?.public?.tools;
+        const tools = publicFilter
+          ? allTools.filter((t) => publicFilter.includes(t.name))
+          : allTools;
+        agentRefs.push({
+          key,
+          path: refPath,
+          description: refConfig.description ?? key,
+          tools,
+        });
+      }
+    }
+
+    const systemPrompt = agent.entrypoint + buildToolsSection(toolSchemas, agentRefs);
+
+    return {
+      success: true,
+      result: {
+        path: agent.path,
+        entrypoint: agent.entrypoint,
+        systemPrompt,
+        contextMessages: [],
+        config: agent.config,
+        tools: toolSchemas,
+        agentRefs,
+      },
+    };
   }
 
   const registry: AgentRegistry = {
@@ -352,31 +475,10 @@ export function createAgentRegistry(
         }
 
         case "load": {
-          const toolSchemas: ToolSchema[] = agent.tools
-            .filter((t: ToolDefinition) =>
-              checkToolAccess(
-                agent,
-                t.name,
-                request.callerId,
-                request.callerType,
-              ),
-            )
-            .map((t: ToolDefinition) => ({
-              name: t.name,
-              description: t.description,
-              inputSchema: t.inputSchema,
-              ...(t.outputSchema && { outputSchema: t.outputSchema }),
-            }));
-
-          return {
-            success: true,
-            result: {
-              path: agent.path,
-              entrypoint: agent.entrypoint,
-              config: agent.config,
-              tools: toolSchemas,
-            },
-          } as CallAgentLoadResponse;
+          if (options.middleware?.load) {
+            return options.middleware.load(defaultLoad, { agent, request, registry });
+          }
+          return defaultLoad(agent, request);
         }
 
         case "learn": {

@@ -69,6 +69,7 @@ export type {
   CallAgentLoadResponse,
   CallAgentRequest,
   CallAgentResponse,
+  AgentRefEntry,
   CallerType,
   CoreContext,
   InvokeContext,
@@ -95,7 +96,7 @@ export type { DefineAgentOptions, DefineToolOptions } from "./define.js";
 
 // Registry
 export { createAgentRegistry } from "./registry.js";
-export type { AgentRegistry, AgentRegistryOptions } from "./registry.js";
+export type { AgentRegistry, AgentRegistryOptions, RegistryMiddleware } from "./registry.js";
 
 // Server
 export { createAgentServer, detectAuth, resolveAuth, canSeeAgent } from "./server.js";
