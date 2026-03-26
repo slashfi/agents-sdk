@@ -55,10 +55,10 @@ export interface KeyStore {
   /**
    * Run operations atomically. Implementations with transaction support
    * should wrap the callback in a DB transaction to ensure rotate() is
-   * atomic (deprecate + insert + cleanup all succeed or all fail).
-   * If not provided, operations run sequentially (best-effort).
+   * atomic (load + deprecate + insert + cleanup all succeed or all fail).
+   * For stores without real tx support, pass a no-op wrapper that runs fn sequentially.
    */
-  transaction<T>(fn: (store: Pick<KeyStore, "insertKey" | "deprecateAllActive" | "cleanupExpired">) => Promise<T>): Promise<T>;
+  transaction<T>(fn: (store: Pick<KeyStore, "loadKeys" | "insertKey" | "deprecateAllActive" | "cleanupExpired">) => Promise<T>): Promise<T>;
 }
 
 export interface KeyManager {
@@ -163,37 +163,37 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
     await refresh();
   }
 
-  /** Check if rotation is needed based on active key age */
+  /** Check if rotation is needed and rotate if so — all within a single transaction */
   async function checkAndRotate(): Promise<void> {
-    const active = keys.find((k) => k.status === "active");
+    // Quick check against cache — no DB/store hit if key is fresh
+    const cached = keys.find((k) => k.status === "active");
+    if (cached) {
+      const age = Date.now() - cached.createdAt.getTime();
+      if (age < rotationThresholdMs) return;
+    }
 
-    // No active key in cache — refresh or rotate
-    if (!active) {
-      await refresh();
-      if (!keys.some((k) => k.status === "active")) {
-        await rotate();
+    // Cache says stale (or empty) — take a lock via transaction to check + rotate atomically
+    await store.transaction(async (tx) => {
+      const stored = await tx.loadKeys();
+      const active = stored.find((k) => k.status === "active");
+
+      if (active) {
+        const age = Date.now() - active.createdAt.getTime();
+        if (age < rotationThresholdMs) {
+          // Another instance already rotated — just update our cache
+          keys = await Promise.all(stored.map(toCachedKey));
+          return;
+        }
       }
-      return;
-    }
 
-    // Check if active key is past the rotation threshold
-    const age = Date.now() - active.createdAt.getTime();
-    if (age < rotationThresholdMs) {
-      return; // Key is fresh
-    }
+      // Still stale (or no active key) — rotate within this tx
+      const newKey = await generateNewKey(keyLifetimeMs);
+      await tx.deprecateAllActive();
+      await tx.insertKey(newKey);
+      await tx.cleanupExpired();
+    });
 
-    // Key is stale — refresh from store first (another instance may have rotated)
     await refresh();
-    const refreshedActive = keys.find((k) => k.status === "active");
-    if (refreshedActive) {
-      const refreshedAge = Date.now() - refreshedActive.createdAt.getTime();
-      if (refreshedAge < rotationThresholdMs) {
-        return; // Another instance already rotated
-      }
-    }
-
-    // Still stale after refresh — rotate
-    await rotate();
   }
 
   // Initial load + ensure we have at least one key

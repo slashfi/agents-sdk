@@ -31,6 +31,7 @@ function createMemoryKeyStore(): KeyStore & { keys: StoredKey[] } {
       const snapshot = keys.map((k) => ({ ...k }));
       try {
         const txStore = {
+          async loadKeys() { return keys.filter((k) => k.status !== "revoked"); },
           async insertKey(key: StoredKey) { keys.push(key); },
           async deprecateAllActive() { for (const k of keys) { if (k.status === "active") k.status = "deprecated"; } },
           async cleanupExpired() {
@@ -224,6 +225,7 @@ describe("KeyManager", () => {
       const snapshot = store.keys.map((k) => ({ ...k }));
       try {
         return await fn({
+          async loadKeys() { return store.keys.filter((k) => k.status !== "revoked"); },
           async deprecateAllActive() {
             for (const k of store.keys) {
               if (k.status === "active") k.status = "deprecated";
