@@ -867,10 +867,14 @@ export function createAgentServer(
           return cors ? addCors(res) : res;
         }
 
-        // Verify the JWT against trusted issuers
+        // Verify the JWT against trusted issuers (from store, falling back to config)
         let claims: Record<string, unknown> | null = null;
-        const issuerUrls = configTrustedIssuers.map(i => typeof i === "string" ? i : i.issuer);
-        for (const issuerUrl of issuerUrls) {
+        const storeIssuers = authConfig?.store?.listTrustedIssuers
+          ? await authConfig.store.listTrustedIssuers()
+          : [];
+        const configIssuerUrls = configTrustedIssuers.map(i => typeof i === "string" ? i : i.issuer);
+        const allIssuerUrls = [...new Set([...storeIssuers, ...configIssuerUrls])];
+        for (const issuerUrl of allIssuerUrls) {
           try {
             const result = await verifyJwtFromIssuer(token, issuerUrl);
             if (result) {
