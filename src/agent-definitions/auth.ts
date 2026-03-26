@@ -847,44 +847,56 @@ export function createAuthAgent(
         };
       }
 
-      // 1. Verify JWT against trusted issuers
-      const issuers = store.listTrustedIssuers ? await store.listTrustedIssuers() : [];
-      let payload: any = null;
-      for (const issuerUrl of issuers) {
-        try {
-          const result = await verifyJwtFromIssuer(input.token, issuerUrl);
-          if (result) {
-            const iss = (result as any).iss;
-            if (iss && iss !== issuerUrl) continue;
-            payload = result;
-            break;
-          }
-        } catch { /* try next issuer */ }
+      // 1. Decode JWT to read iss claim (no verification yet)
+      const parts = input.token.split(".");
+      if (parts.length !== 3) {
+        return { success: false, error: "Invalid JWT format" };
       }
-      if (!payload) {
-        return { success: false, error: "JWT verification failed against all trusted issuers" };
+      let decoded: any;
+      try {
+        decoded = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+      } catch {
+        return { success: false, error: "Failed to decode JWT payload" };
       }
 
-      const issuer = payload.iss;
-      const sub = payload.sub;
-      const foreignTenantId = payload.tenantId;
+      const issuer = decoded.iss;
+      const sub = decoded.sub;
+      const foreignTenantId = decoded.tenantId;
       if (!issuer || !sub) {
         return { success: false, error: "JWT missing iss or sub claims" };
       }
 
-      // 2. Resolve tenant + user inside a transaction for consistency
-      return store.transaction(async () => {
-        let localTenantId: string | null = null;
-        if (foreignTenantId) {
-          localTenantId = await store.resolveTenantByIdentity!(issuer, foreignTenantId);
-          if (!localTenantId && store.storeTenantIdentity) {
-            // Auto-create tenant identity link
-            localTenantId = foreignTenantId;
-            await store.storeTenantIdentity(localTenantId!, issuer, foreignTenantId);
-          }
-        }
+      // 2. Match issuer against trusted issuers
+      const trustedIssuers = store.listTrustedIssuers ? await store.listTrustedIssuers() : [];
+      if (!trustedIssuers.includes(issuer)) {
+        return { success: false, error: `Issuer ${issuer} is not trusted` };
+      }
 
-        // 3. Resolve user
+      // 3. Verify JWT against the matched issuer's JWKS
+      let payload: any;
+      try {
+        payload = await verifyJwtFromIssuer(input.token, issuer);
+      } catch {
+        return { success: false, error: "JWT verification failed" };
+      }
+      if (!payload) {
+        return { success: false, error: "JWT verification returned empty payload" };
+      }
+
+      // 4. Resolve tenant + user inside a transaction for consistency
+      return store.transaction(async () => {
+        const localTenantId = await (async () => {
+          if (!foreignTenantId) return null;
+          const existing = await store.resolveTenantByIdentity!(issuer, foreignTenantId);
+          if (existing) return existing;
+          // Auto-create tenant identity link on first encounter
+          if (store.storeTenantIdentity) {
+            await store.storeTenantIdentity(foreignTenantId, issuer, foreignTenantId);
+          }
+          return foreignTenantId;
+        })();
+
+        // 5. Resolve user
         const localUserId = await store.resolveUserByIdentity!(issuer, sub);
         if (localUserId) {
           return {
