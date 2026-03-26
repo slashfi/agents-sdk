@@ -152,15 +152,16 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
     keys = await Promise.all(stored.map(toCachedKey));
   }
 
-  /** Generate a new key, deprecate old ones, cleanup expired — runs inside store.transaction() for atomicity */
+  /** Generate a new key, deprecate old ones, cleanup expired, refresh cache — all in one transaction */
   async function rotate(): Promise<void> {
-    const newKey = await generateNewKey(keyLifetimeMs);
     await store.transaction(async (tx) => {
+      const newKey = await generateNewKey(keyLifetimeMs);
       await tx.deprecateAllActive();
       await tx.insertKey(newKey);
       await tx.cleanupExpired();
+      const updated = await tx.loadKeys();
+      keys = await Promise.all(updated.map(toCachedKey));
     });
-    await refresh();
   }
 
   /** Check if rotation is needed and rotate if so — all within a single transaction */
@@ -206,13 +207,8 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
     } else {
       // Read-only mode: generate a key in memory only (no store writes)
       // This ensures signJwt works even without rotation enabled
-      const { generateKeyPair: gkp, exportJWK: eJWK } = await import("jose");
-      const { privateKey, publicKey } = await gkp("ES256", { extractable: true });
-      const kid = `key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const pubJwk = await eJWK(publicKey); pubJwk.kid = kid; pubJwk.alg = "ES256"; pubJwk.use = "sig";
-      const privJwk = await eJWK(privateKey); privJwk.kid = kid; privJwk.alg = "ES256";
-      const pk = await (await import("jose")).importJWK(privJwk, "ES256") as CryptoKey;
-      keys.push({ kid, alg: "ES256", status: "active", publicJwk: pubJwk, privateJwk: privJwk, createdAt: new Date(), expiresAt: new Date(Date.now() + keyLifetimeMs), privateKey: pk });
+      const newKey = await generateNewKey(keyLifetimeMs);
+      keys.push(await toCachedKey(newKey));
     }
   } else if (enableRotation) {
     await checkAndRotate();
