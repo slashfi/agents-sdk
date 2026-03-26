@@ -78,6 +78,8 @@ export interface KeyManagerOptions {
   keyLifetimeMs?: number;
   /** Token TTL in seconds (default: 300 = 5 min) */
   tokenTtlSeconds?: number;
+  /** Enable background key rotation (default: true). Set to false on read-only replicas. */
+  enableRotation?: boolean;
 }
 
 // ── Constants ──
@@ -132,6 +134,7 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
     rotationThresholdMs = ONE_HOUR,
     keyLifetimeMs = TWO_HOURS,
     tokenTtlSeconds = 300,
+    enableRotation = true,
   } = opts;
 
   let keys: CachedKey[] = [];
@@ -184,22 +187,36 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
     await rotate();
   }
 
-  // Initial load + ensure we have a fresh active key
+  // Initial load + ensure we have at least one key
   await refresh();
   if (!keys.some((k) => k.status === "active")) {
-    await rotate();
-  } else {
+    if (enableRotation) {
+      await rotate();
+    } else {
+      // Read-only mode: generate a key in memory only (no store writes)
+      // This ensures signJwt works even without rotation enabled
+      const { generateKeyPair: gkp, exportJWK: eJWK } = await import("jose");
+      const { privateKey, publicKey } = await gkp("ES256", { extractable: true });
+      const kid = `key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const pubJwk = await eJWK(publicKey); pubJwk.kid = kid; pubJwk.alg = "ES256"; pubJwk.use = "sig";
+      const privJwk = await eJWK(privateKey); privJwk.kid = kid; privJwk.alg = "ES256";
+      const pk = await (await import("jose")).importJWK(privJwk, "ES256") as CryptoKey;
+      keys.push({ kid, alg: "ES256", status: "active", publicJwk: pubJwk, privateJwk: privJwk, createdAt: new Date(), expiresAt: new Date(Date.now() + keyLifetimeMs), privateKey: pk });
+    }
+  } else if (enableRotation) {
     await checkAndRotate();
   }
 
-  // Periodic background check
-  const interval = setInterval(async () => {
-    try {
-      await checkAndRotate();
-    } catch (err) {
-      console.error("[key-manager] Check/rotation failed:", err);
-    }
-  }, checkIntervalMs);
+  // Periodic background check (only if rotation enabled)
+  const interval = enableRotation
+    ? setInterval(async () => {
+        try {
+          await checkAndRotate();
+        } catch (err) {
+          console.error("[key-manager] Check/rotation failed:", err);
+        }
+      }, checkIntervalMs)
+    : null;
 
   function getActiveKey(): CachedKey {
     const active = keys.find((k) => k.status === "active");
@@ -231,7 +248,7 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
     },
 
     stop(): void {
-      clearInterval(interval);
+      if (interval) clearInterval(interval);
     },
   };
 }
