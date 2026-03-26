@@ -194,7 +194,40 @@ describe("KeyManager", () => {
     expect(activeKeys).toHaveLength(1);
   });
 
-  // ---- Transaction tests ----
+  test("rotation: tokens fail verification after key expires and is cleaned up", async () => {
+    const store = createMemoryKeyStore();
+    km = await createKeyManager({
+      store,
+      issuer: "http://test:3000",
+      rotationThresholdMs: 0,
+      keyLifetimeMs: 1, // 1ms — keys expire almost immediately
+      checkIntervalMs: 60_000,
+    });
+
+    const token = await km.signJwt({ sub: "will-expire" });
+
+    // Token should verify now (key is active)
+    const JWKS = createLocalJWKSet(km.getJwks());
+    const { payload } = await jwtVerify(token, JWKS);
+    expect(payload.sub).toBe("will-expire");
+
+    // Wait for key to expire, then rotate (which cleans up expired keys)
+    await new Promise((r) => setTimeout(r, 5));
+    await km.rotate();
+
+    // Old key should be gone from JWKS — verification should fail
+    const jwksAfter = km.getJwks();
+    const JWKS2 = createLocalJWKSet(jwksAfter);
+    let failed = false;
+    try {
+      await jwtVerify(token, JWKS2);
+    } catch {
+      failed = true;
+    }
+    expect(failed).toBe(true);
+  });
+
+    // ---- Transaction tests ----
 
   test("transaction: rotate is atomic (rollback on failure)", async () => {
     const store = createMemoryKeyStore();
