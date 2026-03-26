@@ -156,6 +156,33 @@ export function createRemoteRegistryAgent(
     },
   });
 
+  const addConnectionTool = defineTool({
+    name: "add_connection",
+    description: "Directly store a connection to a remote registry (no OAuth exchange). Used for reverse registration.",
+    visibility: "public" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        id: { type: "string", description: "Connection ID" },
+        name: { type: "string", description: "Display name" },
+        url: { type: "string", description: "Remote registry URL" },
+        remoteTenantId: { type: "string", description: "Tenant ID on the remote side" },
+      },
+      required: ["id", "url"],
+    },
+    execute: async (input: any, _ctx: ToolContext) => {
+      const conn: RegistryConnection = {
+        id: input.id,
+        name: input.name ?? input.id,
+        url: input.url.replace(/\/$/, ""),
+        remoteTenantId: input.remoteTenantId ?? input.id,
+        createdAt: Date.now(),
+      };
+      await storeConnection("system", conn);
+      return { success: true, data: conn };
+    },
+  });
+
   const listTool = defineTool({
     name: "list_connections",
     description: "List all connected remote registries.",
@@ -322,6 +349,6 @@ export function createRemoteRegistryAgent(
         return { success: true, data: conn };
       },
     },
-    tools: [proxyTool, listTool] as any[],
+    tools: [proxyTool, listTool, addConnectionTool] as any[],
   });
 }

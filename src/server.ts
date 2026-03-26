@@ -648,27 +648,26 @@ export function createAgentServer(
         try {
           const assertionParts = assertion.split(".");
           if (assertionParts.length === 3) {
-            const assertionPayload = JSON.parse(atob(assertionParts[1].replace(/-/g, "+").replace(/_/g, "/"))) as any;
-            if (assertionPayload.type === "agent-registry" && assertionPayload.iss && false /* disabled: causes infinite loop */) {
-              // Find or create @remote-registry agent and store the reverse connection
-              const rrAgent = registry.get("@remote-registry") ?? registry.get("/agents/@remote-registry");
-              if (rrAgent) {
-                const setupTool = (rrAgent as any).tools?.find((t: any) => t.name === "setup_integration");
-                if (setupTool?.execute) {
-                  try {
-                    await setupTool.execute(
-                      { url: assertionPayload.iss, name: assertionPayload.name ?? "remote-registry" },
-                      { callerId: "system", callerType: "system", tenantId: "default", agentPath: "@remote-registry" },
-                    );
-                    console.error(`[jwt_exchange] Reverse connection stored for ${assertionPayload.iss}`);
-                  } catch (setupErr) {
-                    console.error(`[jwt_exchange] Reverse registration setup failed:`, setupErr);
-                  }
-                } else {
-                  console.error("[jwt_exchange] @remote-registry has no setup_integration tool — reverse registration skipped");
-                }
+            const assertionPayload = JSON.parse(Buffer.from(assertionParts[1], "base64url").toString()) as any;
+            if (assertionPayload.type === "agent-registry" && assertionPayload.iss) {
+              // Use add_connection (direct store) instead of setup_integration (which would cause infinite loop)
+              const addResult = await registry.call({
+                action: "execute_tool",
+                path: "@remote-registry",
+                tool: "add_connection",
+                params: {
+                  id: assertionPayload.name ?? "remote-registry",
+                  name: assertionPayload.name ?? "remote-registry",
+                  url: assertionPayload.iss,
+                  remoteTenantId: assertionPayload.tenantId ?? "default",
+                },
+                callerId: "system",
+                callerType: "system",
+              });
+              if (addResult.success) {
+                console.error(`[jwt_exchange] Reverse connection stored for ${assertionPayload.iss}`);
               } else {
-                console.error("[jwt_exchange] @remote-registry agent not found — reverse registration skipped");
+                console.error(`[jwt_exchange] Reverse connection failed:`, (addResult as any).error);
               }
             }
           }
@@ -874,14 +873,16 @@ export function createAgentServer(
           : [];
         const configIssuerUrls = configTrustedIssuers.map(i => typeof i === "string" ? i : i.issuer);
         const allIssuerUrls = [...new Set([...storeIssuers, ...configIssuerUrls])];
+        console.log("[oauth/authorize] storeIssuers:", storeIssuers.length, "configIssuers:", configIssuerUrls.length, "total:", allIssuerUrls.length, "urls:", allIssuerUrls);
         for (const issuerUrl of allIssuerUrls) {
           try {
             const result = await verifyJwtFromIssuer(token, issuerUrl);
+            console.log("[oauth/authorize] verify", issuerUrl, "->", result ? "OK" : "null");
             if (result) {
               claims = result as unknown as Record<string, unknown>;
               break;
             }
-          } catch { /* try next issuer */ }
+          } catch (e: any) { console.log("[oauth/authorize] verify", issuerUrl, "-> ERROR:", e.message); }
         }
         if (!claims) {
           const res = jsonResponse(
