@@ -830,15 +830,12 @@ export function createAuthAgent(
           type: "string" as const,
           description: "JWT signed by a trusted issuer",
         },
-        connectBaseUrl: {
-          type: "string" as const,
-          description: "Base URL for the OAuth connect flow (returned in needsAuth response)",
-        },
+
       },
       required: ["token"],
     },
     execute: async (
-      input: { token: string; connectBaseUrl?: string },
+      input: { token: string },
     ) => {
       if (!store.resolveTenantByIdentity || !store.resolveUserByIdentity) {
         return {
@@ -906,23 +903,13 @@ export function createAuthAgent(
           };
         }
 
-        // 4. User not linked — needs OAuth
-        const connectBaseUrl = input.connectBaseUrl;
-        if (connectBaseUrl) {
-          const connectUrl = new URL(`${connectBaseUrl}/connect`);
-          connectUrl.searchParams.set("token", input.token);
-          return {
-            success: false,
-            needsAuth: true,
-            connectUrl: connectUrl.toString(),
-            tenantId: localTenantId ?? undefined,
-          };
-        }
-
+        // 4. User not linked — caller decides how to handle (e.g. OIDC flow)
         return {
           success: false,
           needsAuth: true,
           tenantId: localTenantId ?? undefined,
+          issuer,
+          sub,
         };
       });
     },
