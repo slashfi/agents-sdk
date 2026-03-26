@@ -25,7 +25,7 @@
  */
 
 import { defineAgent, defineTool } from "../define.js";
-import { signJwt, generateSigningKey, exportSigningKey, type ExportedKeyPair } from "../jwt.js";
+import { signJwt, generateSigningKey, exportSigningKey, verifyJwtFromIssuer, type ExportedKeyPair } from "../jwt.js";
 import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 
 // ============================================
@@ -173,6 +173,30 @@ export interface AuthStore {
     userId: string;
     clientId: string;
   } | null>;
+
+  // --- Tenant Identity ---
+
+  /** Store a tenant identity mapping (foreign issuer + ID -> local tenant). */
+  storeTenantIdentity?(tenantId: string, provider: string, providerTenantId: string): Promise<void>;
+
+  /** Resolve a local tenant ID from a foreign identity. */
+  resolveTenantByIdentity?(provider: string, providerTenantId: string): Promise<string | null>;
+
+  // --- User Identity ---
+
+  /** Store a user identity mapping (foreign issuer + ID -> local user). */
+  storeUserIdentity?(userId: string, provider: string, providerUserId: string): Promise<void>;
+
+  /** Resolve a local user ID from a foreign identity. */
+  resolveUserByIdentity?(provider: string, providerUserId: string): Promise<string | null>;
+
+  // --- Transaction ---
+
+  /**
+   * Run operations atomically. The store scopes its own methods to the
+   * transaction context. For stores without real tx support, run fn sequentially.
+   */
+  transaction<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 // ============================================
@@ -218,6 +242,8 @@ export function createMemoryAuthStore(): AuthStore {
   const tokens = new Map<string, AuthToken>();
   const signingKeys = new Map<string, ExportedKeyPair>();
   const trustedIssuers = new Set<string>();
+  const tenantIdentities = new Map<string, string>(); // "provider:providerTenantId" -> tenantId
+  const userIdentities = new Map<string, string>(); // "provider:providerUserId" -> userId
 
   return {
     async createTenant(name, _externalRef) {
@@ -345,6 +371,27 @@ export function createMemoryAuthStore(): AuthStore {
 
     async listTrustedIssuers() {
       return Array.from(trustedIssuers);
+    },
+
+    async storeTenantIdentity(tenantId, provider, providerTenantId) {
+      tenantIdentities.set(`${provider}:${providerTenantId}`, tenantId);
+    },
+
+    async resolveTenantByIdentity(provider, providerTenantId) {
+      return tenantIdentities.get(`${provider}:${providerTenantId}`) ?? null;
+    },
+
+    async storeUserIdentity(userId, provider, providerUserId) {
+      userIdentities.set(`${provider}:${providerUserId}`, userId);
+    },
+
+    async resolveUserByIdentity(provider, providerUserId) {
+      return userIdentities.get(`${provider}:${providerUserId}`) ?? null;
+    },
+
+    async transaction<T>(fn: () => Promise<T>): Promise<T> {
+      // In-memory: just run sequentially (single-threaded, no concurrency issues)
+      return fn();
     },
   };
 }
@@ -791,20 +838,81 @@ export function createAuthAgent(
       required: ["token"],
     },
     execute: async (
-      _input: { token: string; connectBaseUrl?: string },
+      input: { token: string; connectBaseUrl?: string },
     ) => {
-      // This tool is a stub — the actual implementation needs:
-      // 1. JWT verification (via verifyJwtFromIssuer)
-      // 2. Tenant resolution (via tenant_identity table)
-      // 3. User resolution (via user_identity table)
-      // These depend on the store having identity lookup methods.
-      //
-      // For now, return the structure so the flow can be wired.
-      // The atlas-environments CockroachDB implementation overrides this.
-      return {
-        error: "exchange_token requires a store with identity resolution support",
-        hint: "Override this tool in your environment implementation",
-      };
+      if (!store.resolveTenantByIdentity || !store.resolveUserByIdentity) {
+        return {
+          error: "exchange_token requires a store with identity resolution support",
+          hint: "Implement storeTenantIdentity/resolveUserByIdentity on your AuthStore",
+        };
+      }
+
+      // 1. Verify JWT against trusted issuers
+      const issuers = store.listTrustedIssuers ? await store.listTrustedIssuers() : [];
+      let payload: any = null;
+      for (const issuerUrl of issuers) {
+        try {
+          const result = await verifyJwtFromIssuer(input.token, issuerUrl);
+          if (result) {
+            const iss = (result as any).iss;
+            if (iss && iss !== issuerUrl) continue;
+            payload = result;
+            break;
+          }
+        } catch { /* try next issuer */ }
+      }
+      if (!payload) {
+        return { success: false, error: "JWT verification failed against all trusted issuers" };
+      }
+
+      const issuer = payload.iss;
+      const sub = payload.sub;
+      const foreignTenantId = payload.tenantId;
+      if (!issuer || !sub) {
+        return { success: false, error: "JWT missing iss or sub claims" };
+      }
+
+      // 2. Resolve tenant + user inside a transaction for consistency
+      return store.transaction(async () => {
+        let localTenantId: string | null = null;
+        if (foreignTenantId) {
+          localTenantId = await store.resolveTenantByIdentity!(issuer, foreignTenantId);
+          if (!localTenantId && store.storeTenantIdentity) {
+            // Auto-create tenant identity link
+            localTenantId = foreignTenantId;
+            await store.storeTenantIdentity(localTenantId!, issuer, foreignTenantId);
+          }
+        }
+
+        // 3. Resolve user
+        const localUserId = await store.resolveUserByIdentity!(issuer, sub);
+        if (localUserId) {
+          return {
+            success: true,
+            tenantId: localTenantId ?? undefined,
+            userId: localUserId,
+          };
+        }
+
+        // 4. User not linked — needs OAuth
+        const connectBaseUrl = input.connectBaseUrl;
+        if (connectBaseUrl) {
+          const connectUrl = new URL(`${connectBaseUrl}/connect`);
+          connectUrl.searchParams.set("token", input.token);
+          return {
+            success: false,
+            needsAuth: true,
+            connectUrl: connectUrl.toString(),
+            tenantId: localTenantId ?? undefined,
+          };
+        }
+
+        return {
+          success: false,
+          needsAuth: true,
+          tenantId: localTenantId ?? undefined,
+        };
+      });
     },
   });
 
