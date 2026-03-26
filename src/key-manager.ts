@@ -146,12 +146,6 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
 
   let keys: CachedKey[] = [];
 
-  /** Refresh in-memory cache from store */
-  async function refresh(): Promise<void> {
-    const stored = await store.loadKeys();
-    keys = await Promise.all(stored.map(toCachedKey));
-  }
-
   /** Generate a new key, deprecate old ones, cleanup expired, refresh cache — all in one transaction */
   async function rotate(): Promise<void> {
     await store.transaction(async () => {
@@ -200,7 +194,9 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
   }
 
   // Initial load + ensure we have at least one key
-  await refresh();
+  // Initial load from store
+  const stored = await store.loadKeys();
+  keys = await Promise.all(stored.map(toCachedKey));
   if (!keys.some((k) => k.status === "active")) {
     if (enableRotation) {
       await rotate();
