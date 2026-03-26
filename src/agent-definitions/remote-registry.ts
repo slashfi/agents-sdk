@@ -110,7 +110,17 @@ export function createRemoteRegistryAgent(
     });
     const rpc = await res.json() as any;
     const text = rpc.result?.content?.[0]?.text;
-    return text ? JSON.parse(text) : rpc.result;
+    if (!text) return rpc.result;
+    const parsed = JSON.parse(text);
+    // Unwrap the remote call_agent envelope: { success, result } → just result
+    // The caller (proxyCall) will re-wrap with its own { success, result }
+    if (parsed && typeof parsed === "object" && "success" in parsed && "result" in parsed) {
+      if (!parsed.success) {
+        throw new Error(parsed.error ?? "Remote call failed");
+      }
+      return parsed.result;
+    }
+    return parsed;
   }
 
   // --- Proxy: sign JWT and call remote ---
@@ -119,14 +129,16 @@ export function createRemoteRegistryAgent(
     ownerId: string,
     registryId: string,
     request: { action: string; path: string; tool: string; params?: Record<string, unknown> },
-  ): Promise<{ success: boolean; result?: any; error?: string }> {
+  ): Promise<any> {
     const conn = await loadConnection(ownerId, registryId);
     if (!conn) {
-      return { success: false, error: `No connection '${registryId}'. Use setup_integration first.` };
+      throw new Error(`No connection '${registryId}'. Use setup_integration first.`);
     }
     const jwt = await signJwt({ tenantId: conn.remoteTenantId, action: "proxy", type: "agent-registry" });
-    const result = await mcpCall(conn.url, jwt, request);
-    return { success: true, result };
+    // mcpCall already unwraps the remote call_agent envelope,
+    // so this returns the remote tool's result directly.
+    // registry.call() will wrap it in { success: true, result } for us.
+    return mcpCall(conn.url, jwt, request);
   }
 
   // --- Tools ---
