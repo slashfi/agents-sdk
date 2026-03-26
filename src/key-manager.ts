@@ -58,7 +58,7 @@ export interface KeyStore {
    * atomic (load + deprecate + insert + cleanup all succeed or all fail).
    * For stores without real tx support, pass a no-op wrapper that runs fn sequentially.
    */
-  transaction<T>(fn: (store: Pick<KeyStore, "loadKeys" | "insertKey" | "deprecateAllActive" | "cleanupExpired">) => Promise<T>): Promise<T>;
+  transaction<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 export interface KeyManager {
@@ -154,12 +154,12 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
 
   /** Generate a new key, deprecate old ones, cleanup expired, refresh cache — all in one transaction */
   async function rotate(): Promise<void> {
-    await store.transaction(async (tx) => {
+    await store.transaction(async () => {
       const newKey = await generateNewKey(keyLifetimeMs);
-      await tx.deprecateAllActive();
-      await tx.insertKey(newKey);
-      await tx.cleanupExpired();
-      const updated = await tx.loadKeys();
+      await store.deprecateAllActive();
+      await store.insertKey(newKey);
+      await store.cleanupExpired();
+      const updated = await store.loadKeys();
       keys = await Promise.all(updated.map(toCachedKey));
     });
   }
@@ -174,8 +174,8 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
     }
 
     // Cache says stale (or empty) — take a lock via transaction to check + rotate atomically
-    await store.transaction(async (tx) => {
-      const stored = await tx.loadKeys();
+    await store.transaction(async () => {
+      const stored = await store.loadKeys();
       const active = stored.find((k) => k.status === "active");
 
       if (active) {
@@ -189,12 +189,12 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
 
       // Still stale (or no active key) — rotate within this tx
       const newKey = await generateNewKey(keyLifetimeMs);
-      await tx.deprecateAllActive();
-      await tx.insertKey(newKey);
-      await tx.cleanupExpired();
+      await store.deprecateAllActive();
+      await store.insertKey(newKey);
+      await store.cleanupExpired();
 
       // Refresh cache inside the tx for a consistent read
-      const updated = await tx.loadKeys();
+      const updated = await store.loadKeys();
       keys = await Promise.all(updated.map(toCachedKey));
     });
   }

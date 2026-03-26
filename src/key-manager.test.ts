@@ -27,23 +27,10 @@ function createMemoryKeyStore(): KeyStore & { keys: StoredKey[] } {
       return before - remaining.length;
     },
     // Transaction support: snapshot + rollback on error
-    async transaction<T>(fn: (store: any) => Promise<T>): Promise<T> {
+    async transaction<T>(fn: () => Promise<T>): Promise<T> {
       const snapshot = keys.map((k) => ({ ...k }));
       try {
-        const txStore = {
-          async loadKeys() { return keys.filter((k) => k.status !== "revoked"); },
-          async insertKey(key: StoredKey) { keys.push(key); },
-          async deprecateAllActive() { for (const k of keys) { if (k.status === "active") k.status = "deprecated"; } },
-          async cleanupExpired() {
-            const now = Date.now();
-            const before = keys.length;
-            const remaining = keys.filter((k) => k.expiresAt.getTime() > now);
-            keys.length = 0;
-            keys.push(...remaining);
-            return before - remaining.length;
-          },
-        };
-        return await fn(txStore);
+        return await fn();
       } catch (err) {
         // Rollback
         keys.length = 0;
@@ -219,27 +206,9 @@ describe("KeyManager", () => {
 
     const initialKid = store.keys[0].kid;
 
-    // Monkey-patch transaction to fail after deprecate
-    const origTx = store.transaction!;
-    store.transaction = async (fn: any) => {
-      const snapshot = store.keys.map((k) => ({ ...k }));
-      try {
-        return await fn({
-          async loadKeys() { return store.keys.filter((k) => k.status !== "revoked"); },
-          async deprecateAllActive() {
-            for (const k of store.keys) {
-              if (k.status === "active") k.status = "deprecated";
-            }
-          },
-          async insertKey() { throw new Error("simulated failure"); },
-          async cleanupExpired() { return 0; },
-        });
-      } catch (err) {
-        store.keys.length = 0;
-        store.keys.push(...snapshot);
-        throw err;
-      }
-    };
+    // Monkey-patch insertKey to fail mid-transaction
+    const origInsert = store.insertKey;
+    store.insertKey = async () => { throw new Error("simulated failure"); };
 
     // Rotation should fail, but state should be rolled back
     try { await km.rotate(); } catch {}
@@ -250,7 +219,7 @@ describe("KeyManager", () => {
     expect(active[0].kid).toBe(initialKid);
 
     // Restore
-    store.transaction = origTx;
+    store.insertKey = origInsert;
   });
 
   // ---- enableRotation option ----
