@@ -25,7 +25,7 @@
  */
 
 import { defineAgent, defineTool } from "../define.js";
-import { signJwt, generateSigningKey, exportSigningKey, type ExportedKeyPair } from "../jwt.js";
+import { signJwt, generateSigningKey, exportSigningKey, verifyJwtFromIssuer, type ExportedKeyPair } from "../jwt.js";
 import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 
 // ============================================
@@ -173,6 +173,30 @@ export interface AuthStore {
     userId: string;
     clientId: string;
   } | null>;
+
+  // --- Tenant Identity ---
+
+  /** Store a tenant identity mapping (foreign issuer + ID -> local tenant). */
+  storeTenantIdentity?(tenantId: string, provider: string, providerTenantId: string): Promise<void>;
+
+  /** Resolve a local tenant ID from a foreign identity. */
+  resolveTenantByIdentity?(provider: string, providerTenantId: string): Promise<string | null>;
+
+  // --- User Identity ---
+
+  /** Store a user identity mapping (foreign issuer + ID -> local user). */
+  storeUserIdentity?(userId: string, provider: string, providerUserId: string): Promise<void>;
+
+  /** Resolve a local user ID from a foreign identity. */
+  resolveUserByIdentity?(provider: string, providerUserId: string): Promise<string | null>;
+
+  // --- Transaction ---
+
+  /**
+   * Run operations atomically. The store scopes its own methods to the
+   * transaction context. For stores without real tx support, run fn sequentially.
+   */
+  transaction<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 // ============================================
@@ -218,6 +242,8 @@ export function createMemoryAuthStore(): AuthStore {
   const tokens = new Map<string, AuthToken>();
   const signingKeys = new Map<string, ExportedKeyPair>();
   const trustedIssuers = new Set<string>();
+  const tenantIdentities = new Map<string, string>(); // "provider:providerTenantId" -> tenantId
+  const userIdentities = new Map<string, string>(); // "provider:providerUserId" -> userId
 
   return {
     async createTenant(name, _externalRef) {
@@ -345,6 +371,27 @@ export function createMemoryAuthStore(): AuthStore {
 
     async listTrustedIssuers() {
       return Array.from(trustedIssuers);
+    },
+
+    async storeTenantIdentity(tenantId, provider, providerTenantId) {
+      tenantIdentities.set(`${provider}:${providerTenantId}`, tenantId);
+    },
+
+    async resolveTenantByIdentity(provider, providerTenantId) {
+      return tenantIdentities.get(`${provider}:${providerTenantId}`) ?? null;
+    },
+
+    async storeUserIdentity(userId, provider, providerUserId) {
+      userIdentities.set(`${provider}:${providerUserId}`, userId);
+    },
+
+    async resolveUserByIdentity(provider, providerUserId) {
+      return userIdentities.get(`${provider}:${providerUserId}`) ?? null;
+    },
+
+    async transaction<T>(fn: () => Promise<T>): Promise<T> {
+      // In-memory: just run sequentially (single-threaded, no concurrency issues)
+      return fn();
     },
   };
 }
@@ -783,28 +830,88 @@ export function createAuthAgent(
           type: "string" as const,
           description: "JWT signed by a trusted issuer",
         },
-        connectBaseUrl: {
-          type: "string" as const,
-          description: "Base URL for the OAuth connect flow (returned in needsAuth response)",
-        },
+
       },
       required: ["token"],
     },
     execute: async (
-      _input: { token: string; connectBaseUrl?: string },
+      input: { token: string },
     ) => {
-      // This tool is a stub — the actual implementation needs:
-      // 1. JWT verification (via verifyJwtFromIssuer)
-      // 2. Tenant resolution (via tenant_identity table)
-      // 3. User resolution (via user_identity table)
-      // These depend on the store having identity lookup methods.
-      //
-      // For now, return the structure so the flow can be wired.
-      // The atlas-environments CockroachDB implementation overrides this.
-      return {
-        error: "exchange_token requires a store with identity resolution support",
-        hint: "Override this tool in your environment implementation",
-      };
+      if (!store.resolveTenantByIdentity || !store.resolveUserByIdentity) {
+        return {
+          error: "exchange_token requires a store with identity resolution support",
+          hint: "Implement storeTenantIdentity/resolveUserByIdentity on your AuthStore",
+        };
+      }
+
+      // 1. Decode JWT to read iss claim (no verification yet)
+      const parts = input.token.split(".");
+      if (parts.length !== 3) {
+        return { success: false, error: "Invalid JWT format" };
+      }
+      let decoded: any;
+      try {
+        decoded = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+      } catch {
+        return { success: false, error: "Failed to decode JWT payload" };
+      }
+
+      const issuer = decoded.iss;
+      const sub = decoded.sub;
+      const foreignTenantId = decoded.tenantId;
+      if (!issuer || !sub) {
+        return { success: false, error: "JWT missing iss or sub claims" };
+      }
+
+      // 2. Match issuer against trusted issuers
+      const trustedIssuers = store.listTrustedIssuers ? await store.listTrustedIssuers() : [];
+      if (!trustedIssuers.includes(issuer)) {
+        return { success: false, error: `Issuer ${issuer} is not trusted` };
+      }
+
+      // 3. Verify JWT against the matched issuer's JWKS
+      let payload: any;
+      try {
+        payload = await verifyJwtFromIssuer(input.token, issuer);
+      } catch {
+        return { success: false, error: "JWT verification failed" };
+      }
+      if (!payload) {
+        return { success: false, error: "JWT verification returned empty payload" };
+      }
+
+      // 4. Resolve tenant + user inside a transaction for consistency
+      return store.transaction(async () => {
+        const localTenantId = await (async () => {
+          if (!foreignTenantId) return null;
+          const existing = await store.resolveTenantByIdentity!(issuer, foreignTenantId);
+          if (existing) return existing;
+          // Auto-create tenant identity link on first encounter
+          if (store.storeTenantIdentity) {
+            await store.storeTenantIdentity(foreignTenantId, issuer, foreignTenantId);
+          }
+          return foreignTenantId;
+        })();
+
+        // 5. Resolve user
+        const localUserId = await store.resolveUserByIdentity!(issuer, sub);
+        if (localUserId) {
+          return {
+            success: true,
+            tenantId: localTenantId ?? undefined,
+            userId: localUserId,
+          };
+        }
+
+        // 4. User not linked — caller decides how to handle (e.g. OIDC flow)
+        return {
+          success: false,
+          needsAuth: true,
+          tenantId: localTenantId ?? undefined,
+          issuer,
+          sub,
+        };
+      });
     },
   });
 
