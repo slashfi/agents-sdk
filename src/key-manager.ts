@@ -191,9 +191,11 @@ export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyMana
       await tx.deprecateAllActive();
       await tx.insertKey(newKey);
       await tx.cleanupExpired();
-    });
 
-    await refresh();
+      // Refresh cache inside the tx for a consistent read
+      const updated = await tx.loadKeys();
+      keys = await Promise.all(updated.map(toCachedKey));
+    });
   }
 
   // Initial load + ensure we have at least one key
