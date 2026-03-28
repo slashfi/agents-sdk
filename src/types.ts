@@ -4,6 +4,15 @@
  * Defines the fundamental types for agent definitions, tools, and contexts.
  */
 
+import type { EventCallback, EventType } from "./events.js";
+
+/** Internal listener entry stored on agents/tools */
+export interface ListenerEntry {
+  eventType: EventType;
+  callback: EventCallback<EventType>;
+  toolScope?: string;
+}
+
 // ============================================
 // JSON Schema
 // ============================================
@@ -487,6 +496,12 @@ export interface ToolDefinition<
    * When set, rendered directly into the agent's system prompt.
    */
   doc?: string;
+
+  /**
+   * Internal: event listeners registered via tool.on().
+   * Collected by the registry on registration.
+   */
+  _listeners?: ListenerEntry[];
 }
 
 /**
@@ -542,6 +557,12 @@ export interface AgentDefinition<TContext extends ToolContext = ToolContext> {
    * Called once to load runtime hooks exported from the agent's entrypoint module.
    */
   loadListeners?: () => Promise<unknown>;
+
+  /**
+   * Internal: event listeners registered via agent.on().
+   * Collected by the registry on registration.
+   */
+  _listeners?: ListenerEntry[];
 }
 
 // ============================================

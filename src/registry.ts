@@ -6,6 +6,12 @@
 
 import { dirname, resolve } from "node:path";
 import type {
+  AgentEvent,
+  EventCallback,
+  EventType,
+} from "./events.js";
+import { createEventBus } from "./events.js";
+import type {
   AgentAction,
   AgentDefinition,
   AgentRefEntry,
@@ -79,6 +85,12 @@ export interface AgentRegistry {
 
   /** Call an agent (execute action) */
   call(request: CallAgentRequest): Promise<CallAgentResponse>;
+
+  /** Register an event listener (global scope — fires for all agents) */
+  on<T extends EventType>(eventType: T, callback: EventCallback<T>): void;
+
+  /** Emit an event to all listeners. Used by the runtime to push lifecycle events. */
+  emit(event: AgentEvent): Promise<void>;
 }
 
 // ============================================
@@ -112,6 +124,7 @@ export function createAgentRegistry(
 ): AgentRegistry {
   const { defaultVisibility = "internal" } = options;
   const agents = new Map<string, AgentDefinition>();
+  const eventBus = createEventBus();
 
   /**
    * Check if agent supports the requested action.
@@ -308,6 +321,28 @@ export function createAgentRegistry(
   const registry: AgentRegistry = {
     register(agent: AgentDefinition): void {
       agents.set(agent.path, agent);
+
+      // Collect agent-level listeners into the bus
+      if (agent._listeners) {
+        for (const entry of agent._listeners) {
+          eventBus._onScoped(entry.eventType, entry.callback, {
+            agentPath: agent.path,
+            toolName: entry.toolScope,
+          });
+        }
+      }
+
+      // Collect tool-level listeners into the bus
+      for (const tool of agent.tools) {
+        if (tool._listeners) {
+          for (const entry of tool._listeners) {
+            eventBus._onScoped(entry.eventType, entry.callback, {
+              agentPath: agent.path,
+              toolName: tool.name,
+            });
+          }
+        }
+      }
     },
 
     get(path: string): AgentDefinition | undefined {
@@ -324,6 +359,14 @@ export function createAgentRegistry(
 
     listPaths(): string[] {
       return Array.from(agents.keys());
+    },
+
+    on<T extends EventType>(eventType: T, callback: EventCallback<T>): void {
+      eventBus.on(eventType, callback);
+    },
+
+    async emit(event: AgentEvent): Promise<void> {
+      await eventBus.emit(event);
     },
 
     async call(request: CallAgentRequest): Promise<CallAgentResponse> {
@@ -434,15 +477,59 @@ export function createAgentRegistry(
                 error: `Tool ${request.tool} has no execute function`,
               } as CallAgentErrorResponse;
             }
-            const result = await tool.execute(request.params, ctx);
+
+            // Emit tool:call before execution
+            const startMs = Date.now();
+            await eventBus.emit({
+              type: "tool:call",
+              agentPath: agent.path,
+              tool: request.tool!,
+              params: request.params,
+              timestamp: startMs,
+            });
+
+            let result: unknown;
+            try {
+              result = await tool.execute(request.params, ctx);
+            } catch (err) {
+              // Emit tool:error on failure
+              await eventBus.emit({
+                type: "tool:error",
+                agentPath: agent.path,
+                tool: request.tool!,
+                params: request.params,
+                error: err,
+                durationMs: Date.now() - startMs,
+                timestamp: Date.now(),
+              }).catch(() => {}); // don't let emit error mask tool error
+
+              return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+                code: "TOOL_EXECUTION_ERROR",
+              } as CallAgentErrorResponse;
+            }
+
+            // Emit tool:result after success
+            await eventBus.emit({
+              type: "tool:result",
+              agentPath: agent.path,
+              tool: request.tool!,
+              params: request.params,
+              result,
+              durationMs: Date.now() - startMs,
+              timestamp: Date.now(),
+            });
+
             return {
               success: true,
               result,
             } as CallAgentExecuteToolResponse;
-          } catch (err) {
+          } catch (outerErr) {
+            // Catch-all for unexpected errors (e.g., emit failures)
             return {
               success: false,
-              error: err instanceof Error ? err.message : String(err),
+              error: outerErr instanceof Error ? outerErr.message : String(outerErr),
               code: "TOOL_EXECUTION_ERROR",
             } as CallAgentErrorResponse;
           }

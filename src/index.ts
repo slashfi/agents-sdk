@@ -92,11 +92,26 @@ export type {
 
 // Define functions
 export { defineAgent, defineTool } from "./define.js";
-export type { DefineAgentOptions, DefineToolOptions } from "./define.js";
+export type { DefineAgentOptions, DefineToolOptions, AgentWithHooks, ToolWithHooks } from "./define.js";
 
 // Registry
 export { createAgentRegistry } from "./registry.js";
 export type { AgentRegistry, AgentRegistryOptions, RegistryMiddleware } from "./registry.js";
+
+// Events
+export { createEventBus } from "./events.js";
+export type {
+  EventBus,
+  EventType,
+  EventCallback,
+  AgentEvent,
+  ToolCallEvent,
+  ToolResultEvent,
+  ToolErrorEvent,
+  StepEvent,
+  InvokeEvent,
+  EventMap,
+} from "./events.js";
 
 // Server
 export { createAgentServer, detectAuth, resolveAuth, canSeeAgent } from "./server.js";
