@@ -18,9 +18,9 @@
  * All supported event types.
  */
 export type EventType =
-  | "tool:call"
-  | "tool:result"
-  | "tool:error"
+  | "tool/call"
+  | "tool/result"
+  | "tool/error"
   | "step"
   | "invoke";
 
@@ -40,7 +40,7 @@ export interface BaseEvent {
  * Event emitted before a tool executes.
  */
 export interface ToolCallEvent extends BaseEvent {
-  type: "tool:call";
+  type: "tool/call";
   /** Tool name */
   tool: string;
   /** Input parameters */
@@ -51,7 +51,7 @@ export interface ToolCallEvent extends BaseEvent {
  * Event emitted after a tool succeeds.
  */
 export interface ToolResultEvent extends BaseEvent {
-  type: "tool:result";
+  type: "tool/result";
   /** Tool name */
   tool: string;
   /** Input parameters */
@@ -66,7 +66,7 @@ export interface ToolResultEvent extends BaseEvent {
  * Event emitted when a tool throws.
  */
 export interface ToolErrorEvent extends BaseEvent {
-  type: "tool:error";
+  type: "tool/error";
   /** Tool name */
   tool: string;
   /** Input parameters */
@@ -115,9 +115,9 @@ export type AgentEvent =
  * Map from event type string to event interface.
  */
 export interface EventMap {
-  "tool:call": ToolCallEvent;
-  "tool:result": ToolResultEvent;
-  "tool:error": ToolErrorEvent;
+  "tool/call": ToolCallEvent;
+  "tool/result": ToolResultEvent;
+  "tool/error": ToolErrorEvent;
   step: StepEvent;
   invoke: InvokeEvent;
 }
@@ -151,7 +151,7 @@ export interface EventBus {
    *
    * @example
    * ```ts
-   * bus.on('tool:result', (event) => { ... })
+   * bus.on('tool/result', (event) => { ... })
    * ```
    */
   on<T extends EventType>(eventType: T, callback: EventCallback<T>): void;

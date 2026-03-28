@@ -478,10 +478,10 @@ export function createAgentRegistry(
               } as CallAgentErrorResponse;
             }
 
-            // Emit tool:call before execution
+            // Emit tool/call before execution
             const startMs = Date.now();
             await eventBus.emit({
-              type: "tool:call",
+              type: "tool/call",
               agentPath: agent.path,
               tool: request.tool!,
               params: request.params,
@@ -492,9 +492,9 @@ export function createAgentRegistry(
             try {
               result = await tool.execute(request.params, ctx);
             } catch (err) {
-              // Emit tool:error on failure
+              // Emit tool/error on failure
               await eventBus.emit({
-                type: "tool:error",
+                type: "tool/error",
                 agentPath: agent.path,
                 tool: request.tool!,
                 params: request.params,
@@ -510,9 +510,9 @@ export function createAgentRegistry(
               } as CallAgentErrorResponse;
             }
 
-            // Emit tool:result after success
+            // Emit tool/result after success
             await eventBus.emit({
-              type: "tool:result",
+              type: "tool/result",
               agentPath: agent.path,
               tool: request.tool!,
               params: request.params,
