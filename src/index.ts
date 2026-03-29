@@ -283,14 +283,15 @@ export type {
   SecretResolver,
 } from "./registry-consumer.js";
 
-// Codegen
-export { codegen, useAgent, listAgentTools } from "./codegen.js";
-export type {
-  CodegenOptions,
-  CodegenResult,
-  CodegenManifest,
-  McpToolDefinition,
-  McpServerInfo,
-  McpTransport,
-  ServerSource,
-} from "./codegen.js";
+// Codegen (exported from separate entrypoint — see ./codegen.ts)
+// TODO: Re-enable once codegen.ts type errors are fixed
+// export { codegen, useAgent, listAgentTools } from "./codegen.js";
+// export type {
+//   CodegenOptions,
+//   CodegenResult,
+//   CodegenManifest,
+//   McpToolDefinition,
+//   McpServerInfo,
+//   McpTransport,
+//   ServerSource,
+// } from "./codegen.js";
