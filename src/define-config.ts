@@ -63,10 +63,13 @@ export type RefEntry =
       /** Agent definition path (resolved from registries) */
       ref: string;
 
+      /** Direct URL to the agent (e.g. http://localhost:3000/agents/notion) */
+      url?: string;
+
       /** Local alias for this instance (required for multi-instance) */
       as?: string;
 
-      /** Per-instance config (secrets as URLs, literals as values) */
+      /** Per-instance config (secrets as URIs, literals as values) */
       config?: RefConfig;
 
       /** Override the registry to resolve from */
