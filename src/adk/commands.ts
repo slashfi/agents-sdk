@@ -223,7 +223,7 @@ export async function cmdInfo(args: string[]): Promise<void> {
 
   console.log(`\nTools (${agent.tools.length}):`);
   for (const tool of agent.tools) {
-    console.log(`  ${tool.tool}`);
+    console.log(`  ${tool.name}`);
     if (tool.description) console.log(`    ${tool.description}`);
     if (tool.inputSchema) {
       const schema = tool.inputSchema as any;
@@ -341,8 +341,8 @@ export async function cmdServe(args: string[]): Promise<void> {
   // Build tool list from all agents
   const allTools: Array<{
     agentName: string;
+    agentPath: string;
     toolName: string;
-    fullName: string;
     description?: string;
     inputSchema?: Record<string, unknown>;
   }> = [];
@@ -353,8 +353,8 @@ export async function cmdServe(args: string[]): Promise<void> {
       for (const tool of result.agent.tools) {
         allTools.push({
           agentName: name,
-          toolName: tool.tool,
-          fullName: tool.fullName,
+          agentPath: result.agent.path,
+          toolName: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema,
         });
@@ -374,7 +374,7 @@ export async function cmdServe(args: string[]): Promise<void> {
         if (req.method === "GET" && new URL(req.url).pathname === "/tools/list") {
           return Response.json({
             tools: allTools.map((t) => ({
-              name: t.fullName,
+              name: `${t.agentName}__${t.toolName}`,
               description: `[${t.agentName}] ${t.description ?? t.toolName}`,
               inputSchema: t.inputSchema ?? { type: "object", properties: {} },
             })),
@@ -391,7 +391,7 @@ export async function cmdServe(args: string[]): Promise<void> {
           id: body.id,
           result: {
             tools: allTools.map((t) => ({
-              name: t.fullName,
+              name: `${t.agentName}__${t.toolName}`,
               description: `[${t.agentName}] ${t.description ?? t.toolName}`,
               inputSchema: t.inputSchema ?? { type: "object", properties: {} },
             })),

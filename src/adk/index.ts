@@ -22,7 +22,7 @@ export {
 } from "./local-store.js";
 
 export { McpRegistryClient } from "./mcp-client.js";
-export type { McpTool, ParsedTool, AgentInfo } from "./mcp-client.js";
+export type { RegistryAgent } from "./mcp-client.js";
 
 // Keep REST client for web consumers
 export { RegistryClient } from "./registry-client.js";

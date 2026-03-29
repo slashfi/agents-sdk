@@ -1,46 +1,29 @@
 /**
- * MCP Client — Pure MCP transport for talking to agent registries.
+ * MCP Client — Talks to agent registries via their MCP meta-tools.
  *
- * Everything goes through JSON-RPC over HTTP:
- *   - tools/list  — discover all agents + tools
- *   - tools/call  — execute a tool on an agent
+ * The registry exposes two MCP tools:
+ *   - list_agents  — discover all agents + their tools
+ *   - call_agent   — execute a tool on a specific agent
  *
- * Tool names are namespaced as `agent__tool` (e.g. `notion__search`).
- * The registry is an MCP server; `adk` is an MCP client.
+ * This is the right architecture: the registry is an MCP server
+ * with meta-tools for agent management, not a flat namespace.
  */
 
 // ============================================
 // Types
 // ============================================
 
-/** A tool as returned by the registry's tools/list */
-export interface McpTool {
+/** An agent as returned by the registry's list_agents */
+export interface RegistryAgent {
+  path: string;
   name: string;
   description?: string;
-  inputSchema?: Record<string, unknown>;
-}
-
-/** Parsed tool with agent namespace separated */
-export interface ParsedTool {
-  agent: string;
-  tool: string;
-  fullName: string;
-  description?: string;
-  inputSchema?: Record<string, unknown>;
-}
-
-/** Grouped by agent for display */
-export interface AgentInfo {
-  name: string;
-  tools: ParsedTool[];
-  description?: string;
-}
-
-interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  id: number;
-  method: string;
-  params?: Record<string, unknown>;
+  integration?: unknown;
+  tools: Array<{
+    name: string;
+    description?: string;
+    inputSchema?: Record<string, unknown>;
+  }>;
 }
 
 interface JsonRpcResponse {
@@ -56,23 +39,26 @@ interface JsonRpcResponse {
 
 export class McpRegistryClient {
   private nextId = 1;
-  private toolsCache: Map<string, McpTool[]> = new Map();
+  private agentsCache: Map<string, RegistryAgent[]> = new Map();
 
   constructor(private registryUrls: string[]) {}
 
   /**
-   * Send a JSON-RPC request to a registry.
+   * Call an MCP tool on the registry via JSON-RPC.
    */
-  private async rpc(
+  private async callRegistryTool(
     registryUrl: string,
-    method: string,
-    params?: Record<string, unknown>,
+    toolName: string,
+    args: Record<string, unknown> = {},
   ): Promise<unknown> {
-    const request: JsonRpcRequest = {
+    const request = {
       jsonrpc: "2.0",
       id: this.nextId++,
-      method,
-      ...(params ? { params } : {}),
+      method: "tools/call",
+      params: {
+        name: toolName,
+        arguments: args,
+      },
     };
 
     const res = await fetch(registryUrl, {
@@ -93,78 +79,36 @@ export class McpRegistryClient {
       );
     }
 
-    return response.result;
+    // MCP tools/call returns { content: [{ type: "text", text: "..." }] }
+    const result = response.result as any;
+    if (result?.content?.[0]?.text) {
+      return JSON.parse(result.content[0].text);
+    }
+    return result;
   }
 
   /**
-   * List all tools from a registry via tools/list.
+   * List all agents from a registry via the list_agents tool.
    */
-  async listTools(registryUrl: string): Promise<McpTool[]> {
-    const cached = this.toolsCache.get(registryUrl);
+  async listAgents(registryUrl: string): Promise<RegistryAgent[]> {
+    const cached = this.agentsCache.get(registryUrl);
     if (cached) return cached;
 
-    const result = (await this.rpc(registryUrl, "tools/list")) as any;
-    const tools: McpTool[] = result?.tools ?? [];
-    this.toolsCache.set(registryUrl, tools);
-    return tools;
-  }
-
-  /**
-   * Parse a namespaced tool name (agent__tool) into parts.
-   */
-  static parseTool(mcpTool: McpTool): ParsedTool {
-    const sep = mcpTool.name.indexOf("__");
-    if (sep === -1) {
-      return {
-        agent: "_unknown",
-        tool: mcpTool.name,
-        fullName: mcpTool.name,
-        description: mcpTool.description,
-        inputSchema: mcpTool.inputSchema,
-      };
-    }
-    return {
-      agent: mcpTool.name.substring(0, sep),
-      tool: mcpTool.name.substring(sep + 2),
-      fullName: mcpTool.name,
-      description: mcpTool.description,
-      inputSchema: mcpTool.inputSchema,
-    };
-  }
-
-  /**
-   * Group tools by agent.
-   */
-  static groupByAgent(tools: McpTool[]): AgentInfo[] {
-    const agents = new Map<string, ParsedTool[]>();
-
-    for (const t of tools) {
-      const parsed = McpRegistryClient.parseTool(t);
-      if (!agents.has(parsed.agent)) {
-        agents.set(parsed.agent, []);
-      }
-      agents.get(parsed.agent)!.push(parsed);
-    }
-
-    return Array.from(agents.entries()).map(([name, tools]) => ({
-      name,
-      tools,
-      // Use the first tool's description prefix if available
-      description: undefined,
-    }));
+    const result = (await this.callRegistryTool(registryUrl, "list_agents")) as any;
+    const agents: RegistryAgent[] = result?.agents ?? [];
+    this.agentsCache.set(registryUrl, agents);
+    return agents;
   }
 
   /**
    * Search/discover agents across all registries.
-   * Returns agents grouped by name with their tools.
    */
-  async search(query?: string): Promise<Array<{ agents: AgentInfo[]; registry: string }>> {
-    const results: Array<{ agents: AgentInfo[]; registry: string }> = [];
+  async search(query?: string): Promise<Array<{ agents: RegistryAgent[]; registry: string }>> {
+    const results: Array<{ agents: RegistryAgent[]; registry: string }> = [];
 
     for (const registryUrl of this.registryUrls) {
       try {
-        const tools = await this.listTools(registryUrl);
-        let agents = McpRegistryClient.groupByAgent(tools);
+        let agents = await this.listAgents(registryUrl);
 
         // Filter by query if provided
         if (query) {
@@ -172,9 +116,11 @@ export class McpRegistryClient {
           agents = agents.filter(
             (a) =>
               a.name.toLowerCase().includes(q) ||
+              a.path.toLowerCase().includes(q) ||
+              (a.description?.toLowerCase().includes(q) ?? false) ||
               a.tools.some(
                 (t) =>
-                  t.tool.toLowerCase().includes(q) ||
+                  t.name.toLowerCase().includes(q) ||
                   (t.description?.toLowerCase().includes(q) ?? false),
               ),
           );
@@ -192,16 +138,17 @@ export class McpRegistryClient {
   }
 
   /**
-   * Get info about a specific agent (its tools).
+   * Get info about a specific agent.
    */
-  async getAgent(name: string): Promise<{ agent: AgentInfo; registry: string } | null> {
+  async getAgent(name: string): Promise<{ agent: RegistryAgent; registry: string } | null> {
     const cleanName = name.replace(/^@/, "");
 
     for (const registryUrl of this.registryUrls) {
       try {
-        const tools = await this.listTools(registryUrl);
-        const agents = McpRegistryClient.groupByAgent(tools);
-        const agent = agents.find((a) => a.name === cleanName);
+        const agents = await this.listAgents(registryUrl);
+        const agent = agents.find(
+          (a) => a.path === cleanName || a.name.toLowerCase() === cleanName.toLowerCase(),
+        );
         if (agent) {
           return { agent, registry: registryUrl };
         }
@@ -213,7 +160,7 @@ export class McpRegistryClient {
   }
 
   /**
-   * Call a tool on an agent via tools/call.
+   * Call a tool on an agent via the call_agent meta-tool.
    */
   async callTool(
     agentName: string,
@@ -222,28 +169,31 @@ export class McpRegistryClient {
     credentials?: Record<string, string>,
   ): Promise<unknown> {
     const cleanAgent = agentName.replace(/^@/, "");
-    const fullName = `${cleanAgent}__${toolName}`;
 
     for (const registryUrl of this.registryUrls) {
       try {
-        // Verify tool exists
-        const tools = await this.listTools(registryUrl);
-        const tool = tools.find((t) => t.name === fullName);
-        if (!tool) continue;
+        // Verify agent exists
+        const agents = await this.listAgents(registryUrl);
+        const agent = agents.find(
+          (a) => a.path === cleanAgent || a.name.toLowerCase() === cleanAgent.toLowerCase(),
+        );
+        if (!agent) continue;
 
-        const callParams: Record<string, unknown> = {
-          name: fullName,
-          arguments: params,
+        const request: Record<string, unknown> = {
+          action: "execute_tool",
+          path: agent.path,
+          tool: toolName,
+          params,
         };
 
-        // Pass credentials in the call params
+        // Pass credentials if available
         if (credentials && Object.keys(credentials).length > 0) {
-          callParams._credentials = credentials;
+          request._credentials = credentials;
         }
 
-        return await this.rpc(registryUrl, "tools/call", callParams);
+        return await this.callRegistryTool(registryUrl, "call_agent", { request });
       } catch (err) {
-        // If tool was found but call failed, propagate the error
+        // If agent was found but call failed, propagate
         if (err instanceof Error && !err.message.includes("fetch failed")) {
           throw err;
         }
@@ -252,14 +202,14 @@ export class McpRegistryClient {
     }
 
     throw new Error(
-      `Tool '${toolName}' on agent '${agentName}' not found on any configured registry`,
+      `Agent '${agentName}' not found on any configured registry`,
     );
   }
 
   /**
-   * Clear the tools cache (e.g. after adding/removing agents).
+   * Clear the agents cache.
    */
   clearCache(): void {
-    this.toolsCache.clear();
+    this.agentsCache.clear();
   }
 }
