@@ -201,13 +201,10 @@ export function createOIDCSignIn(
         const jwt = await signJwtES256(
           {
             sub: (userinfo.sub as string) ?? "unknown",
-            email: userinfo.email as string | undefined,
-            name: userinfo.name as string | undefined,
-            picture: userinfo.picture as string | undefined,
-            provider: "oidc",
-            oidc_issuer: config.issuer,
+            name: (userinfo.name as string) ?? "unknown",
+            scopes: ["*"],
             iss: issuerUrl,
-          },
+          } as Parameters<typeof signJwtES256>[0],
           signingKey.privateKey,
           signingKey.kid,
           issuerUrl,

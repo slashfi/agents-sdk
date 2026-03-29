@@ -40,14 +40,14 @@ export interface MockOIDCServer {
 export async function startMockOIDC(
   opts: { port?: number } = {},
 ): Promise<MockOIDCServer> {
-  const server = Bun.serve({
+  const server: ReturnType<typeof Bun.serve> = Bun.serve({
     port: opts.port ?? 0,
-    fetch(req) {
+    fetch(req): Response | Promise<Response> {
       const url = new URL(req.url);
 
       // Discovery
       if (url.pathname === "/.well-known/openid-configuration") {
-        const base = `http://localhost:${server.port}`;
+        const base: string = `http://localhost:${server.port}`;
         return Response.json({
           issuer: base,
           authorization_endpoint: `${base}/authorize`,
@@ -110,7 +110,7 @@ export async function startMockOIDC(
 
   return {
     url: base,
-    port: server.port,
+    port: server.port as number,
     issuer: base,
     clientId: TEST_CLIENT_ID,
     clientSecret: TEST_CLIENT_SECRET,
