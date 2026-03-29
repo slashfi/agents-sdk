@@ -48,17 +48,15 @@ export type AgentCallbackStatus =
 /**
  * A stored agent_callback — a call_agent command waiting for its trigger to fire.
  */
-export interface AgentCallbackEntry {
+export interface AgentCallbackEntry<TMetadata = Record<string, unknown>> {
   id: string;
   status: AgentCallbackStatus;
   /** The call_agent command. Params may contain {{trigger.x}} templates. */
   callback: Record<string, unknown>;
   /** Trigger definition — how values are collected. */
   trigger?: AgentCallbackTrigger;
-  /** Branch that created this callback. */
-  creatorBranchId?: string;
-  /** User this callback is for. */
-  userId?: string;
+  /** Implementation-specific context (e.g., creator branch, user ID). */
+  metadata?: TMetadata;
   /** Resolved values from the trigger, keyed by variable name. */
   resolvedValues?: Record<string, string>;
   /** Callback expires after this time. */
@@ -71,13 +69,13 @@ export interface AgentCallbackEntry {
 // Create Options
 // ---------------------------------------------------------------------------
 
-export interface CreateAgentCallbackOptions {
+export interface CreateAgentCallbackOptions<TMetadata = Record<string, unknown>> {
   /** The call_agent command. May contain {{trigger.x}} template references in params. */
   callback: Record<string, unknown>;
   /** Trigger definition. */
   trigger?: AgentCallbackTrigger;
-  creatorBranchId?: string;
-  userId?: string;
+  /** Implementation-specific context. */
+  metadata?: TMetadata;
   /** TTL in milliseconds (default: implementation-defined). */
   ttlMs?: number;
 }
@@ -101,13 +99,12 @@ export interface ResolveAgentCallbackOptions {
  * Agent Callback Store — persistence layer for deferred call_agent commands.
  * Implementations can use any backing store (CockroachDB, SQLite, in-memory, etc.).
  */
-export interface AgentCallbackStore {
-  create(options: CreateAgentCallbackOptions): Promise<string>;
-  get(id: string): Promise<AgentCallbackEntry | null>;
-  resolve(options: ResolveAgentCallbackOptions): Promise<AgentCallbackEntry>;
+export interface AgentCallbackStore<TMetadata = Record<string, unknown>> {
+  create(options: CreateAgentCallbackOptions<TMetadata>): Promise<string>;
+  get(id: string): Promise<AgentCallbackEntry<TMetadata> | null>;
+  resolve(options: ResolveAgentCallbackOptions): Promise<AgentCallbackEntry<TMetadata>>;
   cancel(id: string): Promise<boolean>;
-  listByBranch(branchId: string, limit?: number): Promise<AgentCallbackEntry[]>;
-  listPending(limit?: number): Promise<AgentCallbackEntry[]>;
+  listPending(limit?: number): Promise<AgentCallbackEntry<TMetadata>[]>;
   expireStale(): Promise<number>;
 }
 
@@ -145,37 +142,15 @@ export function resolveCallbackTemplates<T>(
 }
 
 /**
- * Extract defined variable names from a trigger.
- * For slack_block_kit: scans blocks for input elements and collects action_ids.
- */
-export function extractTriggerVariables(
-  trigger: AgentCallbackTrigger,
-): string[] {
-  if (trigger.type === 'slack_block_kit') {
-    const vars: string[] = [];
-    for (const block of trigger.blocks) {
-      const element = block.element as Record<string, unknown> | undefined;
-      if (element?.action_id && typeof element.action_id === 'string') {
-        vars.push(element.action_id);
-      }
-    }
-    return vars;
-  }
-  return [];
-}
-
-/**
  * Validate that all {{trigger.x}} references in a callback have
- * corresponding variables defined in the trigger.
+ * corresponding variables in the provided set.
  * Returns array of unresolved variable names, or empty if valid.
  */
 export function validateCallbackTemplates(
   callback: Record<string, unknown>,
-  trigger?: AgentCallbackTrigger,
+  knownVariables: string[],
 ): string[] {
-  if (!trigger) return [];
-
-  const definedVars = new Set(extractTriggerVariables(trigger));
+  const definedVars = new Set(knownVariables);
   const referencedVars: string[] = [];
 
   const scanForRefs = (obj: unknown): void => {

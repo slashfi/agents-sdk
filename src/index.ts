@@ -347,7 +347,6 @@ export type { IntrospectOptions } from "./introspect.js";
 
 export {
   resolveCallbackTemplates,
-  extractTriggerVariables,
   validateCallbackTemplates,
 } from "./callback/index.js";
 export type {
