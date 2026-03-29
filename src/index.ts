@@ -96,11 +96,27 @@ export type { DefineAgentOptions, DefineToolOptions } from "./define.js";
 
 // Registry
 export { createAgentRegistry } from "./registry.js";
-export type { AgentRegistry, AgentRegistryOptions, RegistryMiddleware } from "./registry.js";
+export type {
+  AgentRegistry,
+  AgentRegistryOptions,
+  RegistryMiddleware,
+} from "./registry.js";
 
 // Server
-export { createAgentServer, detectAuth, resolveAuth, canSeeAgent } from "./server.js";
-export type { AgentServer, AgentServerOptions, AuthConfig, OAuthIdentityProvider, ResolvedAuth, TrustedIssuer } from "./server.js";
+export {
+  createAgentServer,
+  detectAuth,
+  resolveAuth,
+  canSeeAgent,
+} from "./server.js";
+export type {
+  AgentServer,
+  AgentServerOptions,
+  AuthConfig,
+  OAuthIdentityProvider,
+  ResolvedAuth,
+  TrustedIssuer,
+} from "./server.js";
 export { createOIDCSignIn } from "./oidc-signin.js";
 export type { OIDCProviderConfig, OIDCSignInHandler } from "./oidc-signin.js";
 
@@ -149,8 +165,23 @@ export type {
 export { encryptSecret, decryptSecret } from "./crypto.js";
 
 // JWT
-export { signJwt, verifyJwt, signJwtES256, verifyJwtLocal, verifyJwtFromIssuer, generateSigningKey, exportSigningKey, importSigningKey, buildJwks } from "./jwt.js";
-export type { JwtPayload, AgentJwtPayload, SigningKey, ExportedKeyPair } from "./jwt.js";
+export {
+  signJwt,
+  verifyJwt,
+  signJwtES256,
+  verifyJwtLocal,
+  verifyJwtFromIssuer,
+  generateSigningKey,
+  exportSigningKey,
+  importSigningKey,
+  buildJwks,
+} from "./jwt.js";
+export type {
+  JwtPayload,
+  AgentJwtPayload,
+  SigningKey,
+  ExportedKeyPair,
+} from "./jwt.js";
 
 // Postgres Secret Store
 
@@ -179,7 +210,6 @@ export type {
   TokenExchangeResult,
 } from "./agent-definitions/integrations.js";
 
-
 // Remote Registry
 export { createRemoteRegistryAgent } from "./agent-definitions/remote-registry.js";
 export type { RemoteRegistryAgentOptions } from "./agent-definitions/remote-registry.js";
@@ -197,7 +227,14 @@ export type {
 export * from "./integrations-store.js";
 export * from "./integration-interface.js";
 export type { ContextFactory } from "./registry.js";
-export { createKeyManager, type KeyManager, type KeyStore, type KeyManagerOptions, type StoredKey, type KeyStatus } from "./key-manager.js";
+export {
+  createKeyManager,
+  type KeyManager,
+  type KeyStore,
+  type KeyManagerOptions,
+  type StoredKey,
+  type KeyStatus,
+} from "./key-manager.js";
 
 // Config & Consumer
 export {

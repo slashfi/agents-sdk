@@ -10,7 +10,7 @@
  *   GET  /signin/callback   → exchange code → fetch userinfo → sign JWT → return
  */
 
-import { signJwtES256, type SigningKey } from "./jwt.js";
+import { type SigningKey, signJwtES256 } from "./jwt.js";
 
 export interface OIDCProviderConfig {
   /** OIDC issuer URL (used for discovery) */
@@ -39,14 +39,19 @@ interface PendingFlow {
 
 export interface OIDCSignInHandler {
   /** Handle incoming request — call from server fetch */
-  handleRequest(req: Request, params: {
-    baseUrl: string;
-    signingKey: SigningKey;
-    issuerUrl: string;
-  }): Promise<Response | null>;
+  handleRequest(
+    req: Request,
+    params: {
+      baseUrl: string;
+      signingKey: SigningKey;
+      issuerUrl: string;
+    },
+  ): Promise<Response | null>;
 }
 
-export function createOIDCSignIn(config: OIDCProviderConfig): OIDCSignInHandler {
+export function createOIDCSignIn(
+  config: OIDCProviderConfig,
+): OIDCSignInHandler {
   let discoveryCache: OIDCDiscovery | null = null;
   const pendingFlows = new Map<string, PendingFlow>();
 
@@ -73,7 +78,10 @@ export function createOIDCSignIn(config: OIDCProviderConfig): OIDCSignInHandler 
         const redirectUri = url.searchParams.get("redirect_uri") ?? "";
         if (!redirectUri) {
           return Response.json(
-            { error: "invalid_request", error_description: "Missing redirect_uri" },
+            {
+              error: "invalid_request",
+              error_description: "Missing redirect_uri",
+            },
             { status: 400 },
           );
         }
@@ -115,14 +123,21 @@ export function createOIDCSignIn(config: OIDCProviderConfig): OIDCSignInHandler 
 
         if (error) {
           return Response.json(
-            { error, error_description: url.searchParams.get("error_description") ?? "" },
+            {
+              error,
+              error_description:
+                url.searchParams.get("error_description") ?? "",
+            },
             { status: 400 },
           );
         }
 
         if (!code || !state) {
           return Response.json(
-            { error: "invalid_request", error_description: "Missing code or state" },
+            {
+              error: "invalid_request",
+              error_description: "Missing code or state",
+            },
             { status: 400 },
           );
         }
@@ -130,7 +145,10 @@ export function createOIDCSignIn(config: OIDCProviderConfig): OIDCSignInHandler 
         const flow = pendingFlows.get(state);
         if (!flow) {
           return Response.json(
-            { error: "invalid_state", error_description: "Unknown or expired state" },
+            {
+              error: "invalid_state",
+              error_description: "Unknown or expired state",
+            },
             { status: 400 },
           );
         }
@@ -169,7 +187,10 @@ export function createOIDCSignIn(config: OIDCProviderConfig): OIDCSignInHandler 
 
         if (!userinfoRes.ok) {
           return Response.json(
-            { error: "userinfo_failed", error_description: `Status ${userinfoRes.status}` },
+            {
+              error: "userinfo_failed",
+              error_description: `Status ${userinfoRes.status}`,
+            },
             { status: 502 },
           );
         }

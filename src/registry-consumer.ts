@@ -33,13 +33,15 @@
 import type {
   ConsumerConfig,
   RefConfig,
-
-
   ResolvedConfig,
   ResolvedRef,
   ResolvedRegistry,
 } from "./define-config.js";
-import { normalizeRef, normalizeRegistry, isSecretUrl } from "./define-config.js";
+import {
+  isSecretUrl,
+  normalizeRef,
+  normalizeRegistry,
+} from "./define-config.js";
 
 // ============================================
 // Registry Discovery Types
@@ -181,7 +183,9 @@ export interface RegistryConsumer {
   resolveSecret(url: string): Promise<string>;
 
   /** Resolve all secret URLs in a config object, returning resolved values */
-  resolveConfig(config: RefConfig): Promise<Record<string, string | number | boolean>>;
+  resolveConfig(
+    config: RefConfig,
+  ): Promise<Record<string, string | number | boolean>>;
 
   /** Produce the indexed/serialized config output */
   index(): ResolvedConfig;
@@ -221,16 +225,16 @@ export async function createRegistryConsumer(
   const discoveryCache = new Map<string, RegistryConfiguration>();
 
   // Discover a registry
-  async function discover(
-    registryUrl: string,
-  ): Promise<RegistryConfiguration> {
+  async function discover(registryUrl: string): Promise<RegistryConfiguration> {
     const cached = discoveryCache.get(registryUrl);
     if (cached) return cached;
 
     const url = `${registryUrl.replace(/\/$/, "")}/.well-known/configuration`;
     const res = await fetchFn(url);
     if (!res.ok) {
-      throw new Error(`Failed to discover registry ${registryUrl}: ${res.status}`);
+      throw new Error(
+        `Failed to discover registry ${registryUrl}: ${res.status}`,
+      );
     }
     const configuration = (await res.json()) as RegistryConfiguration;
     discoveryCache.set(registryUrl, configuration);
@@ -264,7 +268,11 @@ export async function createRegistryConsumer(
       path: string;
       description?: string;
       tools?: Array<{ name: string; description?: string }>;
-      integration?: { provider: string; displayName: string; category?: string };
+      integration?: {
+        provider: string;
+        displayName: string;
+        category?: string;
+      };
     }>;
 
     return agents.map((agent) => ({
@@ -282,8 +290,7 @@ export async function createRegistryConsumer(
   ): Promise<unknown> {
     const configuration = await discover(registry.url);
     const callUrl =
-      configuration.call_endpoint ??
-      `${registry.url.replace(/\/$/, "")}/call`;
+      configuration.call_endpoint ?? `${registry.url.replace(/\/$/, "")}/call`;
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",

@@ -8,20 +8,23 @@
  * - Consumer discovers agents, resolves secrets, calls tools
  */
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createAgentServer,
   createAgentRegistry,
+  createAgentServer,
+  createRegistryConsumer,
   defineAgent,
   defineTool,
-  createRegistryConsumer,
   isSecretUri,
 } from "./index";
 import type { AgentServer, ConsumerConfig } from "./index";
-import { startMockOIDC, type MockOIDCServer } from "./test-utils/mock-oidc-server";
+import {
+  type MockOIDCServer,
+  startMockOIDC,
+} from "./test-utils/mock-oidc-server";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // registry.slash.com — the public agent registry
@@ -30,7 +33,10 @@ import { startMockOIDC, type MockOIDCServer } from "./test-utils/mock-oidc-serve
 const notionAgent = defineAgent({
   path: "notion",
   entrypoint: "Notion workspace integration",
-  config: { name: "Notion", description: "Search pages, query databases, create content" },
+  config: {
+    name: "Notion",
+    description: "Search pages, query databases, create content",
+  },
   visibility: "public" as const,
   tools: [
     defineTool({
@@ -92,7 +98,11 @@ const secretsAgent = defineAgent({
     defineTool({
       name: "get",
       description: "Get a secret",
-      inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] },
+      inputSchema: {
+        type: "object",
+        properties: { key: { type: "string" } },
+        required: ["key"],
+      },
       execute: async () => ({ value: "s3cr3t" }),
     }),
   ],
@@ -153,7 +163,7 @@ describe("atlas ↔ registry E2E", () => {
     await registry?.stop?.();
     await oidc?.stop();
     await rm(secretsDir, { recursive: true, force: true });
-    delete process.env.LINEAR_API_KEY;
+    process.env.LINEAR_API_KEY = undefined;
   });
 
   // ── Discovery ──────────────────────────────────────────────────
@@ -200,7 +210,7 @@ describe("atlas ↔ registry E2E", () => {
     const consumer = await createRegistryConsumer(config, { token: authToken });
 
     // Resolve secrets
-    const ref = config.refs![0] as { config: Record<string, string> };
+    const ref = config.refs?.[0] as { config: Record<string, string> };
     const resolved = await consumer.resolveConfig(ref.config);
     expect(resolved.clientId).toBe("notion_cid_prod");
     expect(resolved.clientSecret).toBe("notion_cs_prod");
@@ -220,7 +230,7 @@ describe("atlas ↔ registry E2E", () => {
     };
 
     const consumer = await createRegistryConsumer(config, { token: authToken });
-    const ref = config.refs![0] as { config: Record<string, string> };
+    const ref = config.refs?.[0] as { config: Record<string, string> };
     const resolved = await consumer.resolveConfig(ref.config);
     expect(resolved.apiKey).toBe("lin_key_prod");
   });

@@ -25,7 +25,13 @@
  */
 
 import { defineAgent, defineTool } from "../define.js";
-import { signJwt, generateSigningKey, exportSigningKey, verifyJwtFromIssuer, type ExportedKeyPair } from "../jwt.js";
+import {
+  type ExportedKeyPair,
+  exportSigningKey,
+  generateSigningKey,
+  signJwt,
+  verifyJwtFromIssuer,
+} from "../jwt.js";
 import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 
 // ============================================
@@ -81,7 +87,10 @@ export interface AuthTenant {
 
 export interface AuthStore {
   /** Create a tenant. */
-  createTenant(name: string, externalRef?: { issuer: string; tenantId: string }): Promise<{ tenantId: string }>;
+  createTenant(
+    name: string,
+    externalRef?: { issuer: string; tenantId: string },
+  ): Promise<{ tenantId: string }>;
 
   /** Get tenant by ID. */
   getTenant(tenantId: string): Promise<AuthTenant | null>;
@@ -165,9 +174,7 @@ export interface AuthStore {
   ): Promise<{ tenantId: string; userId: string; clientId: string } | null>;
 
   /** Rotate a refresh token. */
-  rotateRefreshToken(
-    oldToken: string,
-  ): Promise<{
+  rotateRefreshToken(oldToken: string): Promise<{
     refreshToken: string;
     tenantId: string;
     userId: string;
@@ -177,18 +184,32 @@ export interface AuthStore {
   // --- Tenant Identity ---
 
   /** Store a tenant identity mapping (foreign issuer + ID -> local tenant). */
-  storeTenantIdentity(tenantId: string, provider: string, providerTenantId: string): Promise<void>;
+  storeTenantIdentity(
+    tenantId: string,
+    provider: string,
+    providerTenantId: string,
+  ): Promise<void>;
 
   /** Resolve a local tenant ID from a foreign identity. */
-  resolveTenantByIdentity(provider: string, providerTenantId: string): Promise<string | null>;
+  resolveTenantByIdentity(
+    provider: string,
+    providerTenantId: string,
+  ): Promise<string | null>;
 
   // --- User Identity ---
 
   /** Store a user identity mapping (foreign issuer + ID -> local user). */
-  storeUserIdentity(userId: string, provider: string, providerUserId: string): Promise<void>;
+  storeUserIdentity(
+    userId: string,
+    provider: string,
+    providerUserId: string,
+  ): Promise<void>;
 
   /** Resolve a local user ID from a foreign identity. */
-  resolveUserByIdentity(provider: string, providerUserId: string): Promise<string | null>;
+  resolveUserByIdentity(
+    provider: string,
+    providerUserId: string,
+  ): Promise<string | null>;
 
   // --- Transaction ---
 
@@ -244,7 +265,10 @@ export function createMemoryAuthStore(): AuthStore {
   const trustedIssuers = new Set<string>();
   const tenantIdentities = new Map<string, string>(); // "provider:providerTenantId" -> tenantId
   const userIdentities = new Map<string, string>(); // "provider:providerUserId" -> userId
-  const refreshTokens = new Map<string, { tenantId: string; userId: string; clientId: string }>();
+  const refreshTokens = new Map<
+    string,
+    { tenantId: string; userId: string; clientId: string }
+  >();
 
   return {
     async createTenant(name, _externalRef) {
@@ -339,7 +363,9 @@ export function createMemoryAuthStore(): AuthStore {
     },
 
     async getSigningKeys() {
-      return Array.from(signingKeys.values()).filter(k => k.status !== "revoked");
+      return Array.from(signingKeys.values()).filter(
+        (k) => k.status !== "revoked",
+      );
     },
 
     async getActiveSigningKey() {
@@ -435,7 +461,6 @@ export interface CreateAuthAgentOptions {
 
   /** Custom auth store. Default: in-memory */
   store?: AuthStore;
-
 }
 
 // ============================================
@@ -476,20 +501,33 @@ export function createAuthAgent(
         name: { type: "string" as const, description: "Tenant name" },
         externalRef: {
           type: "object" as const,
-          description: "Link to a tenant on a remote system (for cross-registry trust)",
+          description:
+            "Link to a tenant on a remote system (for cross-registry trust)",
           properties: {
-            issuer: { type: "string" as const, description: "Issuer URL of the remote system" },
-            tenantId: { type: "string" as const, description: "Tenant ID on the remote system" },
+            issuer: {
+              type: "string" as const,
+              description: "Issuer URL of the remote system",
+            },
+            tenantId: {
+              type: "string" as const,
+              description: "Tenant ID on the remote system",
+            },
           },
           required: ["issuer", "tenantId"],
         },
       },
       required: ["name"],
     },
-    execute: async (input: { name: string; externalRef?: { issuer: string; tenantId: string } }) => {
+    execute: async (input: {
+      name: string;
+      externalRef?: { issuer: string; tenantId: string };
+    }) => {
       const result = await store.createTenant(input.name, input.externalRef);
-      return { tenantId: result.tenantId, name: input.name, externalRef: input.externalRef };
-    
+      return {
+        tenantId: result.tenantId,
+        name: input.name,
+        externalRef: input.externalRef,
+      };
     },
   });
 
@@ -748,11 +786,11 @@ export function createAuthAgent(
       return {
         newKid: newKey.kid,
         deprecatedKid: current?.kid ?? null,
-        message: "New signing key generated. Old key deprecated but still valid for verification.",
+        message:
+          "New signing key generated. Old key deprecated but still valid for verification.",
       };
     },
   });
-
 
   const apiKeyTool = defineTool({
     name: "api_key",
@@ -761,14 +799,25 @@ export function createAuthAgent(
     inputSchema: {
       type: "object" as const,
       properties: {
-        action: { type: "string", enum: ["create", "list"], description: "Action" },
+        action: {
+          type: "string",
+          enum: ["create", "list"],
+          description: "Action",
+        },
         name: { type: "string", description: "Key name" },
-        scopes: { type: "array", items: { type: "string" }, description: "Scopes" },
+        scopes: {
+          type: "array",
+          items: { type: "string" },
+          description: "Scopes",
+        },
       },
       required: ["action"],
     },
-    execute: async (input: { action: string; name?: string; scopes?: string[] }) => {
-
+    execute: async (input: {
+      action: string;
+      name?: string;
+      scopes?: string[];
+    }) => {
       if (input.action === "create") {
         const result = await store.createClient(
           input.name ?? "api-key",
@@ -779,7 +828,13 @@ export function createAuthAgent(
       }
       if (input.action === "list") {
         const clients = await store.listClients();
-        return { keys: clients.map(c => ({ id: c.clientId, name: c.name, scopes: c.scopes })) };
+        return {
+          keys: clients.map((c) => ({
+            id: c.clientId,
+            name: c.name,
+            scopes: c.scopes,
+          })),
+        };
       }
       return { error: "Unknown action" };
     },
@@ -805,19 +860,26 @@ export function createAuthAgent(
       },
       required: ["action"],
     },
-    execute: async (
-      input: { action: "add" | "remove" | "list"; issuerUrl?: string },
-    ) => {
+    execute: async (input: {
+      action: "add" | "remove" | "list";
+      issuerUrl?: string;
+    }) => {
       switch (input.action) {
         case "add": {
           if (!input.issuerUrl) throw new Error("issuerUrl is required");
           await store.addTrustedIssuer(input.issuerUrl);
-          return { success: true, message: `Added trusted issuer: ${input.issuerUrl}` };
+          return {
+            success: true,
+            message: `Added trusted issuer: ${input.issuerUrl}`,
+          };
         }
         case "remove": {
           if (!input.issuerUrl) throw new Error("issuerUrl is required");
           const removed = await store.removeTrustedIssuer(input.issuerUrl);
-          return { success: removed, message: removed ? "Removed" : "Not found" };
+          return {
+            success: removed,
+            message: removed ? "Removed" : "Not found",
+          };
         }
         case "list": {
           const issuers = await store.listTrustedIssuers();
@@ -826,7 +888,6 @@ export function createAuthAgent(
       }
     },
   });
-
 
   const exchangeTokenTool = defineTool({
     name: "exchange_token",
@@ -842,13 +903,10 @@ export function createAuthAgent(
           type: "string" as const,
           description: "JWT signed by a trusted issuer",
         },
-
       },
       required: ["token"],
     },
-    execute: async (
-      input: { token: string },
-    ) => {
+    execute: async (input: { token: string }) => {
       // 1. Decode JWT to read iss claim (no verification yet)
       const parts = input.token.split(".");
       if (parts.length !== 3) {
@@ -882,17 +940,27 @@ export function createAuthAgent(
         return { success: false, error: "JWT verification failed" };
       }
       if (!payload) {
-        return { success: false, error: "JWT verification returned empty payload" };
+        return {
+          success: false,
+          error: "JWT verification returned empty payload",
+        };
       }
 
       // 4. Resolve tenant + user inside a transaction for consistency
       return store.transaction(async () => {
         const localTenantId = await (async () => {
           if (!foreignTenantId) return null;
-          const existing = await store.resolveTenantByIdentity(issuer, foreignTenantId);
+          const existing = await store.resolveTenantByIdentity(
+            issuer,
+            foreignTenantId,
+          );
           if (existing) return existing;
           // Auto-create tenant identity link on first encounter
-          await store.storeTenantIdentity(foreignTenantId, issuer, foreignTenantId);
+          await store.storeTenantIdentity(
+            foreignTenantId,
+            issuer,
+            foreignTenantId,
+          );
           return foreignTenantId;
         })();
 

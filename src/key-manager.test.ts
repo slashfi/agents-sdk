@@ -1,6 +1,11 @@
-import { describe, test, expect, afterEach } from "bun:test";
-import { createKeyManager, type KeyStore, type StoredKey, type KeyManager } from "./key-manager";
-import { jwtVerify, createLocalJWKSet } from "jose";
+import { afterEach, describe, expect, test } from "bun:test";
+import { createLocalJWKSet, jwtVerify } from "jose";
+import {
+  type KeyManager,
+  type KeyStore,
+  type StoredKey,
+  createKeyManager,
+} from "./key-manager";
 
 // In-memory KeyStore for testing (no DB needed)
 function createMemoryKeyStore(): KeyStore & { keys: StoredKey[] } {
@@ -76,9 +81,7 @@ describe("KeyManager", () => {
     const parts = token.split(".");
     expect(parts).toHaveLength(3);
 
-    const payload = JSON.parse(
-      Buffer.from(parts[1], "base64url").toString()
-    );
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
     expect(payload.sub).toBe("test-service");
     expect(payload.iss).toBe("http://test:3000");
     expect(payload.exp - payload.iat).toBe(300); // default 5 min TTL
@@ -110,7 +113,7 @@ describe("KeyManager", () => {
 
     const token = await km.signJwt({ sub: "short-lived" });
     const payload = JSON.parse(
-      Buffer.from(token.split(".")[1], "base64url").toString()
+      Buffer.from(token.split(".")[1], "base64url").toString(),
     );
     expect(payload.exp - payload.iat).toBe(60);
   });
@@ -126,9 +129,11 @@ describe("KeyManager", () => {
       checkIntervalMs: 60_000,
     });
 
-    const initialKid = km.getJwks().keys.find(
-      (k) => store.keys.find((sk) => sk.kid === k.kid)?.status === "active"
-    )?.kid;
+    const initialKid = km
+      .getJwks()
+      .keys.find(
+        (k) => store.keys.find((sk) => sk.kid === k.kid)?.status === "active",
+      )?.kid;
 
     // Force rotation
     await km.rotate();
@@ -227,7 +232,7 @@ describe("KeyManager", () => {
     expect(failed).toBe(true);
   });
 
-    // ---- Transaction tests ----
+  // ---- Transaction tests ----
 
   test("transaction: rotate is atomic (rollback on failure)", async () => {
     const store = createMemoryKeyStore();
@@ -241,10 +246,14 @@ describe("KeyManager", () => {
 
     // Monkey-patch insertKey to fail mid-transaction
     const origInsert = store.insertKey;
-    store.insertKey = async () => { throw new Error("simulated failure"); };
+    store.insertKey = async () => {
+      throw new Error("simulated failure");
+    };
 
     // Rotation should fail, but state should be rolled back
-    try { await km.rotate(); } catch {}
+    try {
+      await km.rotate();
+    } catch {}
 
     // Original key should still be active (not deprecated)
     const active = store.keys.filter((k) => k.status === "active");

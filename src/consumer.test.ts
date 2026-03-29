@@ -1,10 +1,10 @@
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
-  createAgentServer,
   createAgentRegistry,
+  createAgentServer,
+  createRegistryConsumer,
   defineAgent,
   defineTool,
-  createRegistryConsumer,
 } from "./index";
 import type { AgentServer } from "./index";
 
@@ -71,9 +71,9 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("discover registry via .well-known/configuration", async () => {
-    const config = ({
+    const config = {
       registries: [`http://localhost:${PORT}`],
-    });
+    };
 
     const consumer = await createRegistryConsumer(config);
     const discovery = await consumer.discover(`http://localhost:${PORT}`);
@@ -83,10 +83,10 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("list agents from registry", async () => {
-    const config = ({
+    const config = {
       registries: [`http://localhost:${PORT}`],
       refs: ["@math", "@echo"],
-    });
+    };
 
     const consumer = await createRegistryConsumer(config);
     const agents = await consumer.list();
@@ -104,13 +104,13 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("refs returns configured refs", async () => {
-    const config = ({
+    const config = {
       registries: [`http://localhost:${PORT}`],
       refs: [
         "@math",
         { ref: "@echo", as: "my-echo", config: { greeting: "hello" } },
       ],
-    });
+    };
 
     const consumer = await createRegistryConsumer(config);
     const refs = consumer.refs();
@@ -124,10 +124,10 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("call a tool on a ref", async () => {
-    const config = ({
+    const config = {
       registries: [`http://localhost:${PORT}`],
       refs: ["@math"],
-    });
+    };
 
     const consumer = await createRegistryConsumer(config);
     const result = await consumer.call("@math", "add", { a: 2, b: 3 });
@@ -136,26 +136,26 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("call throws on unknown ref", async () => {
-    const config = ({
+    const config = {
       registries: [`http://localhost:${PORT}`],
       refs: ["@math"],
-    });
+    };
 
     const consumer = await createRegistryConsumer(config);
 
-    await expect(
-      consumer.call("@nonexistent", "anything", {}),
-    ).rejects.toThrow('Ref "@nonexistent" not found');
+    await expect(consumer.call("@nonexistent", "anything", {})).rejects.toThrow(
+      'Ref "@nonexistent" not found',
+    );
   });
 
   test("multi-instance refs with as: alias", async () => {
-    const config = ({
+    const config = {
       registries: [`http://localhost:${PORT}`],
       refs: [
         { ref: "@echo", as: "echo-1", config: { prefix: "first" } },
         { ref: "@echo", as: "echo-2", config: { prefix: "second" } },
       ],
-    });
+    };
 
     const consumer = await createRegistryConsumer(config);
     const refs = consumer.refs();
@@ -168,11 +168,11 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("index produces serialized config", async () => {
-    const config = ({
+    const config = {
       registries: [`http://localhost:${PORT}`],
       refs: ["@math", "@echo"],
       meta: { owner: "test", description: "test config" },
-    });
+    };
 
     const consumer = await createRegistryConsumer(config);
     const indexed = consumer.index();
@@ -190,10 +190,10 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("available returns agents not in config", async () => {
-    const config = ({
+    const config = {
       registries: [`http://localhost:${PORT}`],
       refs: ["@math"],
-    });
+    };
 
     const consumer = await createRegistryConsumer(config);
     const available = await consumer.available();
@@ -205,12 +205,12 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("registries returns normalized entries", async () => {
-    const config = ({
+    const config = {
       registries: [
         `http://localhost:${PORT}`,
         { url: "https://twin.slash.com/tenants/test", publisher: "slash" },
       ],
-    });
+    };
 
     const consumer = await createRegistryConsumer(config);
     const registries = consumer.registries();
@@ -223,11 +223,9 @@ describe("Registry Consumer E2E", () => {
   });
 });
 
-
-
 // ─── Unit: normalizeRef / normalizeRegistry ──────────────────────
 
-import { normalizeRef, normalizeRegistry, isSecretUrl } from "./define-config";
+import { isSecretUrl, normalizeRef, normalizeRegistry } from "./define-config";
 
 describe("normalizeRef", () => {
   test("string ref", () => {
@@ -303,16 +301,16 @@ describe("isSecretUrl", () => {
     expect(isSecretUrl("ftp://server/file")).toBe(false);
   });
 });
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createAgentServer,
   createAgentRegistry,
+  createAgentServer,
+  createRegistryConsumer,
   defineAgent,
   defineTool,
-  createRegistryConsumer,
   isSecretUri,
   isSecretUrl,
 } from "./index";
@@ -329,7 +327,10 @@ describe("Secret URI resolution", () => {
     // Create temp dir with secret files
     tmpDir = await mkdtemp(join(tmpdir(), "secrets-test-"));
     await writeFile(join(tmpDir, "notion-client-id"), "notion_cid_abc123");
-    await writeFile(join(tmpDir, "notion-client-secret"), "notion_cs_secret456");
+    await writeFile(
+      join(tmpDir, "notion-client-secret"),
+      "notion_cs_secret456",
+    );
     await writeFile(join(tmpDir, "api-key"), "sk-test-key-789");
 
     // Set env var for env:// test
@@ -374,7 +375,7 @@ describe("Secret URI resolution", () => {
   afterAll(async () => {
     await server?.stop?.();
     await rm(tmpDir, { recursive: true, force: true });
-    delete process.env.TEST_SECRET_VALUE;
+    process.env.TEST_SECRET_VALUE = undefined;
   });
 
   // ─── isSecretUri ───
@@ -434,9 +435,9 @@ describe("Secret URI resolution", () => {
       { token: authToken },
     );
 
-    expect(
-      consumer.resolveSecret("env://DOES_NOT_EXIST"),
-    ).rejects.toThrow("Environment variable not set");
+    expect(consumer.resolveSecret("env://DOES_NOT_EXIST")).rejects.toThrow(
+      "Environment variable not set",
+    );
   });
 
   // ─── resolveConfig with file secrets ───
@@ -478,14 +479,11 @@ describe("Secret URI resolution", () => {
     };
 
     // Consumer resolves the config
-    const consumer = await createRegistryConsumer(
-      config,
-      { token: authToken },
-    );
+    const consumer = await createRegistryConsumer(config, { token: authToken });
 
     // Resolve the ref's secrets
-    const ref = config.refs![0];
-    const refConfig = typeof ref === "string" ? {} : ref.config ?? {};
+    const ref = config.refs?.[0];
+    const refConfig = typeof ref === "string" ? {} : (ref.config ?? {});
     const resolved = await consumer.resolveConfig(refConfig);
 
     expect(resolved.clientId).toBe("notion_cid_abc123");
@@ -531,8 +529,8 @@ describe("Secret URI resolution", () => {
       { token: authToken },
     );
 
-    expect(
-      consumer.resolveSecret("ftp://some-server/secret"),
-    ).rejects.toThrow("Unsupported secret URI scheme");
+    expect(consumer.resolveSecret("ftp://some-server/secret")).rejects.toThrow(
+      "Unsupported secret URI scheme",
+    );
   });
 });

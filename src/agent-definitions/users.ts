@@ -252,10 +252,17 @@ export function createUsersAgent(options: UsersAgentOptions): AgentDefinition {
         metadata: { type: "object", description: "Additional metadata" },
         externalRef: {
           type: "object",
-          description: "Link to a user on a remote system. Creates identity automatically.",
+          description:
+            "Link to a user on a remote system. Creates identity automatically.",
           properties: {
-            issuer: { type: "string", description: "Issuer URL of the remote system" },
-            userId: { type: "string", description: "User ID on the remote system" },
+            issuer: {
+              type: "string",
+              description: "Issuer URL of the remote system",
+            },
+            userId: {
+              type: "string",
+              description: "User ID on the remote system",
+            },
           },
         },
       },
@@ -270,7 +277,12 @@ export function createUsersAgent(options: UsersAgentOptions): AgentDefinition {
         );
         if (existing) {
           const user = await store.getUser(existing.userId);
-          return { success: true, user, identity: existing, alreadyLinked: true };
+          return {
+            success: true,
+            user,
+            identity: existing,
+            alreadyLinked: true,
+          };
         }
       }
 

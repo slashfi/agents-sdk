@@ -143,8 +143,6 @@ export interface ResolvedConfig {
   meta?: ConsumerConfig["meta"];
 }
 
-
-
 // ============================================
 // Helpers
 // ============================================
