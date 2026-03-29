@@ -1103,6 +1103,14 @@ export function createAgentServer(
         }
 
         if (body.method === "tools/call") {
+          // Auth required for tool execution
+          if (!effectiveAuth) {
+            const res = jsonResponse(
+              jsonRpcError(body.id, -32600, "Authentication required to call tools"),
+              401,
+            );
+            return cors ? addCors(res) : res;
+          }
           const { name, arguments: args } = (body.params ?? {}) as {
             name: string;
             arguments?: Record<string, unknown>;

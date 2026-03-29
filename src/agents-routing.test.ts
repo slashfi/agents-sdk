@@ -82,8 +82,8 @@ const linearAgent = defineAgent({
 
 // Internal agent (no visibility) — should NOT appear under /agents
 const internalAgent = defineAgent({
-  path: "@auth",
-  entrypoint: "Internal auth agent",
+  path: "@internal",
+  entrypoint: "Internal system agent",
   tools: [
     defineTool({
       name: "whoami",
@@ -94,10 +94,26 @@ const internalAgent = defineAgent({
   ],
 });
 
+// Internal with explicit visibility
+const secretsAgent = defineAgent({
+  path: "@secrets",
+  entrypoint: "Secrets agent",
+  visibility: "internal",
+  tools: [
+    defineTool({
+      name: "get_secret",
+      description: "Get a secret",
+      inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] },
+      execute: async () => ({ value: "s3cr3t" }),
+    }),
+  ],
+});
+
 // ─── Tests ─────────────────────────────────────────────────────
 
 describe("/agents routing", () => {
   let server: AgentServer;
+  let authToken: string;
   const PORT = 19895;
   const BASE = `http://localhost:${PORT}`;
 
@@ -106,48 +122,69 @@ describe("/agents routing", () => {
     registry.register(notionAgent);
     registry.register(linearAgent);
     registry.register(internalAgent);
+    registry.register(secretsAgent);
 
     server = createAgentServer(registry, { port: PORT });
     await server.initKeys();
     await server.start();
+
+    // Get an auth token for authenticated tests
+    authToken = await server.signJwt({
+      sub: "test-user",
+      email: "test@example.com",
+    });
   });
 
   afterAll(async () => {
     await server?.stop?.();
   });
 
-  // ── Discovery ──
+  function authHeaders() {
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${authToken}`,
+    };
+  }
 
-  test("GET /agents lists only agents with explicit visibility", async () => {
+  // ─── Discovery (no auth needed) ───────────────────────────
+
+  test("GET /agents lists only agents with explicit visibility (no auth)", async () => {
     const res = await fetch(`${BASE}/agents`);
     expect(res.status).toBe(200);
     const agents = (await res.json()) as { path: string }[];
     const paths = agents.map((a) => a.path);
     expect(paths).toContain("notion");
     expect(paths).toContain("linear");
-    expect(paths).not.toContain("@auth"); // no visibility = not discoverable
+    expect(paths).not.toContain("@internal"); // no visibility = not listed
+    expect(paths).not.toContain("@secrets"); // internal visibility = needs auth
   });
 
-  test("GET /agents returns tool info for each agent", async () => {
-    const res = await fetch(`${BASE}/agents`);
-    const agents = (await res.json()) as { path: string; tools: { name: string }[] }[];
-    const notion = agents.find((a) => a.path === "notion")!;
-    expect(notion.tools.map((t) => t.name)).toContain("search_pages");
-    expect(notion.tools.map((t) => t.name)).toContain("api");
+  test("GET /agents with auth shows internal agents too", async () => {
+    const res = await fetch(`${BASE}/agents`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    const agents = (await res.json()) as { path: string }[];
+    const paths = agents.map((a) => a.path);
+    expect(paths).toContain("notion");
+    expect(paths).toContain("linear");
+    expect(paths).toContain("@secrets"); // internal visible with auth
+    expect(paths).not.toContain("@internal"); // still hidden (no visibility set)
   });
 
-  // ── Single agent info ──
-
-  test("GET /agents/notion returns agent info with full schemas", async () => {
+  test("GET /agents/notion returns tool info (no auth)", async () => {
     const res = await fetch(`${BASE}/agents/notion`);
     expect(res.status).toBe(200);
-    const agent = (await res.json()) as { path: string; name: string; tools: { name: string; inputSchema: unknown }[] };
+    const agent = (await res.json()) as {
+      path: string;
+      name: string;
+      tools: { name: string; inputSchema: unknown }[];
+    };
     expect(agent.path).toBe("notion");
     expect(agent.name).toBe("Notion");
-    expect(agent.tools.length).toBeGreaterThanOrEqual(2);
+    expect(agent.tools.map((t) => t.name)).toContain("search_pages");
+    expect(agent.tools.map((t) => t.name)).toContain("api");
     // Full schemas on single-agent endpoint
-    const searchTool = agent.tools.find((t) => t.name === "search_pages")!;
-    expect(searchTool.inputSchema).toBeDefined();
+    expect(agent.tools.find((t) => t.name === "search_pages")!.inputSchema).toBeDefined();
   });
 
   test("GET /agents/unknown returns 404", async () => {
@@ -155,9 +192,23 @@ describe("/agents routing", () => {
     expect(res.status).toBe(404);
   });
 
-  // ── Scoped MCP calls ──
+  test("GET /agents/@secrets without auth returns 404", async () => {
+    const res = await fetch(`${BASE}/agents/@secrets`);
+    expect(res.status).toBe(404); // canSeeAgent returns false
+  });
 
-  test("POST /agents/notion tools/list returns only notion tools", async () => {
+  test("GET /agents/@secrets with auth returns agent info", async () => {
+    const res = await fetch(`${BASE}/agents/@secrets`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    expect(res.status).toBe(200);
+    const agent = (await res.json()) as { path: string };
+    expect(agent.path).toBe("@secrets");
+  });
+
+  // ─── tools/list (still discovery, no auth needed) ───────
+
+  test("POST /agents/notion tools/list works without auth", async () => {
     const res = await fetch(`${BASE}/agents/notion`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -174,7 +225,9 @@ describe("/agents routing", () => {
     expect(toolNames).not.toContain("list_issues"); // linear tool
   });
 
-  test("POST /agents/notion tools/call executes tool", async () => {
+  // ─── tools/call (auth required) ────────────────────────
+
+  test("POST /agents/notion tools/call WITHOUT auth returns 401", async () => {
     const res = await fetch(`${BASE}/agents/notion`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -182,44 +235,23 @@ describe("/agents routing", () => {
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
-        params: {
-          name: "search_pages",
-          arguments: { query: "meeting notes" },
-        },
+        params: { name: "search_pages", arguments: { query: "test" } },
       }),
     });
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { result: unknown };
-    expect(data.result).toBeDefined();
+    expect(res.status).toBe(401);
+    const data = (await res.json()) as { error: { message: string } };
+    expect(data.error.message).toContain("Authentication required");
   });
 
-  test("POST /agents/notion initialize returns agent-scoped server info", async () => {
+  test("POST /agents/notion tools/call WITH auth succeeds", async () => {
     const res = await fetch(`${BASE}/agents/notion`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: {},
-      }),
-    });
-    const data = (await res.json()) as { result: { serverInfo: { name: string } } };
-    expect(data.result.serverInfo.name).toBe("Notion");
-  });
-
-  test("POST /agents/linear tools/call executes linear tool", async () => {
-    const res = await fetch(`${BASE}/agents/linear`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
-        params: {
-          name: "list_issues",
-          arguments: {},
-        },
+        params: { name: "search_pages", arguments: { query: "meeting notes" } },
       }),
     });
     expect(res.status).toBe(200);
@@ -227,10 +259,10 @@ describe("/agents routing", () => {
     expect(data.result).toBeDefined();
   });
 
-  test("POST /agents/notion tools/call with api proxy tool", async () => {
+  test("POST /agents/notion api proxy tool WITH auth", async () => {
     const res = await fetch(`${BASE}/agents/notion`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
@@ -246,13 +278,45 @@ describe("/agents routing", () => {
     expect(data.result).toBeDefined();
   });
 
-  // ── Legacy /list still works ──
+  test("POST /agents/linear tools/call WITH auth", async () => {
+    const res = await fetch(`${BASE}/agents/linear`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "list_issues", arguments: {} },
+      }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  // ─── initialize ───────────────────────────────────────
+
+  test("POST /agents/notion initialize returns agent-scoped server info", async () => {
+    const res = await fetch(`${BASE}/agents/notion`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {},
+      }),
+    });
+    const data = (await res.json()) as {
+      result: { serverInfo: { name: string } };
+    };
+    expect(data.result.serverInfo.name).toBe("Notion");
+  });
+
+  // ─── Legacy ───────────────────────────────────────────
 
   test("GET /list still works (legacy)", async () => {
     const res = await fetch(`${BASE}/list`);
     expect(res.status).toBe(200);
     const agents = (await res.json()) as { path: string }[];
-    // Legacy list shows all agents (including internal ones)
     expect(agents.length).toBeGreaterThanOrEqual(2);
   });
 });
