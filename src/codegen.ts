@@ -923,7 +923,7 @@ function generateToolFile(
     `  execute: async (input) => {`,
   );
   lines.push(
-    `    throw new Error('Tool ${tool.name} must be connected to an MCP server to execute.');`,
+    `    // Proxied to MCP server at runtime`,
   );
   lines.push(`  },`);
   lines.push(`});`);
