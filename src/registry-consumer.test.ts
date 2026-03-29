@@ -4,7 +4,6 @@ import {
   createAgentRegistry,
   defineAgent,
   defineTool,
-  defineConfig,
   createRegistryConsumer,
 } from "./index";
 import type { AgentServer } from "./index";
@@ -72,7 +71,7 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("discover registry via .well-known/configuration", async () => {
-    const config = defineConfig({
+    const config = ({
       registries: [`http://localhost:${PORT}`],
     });
 
@@ -84,7 +83,7 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("list agents from registry", async () => {
-    const config = defineConfig({
+    const config = ({
       registries: [`http://localhost:${PORT}`],
       refs: ["@math", "@echo"],
     });
@@ -105,7 +104,7 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("refs returns configured refs", async () => {
-    const config = defineConfig({
+    const config = ({
       registries: [`http://localhost:${PORT}`],
       refs: [
         "@math",
@@ -125,7 +124,7 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("call a tool on a ref", async () => {
-    const config = defineConfig({
+    const config = ({
       registries: [`http://localhost:${PORT}`],
       refs: ["@math"],
     });
@@ -137,7 +136,7 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("call throws on unknown ref", async () => {
-    const config = defineConfig({
+    const config = ({
       registries: [`http://localhost:${PORT}`],
       refs: ["@math"],
     });
@@ -150,7 +149,7 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("multi-instance refs with as: alias", async () => {
-    const config = defineConfig({
+    const config = ({
       registries: [`http://localhost:${PORT}`],
       refs: [
         { ref: "@echo", as: "echo-1", config: { prefix: "first" } },
@@ -169,7 +168,7 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("index produces serialized config", async () => {
-    const config = defineConfig({
+    const config = ({
       registries: [`http://localhost:${PORT}`],
       refs: ["@math", "@echo"],
       meta: { owner: "test", description: "test config" },
@@ -191,7 +190,7 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("available returns agents not in config", async () => {
-    const config = defineConfig({
+    const config = ({
       registries: [`http://localhost:${PORT}`],
       refs: ["@math"],
     });
@@ -206,7 +205,7 @@ describe("Registry Consumer E2E", () => {
   });
 
   test("registries returns normalized entries", async () => {
-    const config = defineConfig({
+    const config = ({
       registries: [
         `http://localhost:${PORT}`,
         { url: "https://twin.slash.com/tenants/test", publisher: "slash" },
@@ -224,24 +223,7 @@ describe("Registry Consumer E2E", () => {
   });
 });
 
-// ─── Unit: defineConfig ──────────────────────────────────────────
 
-describe("defineConfig", () => {
-  test("returns config as-is", () => {
-    const config = defineConfig({
-      registries: ["https://registry.slash.com"],
-      refs: ["notion"],
-    });
-
-    expect(config.registries).toEqual(["https://registry.slash.com"]);
-    expect(config.refs).toEqual(["notion"]);
-  });
-
-  test("empty config is valid", () => {
-    const config = defineConfig({});
-    expect(config).toEqual({});
-  });
-});
 
 // ─── Unit: normalizeRef / normalizeRegistry ──────────────────────
 

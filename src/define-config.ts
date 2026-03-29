@@ -140,20 +140,7 @@ export interface ResolvedConfig {
   meta?: ConsumerConfig["meta"];
 }
 
-// ============================================
-// defineConfig
-// ============================================
 
-/**
- * Define a consumer configuration.
- *
- * This is a type-safe factory — it validates the shape at the type level
- * and returns the config as-is. The actual resolution (registry discovery,
- * ref validation) happens at runtime via `createRegistryConsumer`.
- */
-export function defineConfig(config: ConsumerConfig): ConsumerConfig {
-  return config;
-}
 
 // ============================================
 // Helpers

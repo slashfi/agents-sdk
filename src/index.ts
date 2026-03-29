@@ -199,7 +199,6 @@ export { createKeyManager, type KeyManager, type KeyStore, type KeyManagerOption
 
 // Config & Consumer
 export {
-  defineConfig,
   normalizeRef,
   normalizeRegistry,
   isSecretUrl,
