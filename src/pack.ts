@@ -14,13 +14,12 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { parseJsonc } from "./jsonc.js";
 import type { SerializedAgentDefinition } from "./serialized.js";
 
