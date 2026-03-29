@@ -165,6 +165,100 @@ export interface IntegrationConfig {
 }
 
 // ============================================
+// Security Scheme
+// ============================================
+
+/**
+ * OAuth 2.0 Authorization Code flow configuration.
+ * Used by agents that wrap APIs requiring user-authorized access
+ * (e.g. Notion, Slack, GitHub, Linear, Google).
+ */
+export interface OAuth2SecurityScheme {
+  type: "oauth2";
+  flows: {
+    authorizationCode: {
+      /** URL to redirect users for authorization */
+      authorizationUrl: string;
+      /** URL to exchange authorization code for tokens */
+      tokenUrl: string;
+      /** URL for token refresh (defaults to tokenUrl) */
+      refreshUrl?: string;
+      /** Available scopes: key = scope name, value = description */
+      scopes?: Record<string, string>;
+      /** How client credentials are sent */
+      clientAuth?: "client_secret_post" | "client_secret_basic";
+    };
+  };
+}
+
+/**
+ * API key authentication.
+ * Used by agents that wrap APIs using a single key
+ * (e.g. OpenAI, Anthropic, Stripe, Datadog).
+ */
+export interface ApiKeySecurityScheme {
+  type: "apiKey";
+  /** Where the key is sent */
+  in: "header" | "query";
+  /** Header or query parameter name (e.g. "X-API-Key", "Authorization") */
+  name: string;
+  /** Optional prefix (e.g. "Bearer" for Authorization header) */
+  prefix?: string;
+}
+
+/**
+ * HTTP authentication (Bearer token, Basic auth).
+ */
+export interface HttpSecurityScheme {
+  type: "http";
+  scheme: "bearer" | "basic";
+}
+
+/**
+ * No authentication required.
+ */
+export interface NoneSecurityScheme {
+  type: "none";
+}
+
+/**
+ * Security scheme for an agent — describes what authentication the
+ * agent's target API requires from consumers.
+ *
+ * Borrowed from OpenAPI Security Scheme Object, simplified for agents.
+ * The system uses this to:
+ * - Know what credentials a tenant admin needs to provide (OAuth app creds)
+ * - Know what flow a user needs to complete (OAuth exchange)
+ * - Know how to send credentials when calling the API
+ *
+ * @example
+ * ```typescript
+ * // OAuth 2.0 (Notion, Slack, GitHub)
+ * security: {
+ *   type: 'oauth2',
+ *   flows: {
+ *     authorizationCode: {
+ *       authorizationUrl: 'https://api.notion.com/v1/oauth/authorize',
+ *       tokenUrl: 'https://api.notion.com/v1/oauth/token',
+ *       clientAuth: 'client_secret_basic',
+ *     }
+ *   }
+ * }
+ *
+ * // API Key (OpenAI, Stripe)
+ * security: { type: 'apiKey', in: 'header', name: 'Authorization', prefix: 'Bearer' }
+ *
+ * // No auth (public API)
+ * security: { type: 'none' }
+ * ```
+ */
+export type SecurityScheme =
+  | OAuth2SecurityScheme
+  | ApiKeySecurityScheme
+  | HttpSecurityScheme
+  | NoneSecurityScheme;
+
+// ============================================
 // Agent Configuration
 // ============================================
 
@@ -216,6 +310,15 @@ export interface AgentConfig {
    * @see IntegrationConfig
    */
   integration?: IntegrationConfig;
+
+  /**
+   * Security scheme — describes what authentication the agent's
+   * target API requires. Used by the registry to communicate
+   * credential requirements to consumers.
+   *
+   * @see SecurityScheme
+   */
+  security?: SecurityScheme;
 
   /** Additional configuration */
   /** Agent refs (paths to other agents this agent can call) */
