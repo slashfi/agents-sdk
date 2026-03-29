@@ -340,3 +340,23 @@ export type {
 
 export { introspectMcp } from "./introspect.js";
 export type { IntrospectOptions } from "./introspect.js";
+
+// ============================================
+// Agent Callbacks (deferred call_agent commands)
+// ============================================
+
+export {
+  resolveCallbackTemplates,
+  extractTriggerVariables,
+  validateCallbackTemplates,
+} from "./callback/index.js";
+export type {
+  AgentCallbackTrigger,
+  SlackBlockKitTrigger,
+  WebhookTrigger,
+  AgentCallbackStatus,
+  AgentCallbackEntry,
+  AgentCallbackStore,
+  CreateAgentCallbackOptions,
+  ResolveAgentCallbackOptions,
+} from "./callback/index.js";
