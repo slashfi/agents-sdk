@@ -7,6 +7,9 @@
     "url": "https://github.com/slashfi/agents-sdk.git"
   },
   "main": "dist/index.js",
+  "bin": {
+    "agents-sdk": "./src/cli.ts"
+  },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/bun": "^1.1.0",

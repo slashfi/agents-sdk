@@ -55,7 +55,7 @@ const echoAgent = defineAgent({
 
 describe("Registry Consumer E2E", () => {
   let server: AgentServer;
-  const PORT = 19890;
+  const PORT = 19892;
 
   beforeAll(async () => {
     const registry = createAgentRegistry();

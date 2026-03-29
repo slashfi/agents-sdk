@@ -277,3 +277,15 @@ export type {
   AgentListing,
   SecretResolver,
 } from "./registry-consumer.js";
+
+// Codegen
+export { codegen, useAgent, listAgentTools } from "./codegen.js";
+export type {
+  CodegenOptions,
+  CodegenResult,
+  CodegenManifest,
+  McpToolDefinition,
+  McpServerInfo,
+  McpTransport,
+  ServerSource,
+} from "./codegen.js";
