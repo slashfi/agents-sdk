@@ -5,12 +5,9 @@
  */
 
 import { dirname, resolve } from "node:path";
-import type {
-  AgentEvent,
-  EventCallback,
-  EventType,
-} from "./events.js";
+import type { AgentEvent, EventCallback, EventType } from "./events.js";
 import { createEventBus } from "./events.js";
+import type { SerializedAgentDefinition } from "./serialized.js";
 import type {
   AgentAction,
   AgentDefinition,
@@ -28,6 +25,7 @@ import type {
   ToolSchema,
   Visibility,
 } from "./types.js";
+import { assertValidDefinition } from "./validate.js";
 
 /** Default supported actions if not specified */
 const DEFAULT_SUPPORTED_ACTIONS: AgentAction[] = [
@@ -75,8 +73,8 @@ export interface AgentRegistryOptions {
  * Agent registry interface.
  */
 export interface AgentRegistry {
-  /** Register an agent */
-  register(agent: AgentDefinition): void;
+  /** Register an agent (accepts both AgentDefinition and SerializedAgentDefinition) */
+  register(agent: AgentDefinition | SerializedAgentDefinition): void;
 
   /** Get an agent by path */
   get(path: string): AgentDefinition | undefined;
@@ -127,6 +125,43 @@ export interface AgentRegistry {
 export type ContextFactory = (
   baseCtx: import("./types.js").ToolContext,
 ) => import("./types.js").ToolContext;
+
+/**
+ * Convert a SerializedAgentDefinition to an AgentDefinition.
+ *
+ * Use this when you need an AgentDefinition but have a serialized one
+ * (e.g., from an @agentdef package or adk introspect output).
+ *
+ * Tools get a proxy execute that throws — actual execution goes through MCP.
+ * The registry's `register()` method calls this automatically.
+ */
+export function agentFromSerialized(
+  def: SerializedAgentDefinition,
+): AgentDefinition {
+  return {
+    path: def.path,
+    entrypoint: def.description || `Agent for ${def.name}`,
+    config: {
+      name: def.name,
+      description: def.description,
+      visibility: def.visibility as Visibility | undefined,
+    },
+    visibility: def.visibility as Visibility | undefined,
+    tools: def.tools.map(
+      (t) =>
+        ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+          execute: async () => {
+            throw new Error(
+              `Tool "${t.name}" is from a SerializedAgentDefinition and requires MCP server execution. Use createClient() to call tools on serialized agents.`,
+            );
+          },
+        }) as unknown as ToolDefinition,
+    ),
+  };
+}
 
 export function createAgentRegistry(
   options: AgentRegistryOptions = {},
@@ -333,8 +368,61 @@ export function createAgentRegistry(
     };
   }
 
+  /**
+   * Detect if the input is a SerializedAgentDefinition (vs AgentDefinition).
+   * SerializedAgentDefinition has tools with inputSchema but no execute function.
+   */
+  function isSerialized(
+    agent: AgentDefinition | SerializedAgentDefinition,
+  ): agent is SerializedAgentDefinition {
+    if (!agent.tools || agent.tools.length === 0) return false;
+    // SerializedAgentDefinition tools have inputSchema but no execute
+    const firstTool = agent.tools[0] as unknown as Record<string, unknown>;
+    return "inputSchema" in firstTool && !("execute" in firstTool);
+  }
+
+  /**
+   * Convert a SerializedAgentDefinition to an AgentDefinition.
+   * Tools get a proxy execute that throws — actual execution goes through MCP.
+   */
+  function fromSerialized(def: SerializedAgentDefinition): AgentDefinition {
+    return {
+      path: def.path,
+      entrypoint: def.description || `Agent for ${def.name}`,
+      config: {
+        name: def.name,
+        description: def.description,
+        visibility: def.visibility as Visibility | undefined,
+      },
+      visibility: def.visibility as Visibility | undefined,
+      tools: def.tools.map(
+        (t) =>
+          ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+            execute: async () => {
+              throw new Error(
+                `Tool "${t.name}" is from a SerializedAgentDefinition and requires MCP server execution. Use createClient() to call tools on serialized agents.`,
+              );
+            },
+          }) as unknown as ToolDefinition,
+      ),
+    };
+  }
+
   const registry: AgentRegistry = {
-    register(agent: AgentDefinition): void {
+    register(input: AgentDefinition | SerializedAgentDefinition): void {
+      let agent: AgentDefinition;
+      if (isSerialized(input)) {
+        assertValidDefinition(
+          input,
+          `register(${(input as SerializedAgentDefinition).path || "unknown"})`,
+        );
+        agent = fromSerialized(input as SerializedAgentDefinition);
+      } else {
+        agent = input as AgentDefinition;
+      }
       agents.set(agent.path, agent);
 
       // Collect agent-level listeners into the bus
@@ -508,15 +596,17 @@ export function createAgentRegistry(
               result = await tool.execute(request.params, ctx);
             } catch (err) {
               // Emit tool/error on failure
-              await eventBus.emit({
-                type: "tool/error",
-                agentPath: agent.path,
-                tool: request.tool!,
-                params: request.params,
-                error: err,
-                durationMs: Date.now() - startMs,
-                timestamp: Date.now(),
-              }).catch(() => {}); // don't let emit error mask tool error
+              await eventBus
+                .emit({
+                  type: "tool/error",
+                  agentPath: agent.path,
+                  tool: request.tool!,
+                  params: request.params,
+                  error: err,
+                  durationMs: Date.now() - startMs,
+                  timestamp: Date.now(),
+                })
+                .catch(() => {}); // don't let emit error mask tool error
 
               return {
                 success: false,
@@ -544,7 +634,8 @@ export function createAgentRegistry(
             // Catch-all for unexpected errors (e.g., emit failures)
             return {
               success: false,
-              error: outerErr instanceof Error ? outerErr.message : String(outerErr),
+              error:
+                outerErr instanceof Error ? outerErr.message : String(outerErr),
               code: "TOOL_EXECUTION_ERROR",
             } as CallAgentErrorResponse;
           }

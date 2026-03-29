@@ -100,7 +100,7 @@ export { defineAgent, defineTool } from "./define.js";
 export type { DefineAgentOptions, DefineToolOptions, AgentWithHooks, ToolWithHooks } from "./define.js";
 
 // Registry
-export { createAgentRegistry } from "./registry.js";
+export { createAgentRegistry, agentFromSerialized } from "./registry.js";
 export type {
   AgentRegistry,
   AgentRegistryOptions,
@@ -357,3 +357,15 @@ export type {
   CreateAgentCallbackOptions,
   ResolveAgentCallbackOptions,
 } from "./callback/index.js";
+
+// ============================================
+// Validation
+// ============================================
+
+export {
+  SerializedAgentDefinitionSchema,
+  SerializedToolSchema,
+  validateDefinition,
+  assertValidDefinition,
+} from "./validate.js";
+export type { ValidationResult } from "./validate.js";

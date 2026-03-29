@@ -13,15 +13,11 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseJsonc } from "./jsonc.js";
 import type { SerializedAgentDefinition } from "./serialized.js";
+import { assertValidDefinition } from "./validate.js";
 
 // ============================================
 // Types
@@ -158,6 +154,9 @@ export function pack(options: PackOptions): PackResult {
   }
   const agentContent = readFileSync(agentPath, "utf-8");
   const definition = parseJsonc(agentContent) as SerializedAgentDefinition;
+
+  // Validate the definition schema
+  assertValidDefinition(definition, agentPath);
 
   // Compute hash + version
   const hash = contentHash(agentContent);
