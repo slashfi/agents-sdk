@@ -204,6 +204,7 @@ export {
   normalizeRef,
   normalizeRegistry,
   isSecretUrl,
+  isSecretUri,
 } from "./define-config.js";
 export type {
   RegistryAuth,

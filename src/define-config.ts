@@ -186,13 +186,19 @@ export function normalizeRegistry(
   };
 }
 
-/** Check if a config value looks like a secret URL */
-export function isSecretUrl(value: unknown): boolean {
+/** Supported secret URI schemes */
+const SECRET_SCHEMES = ["file:", "https:", "http:", "env:"];
+
+/** Check if a value is a secret URI (file://, https://, env://) */
+export function isSecretUri(value: unknown): boolean {
   if (typeof value !== "string") return false;
   try {
     const url = new URL(value);
-    return url.pathname.includes("/secrets/");
+    return SECRET_SCHEMES.includes(url.protocol);
   } catch {
     return false;
   }
 }
+
+/** @deprecated Use isSecretUri instead */
+export const isSecretUrl = isSecretUri;

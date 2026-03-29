@@ -85,27 +85,57 @@ export interface AgentListing {
 // ============================================
 
 /** Resolves secret URLs to their values */
+import { readFile } from "node:fs/promises";
+
 export type SecretResolver = (
-  url: string,
+  uri: string,
   auth?: { token?: string },
 ) => Promise<string>;
 
-/** Default secret resolver: HTTP GET with optional bearer token */
+/**
+ * Default secret resolver — dispatches on URI scheme:
+ *   file://  → read from filesystem
+ *   env://   → read from environment variable
+ *   https:// → HTTP GET with optional bearer token
+ *   http://  → HTTP GET (dev only)
+ */
 async function defaultSecretResolver(
-  url: string,
+  uri: string,
   auth?: { token?: string },
 ): Promise<string> {
-  const headers: Record<string, string> = {};
-  if (auth?.token) {
-    headers.Authorization = `Bearer ${auth.token}`;
+  const parsed = new URL(uri);
+
+  switch (parsed.protocol) {
+    case "file:": {
+      const filePath = parsed.pathname;
+      return (await readFile(filePath, "utf-8")).trim();
+    }
+    case "env:": {
+      // env://VAR_NAME or env:///VAR_NAME
+      const varName = parsed.hostname || parsed.pathname.replace(/^\//, "");
+      const value = process.env[varName];
+      if (!value) {
+        throw new Error(`Environment variable not set: ${varName}`);
+      }
+      return value;
+    }
+    case "https:":
+    case "http:": {
+      const headers: Record<string, string> = {};
+      if (auth?.token) {
+        headers.Authorization = `Bearer ${auth.token}`;
+      }
+      const res = await fetch(uri, { headers });
+      if (!res.ok) {
+        throw new Error(
+          `Failed to resolve secret ${uri}: ${res.status} ${res.statusText}`,
+        );
+      }
+      return res.text();
+    }
+    default:
+      throw new Error(`Unsupported secret URI scheme: ${parsed.protocol}`);
   }
-  const res = await fetch(url, { headers });
-  if (!res.ok) {
-    throw new Error(
-      `Failed to resolve secret ${url}: ${res.status} ${res.statusText}`,
-    );
-  }
-  return res.text();
 }
 
 // ============================================

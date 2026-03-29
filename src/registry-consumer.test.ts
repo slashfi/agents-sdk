@@ -296,10 +296,10 @@ describe("isSecretUrl", () => {
     ).toBe(true);
   });
 
-  test("rejects non-secret URLs", () => {
-    expect(isSecretUrl("https://twin.slash.com/tenants/slash")).toBe(false);
+  test("rejects non-secret URIs", () => {
     expect(isSecretUrl("just-a-string")).toBe(false);
     expect(isSecretUrl(42)).toBe(false);
     expect(isSecretUrl(null)).toBe(false);
+    expect(isSecretUrl("ftp://server/file")).toBe(false);
   });
 });
