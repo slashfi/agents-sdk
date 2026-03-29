@@ -352,8 +352,6 @@ export {
 } from "./callback/index.js";
 export type {
   AgentCallbackTrigger,
-  SlackBlockKitTrigger,
-  WebhookTrigger,
   AgentCallbackStatus,
   AgentCallbackEntry,
   AgentCallbackStore,

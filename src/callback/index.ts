@@ -20,27 +20,15 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Base trigger type. Extend this union to add new trigger sources.
- * Each trigger type defines how input variables are collected.
+ * Base trigger type. Implementations extend this with specific trigger sources
+ * (e.g., slack_block_kit, webhook, timer).
+ *
+ * The `type` field discriminates between trigger sources.
+ * Additional fields are trigger-specific.
  */
-export type AgentCallbackTrigger =
-  | SlackBlockKitTrigger
-  | WebhookTrigger;
-
-export interface SlackBlockKitTrigger {
-  type: 'slack_block_kit';
-  /** Block Kit blocks to render. Input element action_ids define trigger variables. */
-  blocks: Array<Record<string, unknown>>;
-  /** Channel to send the form to. */
-  channelId?: string;
-  /** Thread timestamp to send in-thread. */
-  threadTs?: string;
-}
-
-export interface WebhookTrigger {
-  type: 'webhook';
-  /** Optional URL path for the webhook. */
-  path?: string;
+export interface AgentCallbackTrigger {
+  type: string;
+  [key: string]: unknown;
 }
 
 // ---------------------------------------------------------------------------
