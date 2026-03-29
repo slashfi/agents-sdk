@@ -294,3 +294,23 @@ export type {
   McpTransport,
   ServerSource,
 } from "./codegen.js";
+
+// ============================================
+// Serialized Agent Definitions
+// ============================================
+
+export { serializeAgent, serializeTool } from "./serialized.js";
+export type {
+  SerializedAgentDefinition,
+  SerializedTool,
+} from "./serialized.js";
+
+// ============================================
+// Agent Client
+// ============================================
+
+export { createClient } from "./client.js";
+export type {
+  AgentClient,
+  CreateClientOptions,
+} from "./client.js";
