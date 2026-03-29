@@ -10,10 +10,12 @@ import type {
   AgentDefinition,
   AgentRuntime,
   JsonSchema,
+  ListenerEntry,
   ToolContext,
   ToolDefinition,
   Visibility,
 } from "./types.js";
+import type { EventCallback, EventType } from "./events.js";
 
 // ============================================
 // defineTool
@@ -65,14 +67,32 @@ export interface DefineToolOptions<
  * });
  * ```
  */
+/** A ToolDefinition with .on() chaining support */
+export type ToolWithHooks<
+  TContext extends ToolContext = ToolContext,
+  TInput = unknown,
+  TOutput = unknown,
+> = ToolDefinition<TContext, TInput, TOutput> & {
+  on<T extends EventType>(eventType: T, callback: EventCallback<T>): ToolWithHooks<TContext, TInput, TOutput>;
+};
+
+/** An AgentDefinition with .on() chaining support */
+export type AgentWithHooks<
+  TContext extends ToolContext = ToolContext,
+> = AgentDefinition<TContext> & {
+  on<T extends EventType>(eventType: T, callback: EventCallback<T>): AgentWithHooks<TContext>;
+};
+
 export function defineTool<
   TContext extends ToolContext = ToolContext,
   TInput = unknown,
   TOutput = unknown,
 >(
   options: DefineToolOptions<TContext, TInput, TOutput>,
-): ToolDefinition<TContext, TInput, TOutput> {
-  return {
+): ToolWithHooks<TContext, TInput, TOutput> {
+  const listeners: ListenerEntry[] = [];
+
+  const def: ToolWithHooks<TContext, TInput, TOutput> = {
     name: options.name,
     description: options.description,
     inputSchema: options.inputSchema,
@@ -80,7 +100,17 @@ export function defineTool<
     visibility: options.visibility,
     allowedCallers: options.allowedCallers,
     execute: options.execute,
+    _listeners: listeners,
+    on<T extends EventType>(eventType: T, callback: EventCallback<T>) {
+      listeners.push({
+        eventType,
+        callback: callback as EventCallback<EventType>,
+      });
+      return def;
+    },
   };
+
+  return def;
 }
 
 // ============================================
@@ -240,7 +270,9 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
   }
 
 
-  return {
+  const agentListeners: ListenerEntry[] = [];
+
+  const def: AgentWithHooks<TContext> = {
     path: options.path,
     entrypoint: options.entrypoint,
     config,
@@ -249,5 +281,15 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
     visibility: options.visibility,
     allowedCallers: options.allowedCallers,
     loadListeners: options.loadListeners,
+    _listeners: agentListeners,
+    on<T extends EventType>(eventType: T, callback: EventCallback<T>) {
+      agentListeners.push({
+        eventType,
+        callback: callback as EventCallback<EventType>,
+      });
+      return def;
+    },
   };
+
+  return def;
 }
