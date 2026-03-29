@@ -101,6 +101,8 @@ export type { AgentRegistry, AgentRegistryOptions, RegistryMiddleware } from "./
 // Server
 export { createAgentServer, detectAuth, resolveAuth, canSeeAgent } from "./server.js";
 export type { AgentServer, AgentServerOptions, AuthConfig, OAuthIdentityProvider, ResolvedAuth, TrustedIssuer } from "./server.js";
+export { createOIDCSignIn } from "./oidc-signin.js";
+export type { OIDCProviderConfig, OIDCSignInHandler } from "./oidc-signin.js";
 
 // Secret Collection
 export {

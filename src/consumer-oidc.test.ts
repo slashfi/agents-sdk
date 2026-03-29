@@ -15,10 +15,7 @@ import { startMockOIDC, type MockOIDCServer } from "./test-utils/mock-oidc-serve
 const secretTool = defineTool({
   name: "get_secret",
   description: "Returns a secret value",
-  inputSchema: {
-    type: "object",
-    properties: {},
-  },
+  inputSchema: { type: "object", properties: {} },
   execute: async () => ({ secret: "top-secret-value" }),
 });
 
@@ -43,28 +40,26 @@ const publicAgent = defineAgent({
   visibility: "public",
 });
 
-// ─── E2E: OIDC → Registry → Consumer ─────────────────────────────
+// ─── E2E: Full OIDC Sign-In Flow ────────────────────────────
 //
-// Flow:
-// 1. Mock OIDC server acts as identity provider
-// 2. Registry trusts the OIDC issuer
-// 3. Registry signs its own JWT after verifying OIDC identity
-// 4. Consumer uses the registry-signed JWT
-//
-// This mirrors the production flow:
-//   User → Slack/Google OIDC → Registry → JWT → Consumer
+// Real flow, no shortcuts:
+//   1. GET /signin/authorize?redirect_uri=...  →  302 to mock OIDC
+//   2. Mock OIDC /authorize                    →  302 back with code
+//   3. GET /signin/callback?code=...&state=... →  server exchanges code,
+//      fetches userinfo, signs JWT             →  302 to redirect_uri?token=JWT
+//   4. Consumer uses JWT to access agents
 
-describe("Consumer with OIDC flow", () => {
+describe("OIDC Sign-In Flow", () => {
   let oidc: MockOIDCServer;
   let server: AgentServer;
   const REGISTRY_PORT = 19893;
   const ROOT_KEY = "test-root-key-oidc";
 
   beforeAll(async () => {
-    // 1. Start mock OIDC provider
+    // Start mock OIDC provider
     oidc = await startMockOIDC({ port: 19894 });
 
-    // 2. Start registry that trusts the OIDC issuer
+    // Start registry with OIDC sign-in configured
     const registry = createAgentRegistry();
     registry.register(
       createAuthAgent({ rootKey: ROOT_KEY, allowRegistration: true }),
@@ -74,12 +69,11 @@ describe("Consumer with OIDC flow", () => {
 
     server = createAgentServer(registry, {
       port: REGISTRY_PORT,
-      trustedIssuers: [
-        {
-          issuer: oidc.issuer,
-          scopes: ["agents:read", "agents:call"],
-        },
-      ],
+      oidcProvider: {
+        issuer: oidc.issuer,
+        clientId: oidc.clientId,
+        clientSecret: oidc.clientSecret,
+      },
     });
     await server.initKeys();
     await server.start();
@@ -90,31 +84,72 @@ describe("Consumer with OIDC flow", () => {
     await oidc?.stop();
   });
 
-  test("registry signs JWT for authenticated user", async () => {
-    // Simulate: after OIDC flow completes, registry signs its own JWT
-    // with the user's identity claims
-    const jwt = await server.signJwt({
-      sub: oidc.testUser.sub,
-      email: oidc.testUser.email,
-      name: oidc.testUser.name,
-      provider: "oidc",
-      oidc_issuer: oidc.issuer,
-    });
+  async function performOIDCSignIn(): Promise<string> {
+    const baseUrl = `http://localhost:${REGISTRY_PORT}`;
+    const myAppCallback = "http://localhost:9999/my-app/done";
 
-    expect(jwt).toBeDefined();
-    expect(jwt.split(".")).toHaveLength(3); // valid JWT format
+    // Step 1: Hit /signin/authorize — should 302 to OIDC provider
+    const authorizeRes = await fetch(
+      `${baseUrl}/signin/authorize?redirect_uri=${encodeURIComponent(myAppCallback)}`,
+      { redirect: "manual" },
+    );
+    expect(authorizeRes.status).toBe(302);
+
+    const idpUrl = new URL(authorizeRes.headers.get("location")!);
+    expect(idpUrl.origin).toBe(oidc.url);
+    expect(idpUrl.pathname).toBe("/authorize");
+    expect(idpUrl.searchParams.get("client_id")).toBe(oidc.clientId);
+    expect(idpUrl.searchParams.get("response_type")).toBe("code");
+
+    const state = idpUrl.searchParams.get("state")!;
+    const callbackUri = idpUrl.searchParams.get("redirect_uri")!;
+    expect(state).toBeTruthy();
+    expect(callbackUri).toContain("/signin/callback");
+
+    // Step 2: Hit the OIDC provider's authorize — it immediately redirects back with code
+    const oidcAuthorizeRes = await fetch(idpUrl.toString(), { redirect: "manual" });
+    expect(oidcAuthorizeRes.status).toBe(302);
+
+    const callbackRedirect = new URL(oidcAuthorizeRes.headers.get("location")!);
+    expect(callbackRedirect.searchParams.get("code")).toBeTruthy();
+    expect(callbackRedirect.searchParams.get("state")).toBe(state);
+
+    // Step 3: Hit /signin/callback with the code — server exchanges code, fetches userinfo, signs JWT
+    const callbackRes = await fetch(callbackRedirect.toString(), { redirect: "manual" });
+    expect(callbackRes.status).toBe(302);
+
+    const finalRedirect = new URL(callbackRes.headers.get("location")!);
+    expect(finalRedirect.origin).toBe("http://localhost:9999");
+    expect(finalRedirect.pathname).toBe("/my-app/done");
+
+    const jwt = finalRedirect.searchParams.get("token")!;
+    expect(jwt).toBeTruthy();
+    expect(jwt.split(".")).toHaveLength(3);
+
+    return jwt;
+  }
+
+  test("full OIDC flow returns valid JWT", async () => {
+    const jwt = await performOIDCSignIn();
+
+    // Decode and verify claims
+    const payload = JSON.parse(
+      Buffer.from(jwt.split(".")[1], "base64url").toString(),
+    );
+    expect(payload.sub).toBe("test-user-001");
+    expect(payload.email).toBe("test@example.com");
+    expect(payload.name).toBe("Test User");
+    expect(payload.provider).toBe("oidc");
+    expect(payload.oidc_issuer).toBe(oidc.issuer);
+    expect(payload.iss).toBeTruthy();
+    expect(payload.exp).toBeGreaterThan(Date.now() / 1000);
   });
 
-  test("consumer with OIDC-originated JWT can list all agents", async () => {
-    const jwt = await server.signJwt({
-      sub: oidc.testUser.sub,
-      email: oidc.testUser.email,
-    });
+  test("JWT from OIDC flow can list all agents", async () => {
+    const jwt = await performOIDCSignIn();
 
     const consumer = await createRegistryConsumer(
-      {
-        registries: [`http://localhost:${REGISTRY_PORT}`],
-      },
+      { registries: [`http://localhost:${REGISTRY_PORT}`] },
       { token: jwt },
     );
 
@@ -124,11 +159,8 @@ describe("Consumer with OIDC flow", () => {
     expect(paths).toContain("@public");
   });
 
-  test("consumer with OIDC JWT can call internal agent", async () => {
-    const jwt = await server.signJwt({
-      sub: oidc.testUser.sub,
-      email: oidc.testUser.email,
-    });
+  test("JWT from OIDC flow can call internal agent", async () => {
+    const jwt = await performOIDCSignIn();
 
     const consumer = await createRegistryConsumer(
       {
@@ -153,27 +185,31 @@ describe("Consumer with OIDC flow", () => {
     expect(paths).not.toContain("@secrets");
   });
 
-  test("OIDC userinfo endpoint returns expected claims", async () => {
-    // Verify the mock OIDC server works as expected
-    const res = await fetch(`${oidc.url}/userinfo`, {
-      headers: { Authorization: `Bearer ${oidc.accessToken}` },
-    });
-    const userinfo = (await res.json()) as Record<string, unknown>;
-
-    expect(userinfo.sub).toBe("test-user-001");
-    expect(userinfo.email).toBe("test@example.com");
-    expect(userinfo.name).toBe("Test User");
+  test("/signin/authorize without redirect_uri returns 400", async () => {
+    const res = await fetch(
+      `http://localhost:${REGISTRY_PORT}/signin/authorize`,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_request");
   });
 
-  test("OIDC discovery endpoint returns configuration", async () => {
+  test("/signin/callback with bad state returns 400", async () => {
     const res = await fetch(
-      `${oidc.url}/.well-known/openid-configuration`,
+      `http://localhost:${REGISTRY_PORT}/signin/callback?code=fake&state=bogus`,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_state");
+  });
+
+  test(".well-known/configuration includes signin_endpoint", async () => {
+    const res = await fetch(
+      `http://localhost:${REGISTRY_PORT}/.well-known/configuration`,
     );
     const config = (await res.json()) as Record<string, unknown>;
-
-    expect(config.issuer).toBe(oidc.url);
-    expect(config.authorization_endpoint).toBeDefined();
-    expect(config.token_endpoint).toBeDefined();
-    expect(config.userinfo_endpoint).toBeDefined();
+    expect(config.signin_endpoint).toBe(
+      `http://localhost:${REGISTRY_PORT}/signin/authorize`,
+    );
   });
 });

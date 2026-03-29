@@ -33,6 +33,7 @@ import {
 import { verifyJwt } from "./jwt.js";
 import type { SigningKey } from "./jwt.js";
 import { generateSigningKey, importSigningKey, exportSigningKey, buildJwks, verifyJwtLocal, verifyJwtFromIssuer, signJwtES256 } from "./jwt.js";
+import { createOIDCSignIn, type OIDCProviderConfig } from "./oidc-signin.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 
@@ -102,6 +103,8 @@ export interface AgentServerOptions {
   oauthIdentityProvider?: OAuthIdentityProvider;
   /** Key store for managed key rotation (if provided, uses createKeyManager instead of simple key gen) */
   keyStore?: import("./key-manager.js").KeyStore;
+  /** OIDC provider for user sign-in (authorization code flow) */
+  oidcProvider?: OIDCProviderConfig;
 }
 
 export interface AgentServer {
@@ -445,6 +448,9 @@ export function createAgentServer(
     secretStore,
     oauthIdentityProvider,
   } = options;
+
+  // OIDC sign-in handler (if configured)
+  const oidcSignIn = options.oidcProvider ? createOIDCSignIn(options.oidcProvider) : null;
 
   // Signing keys for JWKS-based auth
   const serverSigningKeys: SigningKey[] = [];
@@ -845,6 +851,17 @@ export function createAgentServer(
         return cors ? addCors(res) : res;
       }
 
+      // ── OIDC Sign-In (authorize + callback) ──
+      if (oidcSignIn && (path === "/signin/authorize" || path === "/signin/callback")) {
+        const baseUrl = resolveBaseUrl(req);
+        const res = await oidcSignIn.handleRequest(req, {
+          baseUrl: baseUrl + basePath,
+          signingKey: serverSigningKeys[0],
+          issuerUrl: baseUrl,
+        });
+        if (res) return cors ? addCors(res) : res;
+      }
+
       // ── GET /oauth/authorize → Identity linking redirect (browser flow) ──
       if (path === "/oauth/authorize" && req.method === "GET") {
         if (!oauthIdentityProvider) {
@@ -946,6 +963,7 @@ export function createAgentServer(
           call_endpoint: baseUrl,
           supported_grant_types: ["client_credentials", "jwt_exchange"],
           authorization_endpoint: `${baseUrl}/oauth/authorize`,
+          ...(oidcSignIn ? { signin_endpoint: `${baseUrl}/signin/authorize` } : {}),
         });
         return cors ? addCors(res) : res;
       }
