@@ -9,7 +9,7 @@ export interface Integration {
   id: string;
   agentPath: string;
   tenantId?: string;
-  status: 'active' | 'disabled' | 'error';
+  status: "active" | "disabled" | "error";
   config: Record<string, unknown>;
   installedBy?: string;
   installedAt: number;
@@ -28,7 +28,10 @@ export interface IntegrationsStore {
   get(id: string): Promise<Integration | null>;
   list(tenantId?: string): Promise<Integration[]>;
   listByAgent(agentPath: string, tenantId?: string): Promise<Integration[]>;
-  update(id: string, updates: Partial<Pick<Integration, 'status' | 'config' | 'updatedAt'>>): Promise<Integration | null>;
+  update(
+    id: string,
+    updates: Partial<Pick<Integration, "status" | "config" | "updatedAt">>,
+  ): Promise<Integration | null>;
   delete(id: string): Promise<boolean>;
 }
 
@@ -44,7 +47,7 @@ export function createInMemoryIntegrationsStore(): IntegrationsStore {
         id,
         agentPath: input.agentPath,
         tenantId: input.tenantId,
-        status: 'active',
+        status: "active",
         config: input.config,
         installedBy: input.installedBy,
         installedAt: now,
@@ -60,12 +63,13 @@ export function createInMemoryIntegrationsStore(): IntegrationsStore {
 
     async list(tenantId?) {
       const all = Array.from(integrations.values());
-      return tenantId ? all.filter(i => i.tenantId === tenantId) : all;
+      return tenantId ? all.filter((i) => i.tenantId === tenantId) : all;
     },
 
     async listByAgent(agentPath, tenantId?) {
       return Array.from(integrations.values()).filter(
-        i => i.agentPath === agentPath && (!tenantId || i.tenantId === tenantId)
+        (i) =>
+          i.agentPath === agentPath && (!tenantId || i.tenantId === tenantId),
       );
     },
 

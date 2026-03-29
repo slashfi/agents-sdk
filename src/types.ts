@@ -37,7 +37,6 @@ export type JsonSchema = {
   [key: string]: unknown;
 };
 
-
 // ============================================
 // Integration Config
 // ============================================
@@ -76,18 +75,31 @@ export interface IntegrationMethodContext extends ToolContext {
  */
 export interface IntegrationMethods {
   /** Configure/initialize the integration (e.g., add a DB connection, set API key) */
-  setup(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
+  setup(
+    params: Record<string, unknown>,
+    ctx: IntegrationMethodContext,
+  ): Promise<IntegrationMethodResult>;
   /** List configured instances (e.g., list DB connections, list repos) */
-  list(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
+  list(
+    params: Record<string, unknown>,
+    ctx: IntegrationMethodContext,
+  ): Promise<IntegrationMethodResult>;
   /** Establish connection or authenticate (e.g., test DB connectivity, OAuth flow) */
-  connect(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
+  connect(
+    params: Record<string, unknown>,
+    ctx: IntegrationMethodContext,
+  ): Promise<IntegrationMethodResult>;
   /** Get details of a specific instance */
-  get(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
+  get(
+    params: Record<string, unknown>,
+    ctx: IntegrationMethodContext,
+  ): Promise<IntegrationMethodResult>;
   /** Modify an existing configuration */
-  update(params: Record<string, unknown>, ctx: IntegrationMethodContext): Promise<IntegrationMethodResult>;
+  update(
+    params: Record<string, unknown>,
+    ctx: IntegrationMethodContext,
+  ): Promise<IntegrationMethodResult>;
 }
-
-
 
 /** Hooks for agents that implement the integrations interface. */
 export interface IntegrationHooks {
@@ -99,17 +111,35 @@ export interface IntegrationHooks {
   description?: string;
 
   /** Set up this integration (discover, configure, establish trust) */
-  setup?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+  setup?(
+    params: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<IntegrationMethodResult>;
   /** Connect a user to this integration (OAuth, identity linking) */
-  connect?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+  connect?(
+    params: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<IntegrationMethodResult>;
   /** Discover available instances of this integration */
-  discover?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+  discover?(
+    params: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<IntegrationMethodResult>;
   /** List connected instances */
-  list?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+  list?(
+    params: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<IntegrationMethodResult>;
   /** Get details of a specific instance */
-  get?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+  get?(
+    params: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<IntegrationMethodResult>;
   /** Update an existing instance config */
-  update?(params: Record<string, unknown>, ctx: ToolContext): Promise<IntegrationMethodResult>;
+  update?(
+    params: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<IntegrationMethodResult>;
 }
 export interface IntegrationConfig {
   /** Provider identifier (e.g., "databases", "slack", "github") */
@@ -172,11 +202,11 @@ export interface AgentConfig {
   modelParams?: {
     maxTokens?: number;
     temperature?: number;
-  /** Agent refs (paths to other agents this agent can call) */
-  refs?: Record<string, { description?: string }>;
+    /** Agent refs (paths to other agents this agent can call) */
+    refs?: Record<string, { description?: string }>;
 
-  /** Tools to expose publicly (by name) */
-  public?: { tools?: string[] };
+    /** Tools to expose publicly (by name) */
+    public?: { tools?: string[] };
     [key: string]: unknown;
   };
 

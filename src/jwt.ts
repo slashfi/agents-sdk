@@ -9,15 +9,14 @@
  */
 
 import {
-  SignJWT,
-  jwtVerify,
-  generateKeyPair,
-  exportJWK,
-  importJWK,
-  createRemoteJWKSet,
-  type JWTPayload,
-
   type JWK,
+  type JWTPayload,
+  SignJWT,
+  createRemoteJWKSet,
+  exportJWK,
+  generateKeyPair,
+  importJWK,
+  jwtVerify,
 } from "jose";
 
 // ============================================
@@ -80,7 +79,9 @@ export interface ExportedKeyPair {
  * Generate a new ES256 signing key pair.
  */
 export async function generateSigningKey(kid?: string): Promise<SigningKey> {
-  const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
+  const { privateKey, publicKey } = await generateKeyPair("ES256", {
+    extractable: true,
+  });
   return {
     kid: kid ?? `key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     privateKey,
@@ -94,7 +95,9 @@ export async function generateSigningKey(kid?: string): Promise<SigningKey> {
 /**
  * Export a signing key to JWK format (for storage).
  */
-export async function exportSigningKey(key: SigningKey): Promise<ExportedKeyPair> {
+export async function exportSigningKey(
+  key: SigningKey,
+): Promise<ExportedKeyPair> {
   const privateKeyJwk = await exportJWK(key.privateKey);
   const publicKeyJwk = await exportJWK(key.publicKey);
   return {
@@ -110,9 +113,17 @@ export async function exportSigningKey(key: SigningKey): Promise<ExportedKeyPair
 /**
  * Import a signing key from stored JWK format.
  */
-export async function importSigningKey(exported: ExportedKeyPair): Promise<SigningKey> {
-  const privateKey = await importJWK(exported.privateKeyJwk, exported.alg) as CryptoKey;
-  const publicKey = await importJWK(exported.publicKeyJwk, exported.alg) as CryptoKey;
+export async function importSigningKey(
+  exported: ExportedKeyPair,
+): Promise<SigningKey> {
+  const privateKey = (await importJWK(
+    exported.privateKeyJwk,
+    exported.alg,
+  )) as CryptoKey;
+  const publicKey = (await importJWK(
+    exported.publicKeyJwk,
+    exported.alg,
+  )) as CryptoKey;
   return {
     kid: exported.kid,
     privateKey,
@@ -148,7 +159,10 @@ export async function buildJwks(keys: SigningKey[]): Promise<{ keys: JWK[] }> {
  * Sign a JWT with ES256 using the server's private key.
  */
 export async function signJwtES256(
-  payload: Omit<AgentJwtPayload, "iat" | "exp"> & { iat?: number; exp?: number },
+  payload: Omit<AgentJwtPayload, "iat" | "exp"> & {
+    iat?: number;
+    exp?: number;
+  },
   privateKey: CryptoKey,
   kid: string,
   issuer?: string,
@@ -202,7 +216,7 @@ export async function verifyJwtFromIssuer(
   issuerUrl: string,
 ): Promise<AgentJwtPayload | null> {
   try {
-    const jwksUrl = issuerUrl.replace(/\/$/, "") + "/.well-known/jwks.json";
+    const jwksUrl = `${issuerUrl.replace(/\/$/, "")}/.well-known/jwks.json`;
     let jwks = jwksCache.get(jwksUrl);
     if (!jwks) {
       jwks = createRemoteJWKSet(new URL(jwksUrl));
@@ -234,19 +248,34 @@ function base64UrlDecode(str: string): Uint8Array {
 
 async function hmacSign(data: string, secret: string): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
-    "raw", encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
   );
   const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(data));
   return new Uint8Array(sig);
 }
 
-async function hmacVerify(data: string, signature: Uint8Array, secret: string): Promise<boolean> {
+async function hmacVerify(
+  data: string,
+  signature: Uint8Array,
+  secret: string,
+): Promise<boolean> {
   const key = await crypto.subtle.importKey(
-    "raw", encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" }, false, ["verify"],
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
   );
-  return crypto.subtle.verify("HMAC", key, signature.buffer as ArrayBuffer, encoder.encode(data));
+  return crypto.subtle.verify(
+    "HMAC",
+    key,
+    signature.buffer as ArrayBuffer,
+    encoder.encode(data),
+  );
 }
 
 /** @deprecated Use AgentJwtPayload instead */

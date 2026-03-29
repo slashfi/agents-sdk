@@ -32,7 +32,16 @@ import {
 } from "./agent-definitions/secrets.js";
 import { verifyJwt } from "./jwt.js";
 import type { SigningKey } from "./jwt.js";
-import { generateSigningKey, importSigningKey, exportSigningKey, buildJwks, verifyJwtLocal, verifyJwtFromIssuer, signJwtES256 } from "./jwt.js";
+import {
+  buildJwks,
+  exportSigningKey,
+  generateSigningKey,
+  importSigningKey,
+  signJwtES256,
+  verifyJwtFromIssuer,
+  verifyJwtLocal,
+} from "./jwt.js";
+import { type OIDCProviderConfig, createOIDCSignIn } from "./oidc-signin.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 
@@ -48,36 +57,40 @@ export interface TrustedIssuer {
   scopes: string[];
 }
 
-
-
 /** OAuth identity provider for /oauth/authorize + /oauth/callback flows */
 export interface OAuthIdentityProvider {
   /**
    * Handle /oauth/authorize — redirect the user to an external IdP.
    * Return a Response (typically a 302 redirect).
    */
-  authorize(req: Request, params: {
-    /** The verified JWT from the foreign registry */
-    token: string;
-    /** Claims from the verified JWT */
-    claims: Record<string, unknown>;
-    /** Where to redirect after completion */
-    redirectUri: string;
-    /** Base URL of this server */
-    baseUrl: string;
-    /** OAuth scope (e.g. "setup" for tenant creation flow) */
-    scope?: string;
-  }): Promise<Response>;
+  authorize(
+    req: Request,
+    params: {
+      /** The verified JWT from the foreign registry */
+      token: string;
+      /** Claims from the verified JWT */
+      claims: Record<string, unknown>;
+      /** Where to redirect after completion */
+      redirectUri: string;
+      /** Base URL of this server */
+      baseUrl: string;
+      /** OAuth scope (e.g. "setup" for tenant creation flow) */
+      scope?: string;
+    },
+  ): Promise<Response>;
 
   /**
    * Handle /oauth/callback — process the IdP response.
    * Should link the foreign identity to a local user and redirect back.
    * Return a Response (typically a 302 redirect to redirectUri).
    */
-  callback(req: Request, params: {
-    /** Base URL of this server */
-    baseUrl: string;
-  }): Promise<Response>;
+  callback(
+    req: Request,
+    params: {
+      /** Base URL of this server */
+      baseUrl: string;
+    },
+  ): Promise<Response>;
 }
 export interface AgentServerOptions {
   /** Port to listen on (default: 3000) */
@@ -102,6 +115,8 @@ export interface AgentServerOptions {
   oauthIdentityProvider?: OAuthIdentityProvider;
   /** Key store for managed key rotation (if provided, uses createKeyManager instead of simple key gen) */
   keyStore?: import("./key-manager.js").KeyStore;
+  /** OIDC provider for user sign-in (authorization code flow) */
+  oidcProvider?: OIDCProviderConfig;
 }
 
 export interface AgentServer {
@@ -247,7 +262,10 @@ export function detectAuth(registry: AgentRegistry): AuthConfig {
 export async function resolveAuth(
   req: Request,
   authConfig: AuthConfig,
-  jwksOptions?: { signingKeys?: SigningKey[]; trustedIssuers?: TrustedIssuer[] },
+  jwksOptions?: {
+    signingKeys?: SigningKey[];
+    trustedIssuers?: TrustedIssuer[];
+  },
 ): Promise<ResolvedAuth | null> {
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) return null;
@@ -279,9 +297,7 @@ export async function resolveAuth(
             isRoot: false,
           };
         }
-      } catch {
-        continue;
-      }
+      } catch {}
     }
   }
 
@@ -294,13 +310,17 @@ export async function resolveAuth(
       const unverified = JSON.parse(atob(payloadB64)) as { iss?: string };
       if (unverified.iss) {
         const issuerConfig = jwksOptions.trustedIssuers.find(
-          (i) => i.issuer === unverified.iss
+          (i) => i.issuer === unverified.iss,
         );
         if (issuerConfig) {
-          const verified = await verifyJwtFromIssuer(credential, issuerConfig.issuer);
+          const verified = await verifyJwtFromIssuer(
+            credential,
+            issuerConfig.issuer,
+          );
           if (verified) {
             const scopes = issuerConfig.scopes;
-            const isSystem = scopes.includes("*") || scopes.includes("agents:admin");
+            const isSystem =
+              scopes.includes("*") || scopes.includes("agents:admin");
             return {
               callerId: verified.sub ?? verified.name ?? "unknown",
               callerType: isSystem ? "system" : "agent",
@@ -373,6 +393,33 @@ export function canSeeAgent(
   return false;
 }
 
+/**
+ * Filter tools visible on a public agent endpoint.
+ * For /agents/ routes, tools inherit the agent's visibility:
+ * - If agent is public, tools without explicit visibility are shown
+ * - Tool-level visibility still overrides (e.g. visibility: "private" hides it)
+ */
+function getVisibleTools(
+  agent: AgentDefinition,
+  auth: ResolvedAuth | null,
+): typeof agent.tools {
+  const agentVisibility = ((agent as any).visibility ??
+    agent.config?.visibility ??
+    "internal") as Visibility;
+  return agent.tools.filter((t) => {
+    const tv = t.visibility;
+    if (auth?.isRoot) return true;
+    // Tool has explicit visibility — respect it
+    if (tv === "public") return true;
+    if (tv === "private") return auth?.isRoot ?? false;
+    if (tv === "internal" && auth) return true;
+    // No explicit tool visibility — inherit from agent
+    if (!tv && agentVisibility === "public") return true;
+    if (!tv && agentVisibility === "internal" && auth) return true;
+    return false;
+  });
+}
+
 // ============================================
 // MCP Tool Definitions
 // ============================================
@@ -417,8 +464,7 @@ function getToolDefinitions() {
     },
     {
       name: "list_agents",
-      description:
-        "List all registered agents and their available tools.",
+      description: "List all registered agents and their available tools.",
       inputSchema: {
         type: "object",
         properties: {},
@@ -446,12 +492,17 @@ export function createAgentServer(
     oauthIdentityProvider,
   } = options;
 
+  // OIDC sign-in handler (if configured)
+  const oidcSignIn = options.oidcProvider
+    ? createOIDCSignIn(options.oidcProvider)
+    : null;
+
   // Signing keys for JWKS-based auth
   const serverSigningKeys: SigningKey[] = [];
   // Normalize trustedIssuers to TrustedIssuer objects
-  const configTrustedIssuers: TrustedIssuer[] = (options.trustedIssuers ?? []).map(
-    (i) => typeof i === 'string' ? { issuer: i, scopes: ['*'] } : i
-  );
+  const configTrustedIssuers: TrustedIssuer[] = (
+    options.trustedIssuers ?? []
+  ).map((i) => (typeof i === "string" ? { issuer: i, scopes: ["*"] } : i));
 
   const authConfig = detectAuth(registry);
   let serverInstance: ReturnType<typeof Bun.serve> | null = null;
@@ -572,7 +623,12 @@ export function createAgentServer(
                 const tv = t.visibility ?? "internal";
                 if (auth?.isRoot) return true;
                 if (tv === "public") return true;
-                if (tv === "authenticated" && auth?.callerId && auth.callerId !== "anonymous") return true;
+                if (
+                  tv === "authenticated" &&
+                  auth?.callerId &&
+                  auth.callerId !== "anonymous"
+                )
+                  return true;
                 if (tv === "internal" && auth) return true;
                 return false;
               })
@@ -621,7 +677,10 @@ export function createAgentServer(
       const assertion = params.assertion ?? "";
       if (!assertion) {
         return jsonResponse(
-          { error: "invalid_request", error_description: "Missing assertion parameter" },
+          {
+            error: "invalid_request",
+            error_description: "Missing assertion parameter",
+          },
           400,
         );
       }
@@ -639,7 +698,12 @@ export function createAgentServer(
         // If the tool call failed, forward the error
         if ((result as any)?.success === false) {
           return jsonResponse(
-            { error: "server_error", error_description: (result as any)?.error ?? "Exchange tool failed", raw: JSON.stringify(result)?.slice(0, 300) },
+            {
+              error: "server_error",
+              error_description:
+                (result as any)?.error ?? "Exchange tool failed",
+              raw: JSON.stringify(result)?.slice(0, 300),
+            },
             500,
           );
         }
@@ -648,8 +712,13 @@ export function createAgentServer(
         try {
           const assertionParts = assertion.split(".");
           if (assertionParts.length === 3) {
-            const assertionPayload = JSON.parse(Buffer.from(assertionParts[1], "base64url").toString()) as any;
-            if (assertionPayload.type === "agent-registry" && assertionPayload.iss) {
+            const assertionPayload = JSON.parse(
+              Buffer.from(assertionParts[1], "base64url").toString(),
+            ) as any;
+            if (
+              assertionPayload.type === "agent-registry" &&
+              assertionPayload.iss
+            ) {
               // Use add_connection (direct store) instead of setup_integration (which would cause infinite loop)
               const addResult = await registry.call({
                 action: "execute_tool",
@@ -665,19 +734,30 @@ export function createAgentServer(
                 callerType: "system",
               });
               if (addResult.success) {
-                console.error(`[jwt_exchange] Reverse connection stored for ${assertionPayload.iss}`);
+                console.error(
+                  `[jwt_exchange] Reverse connection stored for ${assertionPayload.iss}`,
+                );
               } else {
-                console.error(`[jwt_exchange] Reverse connection failed:`, (addResult as any).error);
+                console.error(
+                  "[jwt_exchange] Reverse connection failed:",
+                  (addResult as any).error,
+                );
               }
             }
           }
         } catch (reverseErr) {
-          console.error("[jwt_exchange] Reverse registration check failed:", reverseErr);
+          console.error(
+            "[jwt_exchange] Reverse registration check failed:",
+            reverseErr,
+          );
         }
 
         if (!exchangeResult) {
           return jsonResponse(
-            { error: "server_error", error_description: `Exchange returned null: ${JSON.stringify(result)?.slice(0, 300)}` },
+            {
+              error: "server_error",
+              error_description: `Exchange returned null: ${JSON.stringify(result)?.slice(0, 300)}`,
+            },
             500,
           );
         }
@@ -696,7 +776,8 @@ export function createAgentServer(
           return jsonResponse(
             {
               error: "identity_required",
-              error_description: "User identity not linked. Redirect to authorize_url to complete linking.",
+              error_description:
+                "User identity not linked. Redirect to authorize_url to complete linking.",
               authorize_url: authorizeUrl.toString(),
               tenant_id: exchangeResult.tenantId,
             },
@@ -733,7 +814,10 @@ export function createAgentServer(
       } catch (err) {
         console.error("[oauth] JWT exchange error:", err);
         return jsonResponse(
-          { error: "server_error", error_description: `JWT exchange failed: ${err instanceof Error ? err.message : String(err)}` },
+          {
+            error: "server_error",
+            error_description: `JWT exchange failed: ${err instanceof Error ? err.message : String(err)}`,
+          },
           500,
         );
       }
@@ -746,7 +830,10 @@ export function createAgentServer(
 
       if (!clientId || !clientSecret) {
         return jsonResponse(
-          { error: "invalid_request", error_description: "Missing client_id or client_secret" },
+          {
+            error: "invalid_request",
+            error_description: "Missing client_id or client_secret",
+          },
           400,
         );
       }
@@ -763,7 +850,10 @@ export function createAgentServer(
         const tokenResult = (result as any)?.result;
         if (!tokenResult?.accessToken) {
           return jsonResponse(
-            { error: "invalid_client", error_description: "Authentication failed" },
+            {
+              error: "invalid_client",
+              error_description: "Authentication failed",
+            },
             401,
           );
         }
@@ -786,7 +876,8 @@ export function createAgentServer(
     return jsonResponse(
       {
         error: "unsupported_grant_type",
-        error_description: "Supported grant types: client_credentials, jwt_exchange",
+        error_description:
+          "Supported grant types: client_credentials, jwt_exchange",
       },
       400,
     );
@@ -798,7 +889,6 @@ export function createAgentServer(
 
   async function fetch(req: Request): Promise<Response> {
     try {
-
       const url = new URL(req.url);
       const path = url.pathname.replace(basePath, "") || "/";
 
@@ -845,11 +935,28 @@ export function createAgentServer(
         return cors ? addCors(res) : res;
       }
 
+      // ── OIDC Sign-In (authorize + callback) ──
+      if (
+        oidcSignIn &&
+        (path === "/signin/authorize" || path === "/signin/callback")
+      ) {
+        const baseUrl = resolveBaseUrl(req);
+        const res = await oidcSignIn.handleRequest(req, {
+          baseUrl: baseUrl + basePath,
+          signingKey: serverSigningKeys[0],
+          issuerUrl: baseUrl,
+        });
+        if (res) return cors ? addCors(res) : res;
+      }
+
       // ── GET /oauth/authorize → Identity linking redirect (browser flow) ──
       if (path === "/oauth/authorize" && req.method === "GET") {
         if (!oauthIdentityProvider) {
           const res = jsonResponse(
-            { error: "not_configured", error_description: "No OAuth identity provider configured" },
+            {
+              error: "not_configured",
+              error_description: "No OAuth identity provider configured",
+            },
             404,
           );
           return cors ? addCors(res) : res;
@@ -860,7 +967,10 @@ export function createAgentServer(
 
         if (!token) {
           const res = jsonResponse(
-            { error: "invalid_request", error_description: "Missing token parameter" },
+            {
+              error: "invalid_request",
+              error_description: "Missing token parameter",
+            },
             400,
           );
           return cors ? addCors(res) : res;
@@ -871,22 +981,51 @@ export function createAgentServer(
         const storeIssuers = authConfig?.store
           ? await authConfig.store.listTrustedIssuers()
           : [];
-        const configIssuerUrls = configTrustedIssuers.map(i => typeof i === "string" ? i : i.issuer);
-        const allIssuerUrls = [...new Set([...storeIssuers, ...configIssuerUrls])];
-        console.log("[oauth/authorize] storeIssuers:", storeIssuers.length, "configIssuers:", configIssuerUrls.length, "total:", allIssuerUrls.length, "urls:", allIssuerUrls);
+        const configIssuerUrls = configTrustedIssuers.map((i) =>
+          typeof i === "string" ? i : i.issuer,
+        );
+        const allIssuerUrls = [
+          ...new Set([...storeIssuers, ...configIssuerUrls]),
+        ];
+        console.log(
+          "[oauth/authorize] storeIssuers:",
+          storeIssuers.length,
+          "configIssuers:",
+          configIssuerUrls.length,
+          "total:",
+          allIssuerUrls.length,
+          "urls:",
+          allIssuerUrls,
+        );
         for (const issuerUrl of allIssuerUrls) {
           try {
             const result = await verifyJwtFromIssuer(token, issuerUrl);
-            console.log("[oauth/authorize] verify", issuerUrl, "->", result ? "OK" : "null");
+            console.log(
+              "[oauth/authorize] verify",
+              issuerUrl,
+              "->",
+              result ? "OK" : "null",
+            );
             if (result) {
               claims = result as unknown as Record<string, unknown>;
               break;
             }
-          } catch (e: any) { console.log("[oauth/authorize] verify", issuerUrl, "-> ERROR:", e.message); }
+          } catch (e: any) {
+            console.log(
+              "[oauth/authorize] verify",
+              issuerUrl,
+              "-> ERROR:",
+              e.message,
+            );
+          }
         }
         if (!claims) {
           const res = jsonResponse(
-            { error: "invalid_token", error_description: "JWT verification failed against all trusted issuers" },
+            {
+              error: "invalid_token",
+              error_description:
+                "JWT verification failed against all trusted issuers",
+            },
             401,
           );
           return cors ? addCors(res) : res;
@@ -908,7 +1047,10 @@ export function createAgentServer(
       if (path === "/oauth/callback" && req.method === "GET") {
         if (!oauthIdentityProvider) {
           const res = jsonResponse(
-            { error: "not_configured", error_description: "No OAuth identity provider configured" },
+            {
+              error: "not_configured",
+              error_description: "No OAuth identity provider configured",
+            },
             404,
           );
           return cors ? addCors(res) : res;
@@ -922,15 +1064,19 @@ export function createAgentServer(
 
       // ── GET /health → Health check ──
       if (path === "/health" && req.method === "GET") {
-        const res = jsonResponse({ status: "ok", agents: registry.listPaths() });
+        const res = jsonResponse({
+          status: "ok",
+          agents: registry.listPaths(),
+        });
         return cors ? addCors(res) : res;
       }
 
       // ── GET /.well-known/jwks.json → JWKS public keys ──
       if (path === "/.well-known/jwks.json" && req.method === "GET") {
-        const jwks = serverSigningKeys.length > 0
-          ? await buildJwks(serverSigningKeys)
-          : { keys: [] };
+        const jwks =
+          serverSigningKeys.length > 0
+            ? await buildJwks(serverSigningKeys)
+            : { keys: [] };
         const res = jsonResponse(jwks);
         return cors ? addCors(res) : res;
       }
@@ -946,7 +1092,9 @@ export function createAgentServer(
           call_endpoint: baseUrl,
           supported_grant_types: ["client_credentials", "jwt_exchange"],
           authorization_endpoint: `${baseUrl}/oauth/authorize`,
-          agents: registry.listPaths(),
+          ...(oidcSignIn
+            ? { signin_endpoint: `${baseUrl}/signin/authorize` }
+            : {}),
         });
         return cors ? addCors(res) : res;
       }
@@ -954,7 +1102,9 @@ export function createAgentServer(
       // ── GET /list → List agents (legacy endpoint) ──
       if (path === "/list" && req.method === "GET") {
         const agents = registry.list();
-        const visible = agents.filter((agent) => canSeeAgent(agent, effectiveAuth));
+        const visible = agents.filter((agent) =>
+          canSeeAgent(agent, effectiveAuth),
+        );
         const res = jsonResponse(
           visible.map((agent) => ({
             path: agent.path,
@@ -975,6 +1125,151 @@ export function createAgentServer(
                 description: t.description,
               })),
           })),
+        );
+        return cors ? addCors(res) : res;
+      }
+
+      // ── GET /agents → List public agents (discovery endpoint) ──
+      if (path === "/agents" && req.method === "GET") {
+        const agents = registry.list();
+        const visible = agents.filter((agent) => {
+          // Only show agents with explicit visibility
+          if (!agent.visibility) return false;
+          return canSeeAgent(agent, effectiveAuth);
+        });
+        const res = jsonResponse(
+          visible.map((agent) => ({
+            path: agent.path,
+            name: agent.config?.name,
+            description:
+              agent.config?.description ?? agent.entrypoint?.slice(0, 200),
+            tools: getVisibleTools(agent, effectiveAuth).map((t) => ({
+              name: t.name,
+              description: t.description,
+            })),
+          })),
+        );
+        return cors ? addCors(res) : res;
+      }
+
+      // ── GET /agents/{name} → Agent info (single agent discovery) ──
+      if (path.startsWith("/agents/") && req.method === "GET") {
+        const agentPath = path.slice("/agents/".length); // e.g. "notion"
+        const agent = registry.get(agentPath) ?? registry.get(`@${agentPath}`);
+        if (!agent || !canSeeAgent(agent, effectiveAuth)) {
+          const res = jsonResponse(
+            { error: "not_found", message: `Agent not found: ${agentPath}` },
+            404,
+          );
+          return cors ? addCors(res) : res;
+        }
+        const res = jsonResponse({
+          path: agent.path,
+          name: agent.config?.name,
+          description:
+            agent.config?.description ?? agent.entrypoint?.slice(0, 200),
+          tools: getVisibleTools(agent, effectiveAuth).map((t) => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+          })),
+        });
+        return cors ? addCors(res) : res;
+      }
+
+      // ── POST /agents/{name} → Scoped MCP call to single agent ──
+      if (path.startsWith("/agents/") && req.method === "POST") {
+        const agentPath = path.slice("/agents/".length);
+        const agent = registry.get(agentPath) ?? registry.get(`@${agentPath}`);
+        if (!agent || !canSeeAgent(agent, effectiveAuth)) {
+          const res = jsonResponse(
+            { error: "not_found", message: `Agent not found: ${agentPath}` },
+            404,
+          );
+          return cors ? addCors(res) : res;
+        }
+
+        const body = (await req.json()) as JsonRpcRequest;
+
+        // Scoped JSON-RPC: tools/list only shows this agent's tools
+        if (body.method === "initialize") {
+          const res = jsonResponse(
+            jsonRpcSuccess(body.id, {
+              protocolVersion: "2024-11-05",
+              capabilities: { tools: { listChanged: false } },
+              serverInfo: {
+                name: agent.config?.name ?? agent.path,
+                version: "1.0.0",
+              },
+            }),
+          );
+          return cors ? addCors(res) : res;
+        }
+
+        if (body.method === "tools/list") {
+          const tools = getVisibleTools(agent, effectiveAuth).map((t) => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+          }));
+          const res = jsonResponse(jsonRpcSuccess(body.id, { tools }));
+          return cors ? addCors(res) : res;
+        }
+
+        if (body.method === "tools/call") {
+          // Auth required for tool execution
+          if (!effectiveAuth) {
+            const res = jsonResponse(
+              jsonRpcError(
+                body.id,
+                -32600,
+                "Authentication required to call tools",
+              ),
+              401,
+            );
+            return cors ? addCors(res) : res;
+          }
+          const { name, arguments: args } = (body.params ?? {}) as {
+            name: string;
+            arguments?: Record<string, unknown>;
+          };
+          try {
+            const result = await registry.call({
+              action: "execute_tool",
+              path: agent.path,
+              tool: name,
+              params: args ?? {},
+              callerId: effectiveAuth?.callerId,
+              callerType: effectiveAuth?.callerType ?? "external",
+              metadata: effectiveAuth
+                ? {
+                    scopes: effectiveAuth.scopes,
+                    isRoot: effectiveAuth.isRoot,
+                    ...(effectiveAuth.issuer
+                      ? { issuer: effectiveAuth.issuer }
+                      : {}),
+                  }
+                : undefined,
+            });
+            const res = jsonResponse(jsonRpcSuccess(body.id, result));
+            return cors ? addCors(res) : res;
+          } catch (err) {
+            console.error("[server] Scoped tool call error:", err);
+            const res = jsonResponse(
+              jsonRpcSuccess(
+                body.id,
+                mcpResult(
+                  `Error: ${err instanceof Error ? err.message : String(err)}`,
+                  true,
+                ),
+              ),
+            );
+            return cors ? addCors(res) : res;
+          }
+        }
+
+        const res = jsonResponse(
+          jsonRpcError(body.id, -32601, `Method not found: ${body.method}`),
         );
         return cors ? addCors(res) : res;
       }
@@ -1022,7 +1317,7 @@ export function createAgentServer(
       if (options.signingKey && serverSigningKeys.length === 0) {
         serverSigningKeys.push(options.signingKey);
       } else if (authConfig?.store && serverSigningKeys.length === 0) {
-        const stored = await authConfig.store.getSigningKeys() ?? [];
+        const stored = (await authConfig.store.getSigningKeys()) ?? [];
         for (const exported of stored) {
           serverSigningKeys.push(await importSigningKey(exported));
         }
@@ -1045,7 +1340,9 @@ export function createAgentServer(
         fetch,
       });
       (this as any).url = `http://${hostname}:${port}`;
-      console.log(`[agents-sdk] Server listening on http://${hostname}:${port}`);
+      console.log(
+        `[agents-sdk] Server listening on http://${hostname}:${port}`,
+      );
     },
 
     async stop() {
@@ -1060,23 +1357,28 @@ export function createAgentServer(
 
     async signJwt(claims: Record<string, unknown>): Promise<string> {
       if (serverSigningKeys.length === 0) {
-        throw new Error('No signing keys available. Call start() or initKeys() first.');
+        throw new Error(
+          "No signing keys available. Call start() or initKeys() first.",
+        );
       }
       const key = serverSigningKeys[0];
       return signJwtES256(
-        { sub: 'system', name: 'atlas-os', scopes: ['*'], ...claims } as any,
+        { sub: "system", name: "atlas-os", scopes: ["*"], ...claims } as any,
         key.privateKey,
         key.kid,
-        options.serverName ?? 'agents-sdk',
-        '1h',
+        options.serverName ?? "agents-sdk",
+        "1h",
       );
     },
 
     addTrustedIssuer(issuerUrl: string, scopes?: string[]): void {
       // Avoid duplicates
-      const existing = configTrustedIssuers.find(i => i.issuer === issuerUrl);
+      const existing = configTrustedIssuers.find((i) => i.issuer === issuerUrl);
       if (!existing) {
-        configTrustedIssuers.push({ issuer: issuerUrl, scopes: scopes ?? ['*'] });
+        configTrustedIssuers.push({
+          issuer: issuerUrl,
+          scopes: scopes ?? ["*"],
+        });
         console.error(`[agent-server] Added trusted issuer: ${issuerUrl}`);
       }
     },

@@ -44,7 +44,8 @@ export const pendingCollections = new Map<string, PendingCollection>();
 
 /** Generate a random one-time token for secret collection */
 export function generateCollectionToken(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let token = "";
   for (let i = 0; i < 48; i++) {
     token += chars[Math.floor(Math.random() * chars.length)];

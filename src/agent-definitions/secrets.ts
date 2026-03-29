@@ -34,7 +34,11 @@ export interface SecretStore {
   store(value: string, ownerId: string, scope?: SecretScope): Promise<string>;
 
   /** Resolve a secret ID to its decrypted value. */
-  resolve(id: string, ownerId: string, scope?: SecretScope): Promise<string | null>;
+  resolve(
+    id: string,
+    ownerId: string,
+    scope?: SecretScope,
+  ): Promise<string | null>;
 
   /** Delete a secret. */
   delete(id: string, ownerId: string, scope?: SecretScope): Promise<boolean>;
@@ -43,19 +47,32 @@ export interface SecretStore {
    * Store multiple secrets in a single operation.
    * Returns an array of secret IDs in the same order as the input values.
    */
-  storeBatch?(values: string[], ownerId: string, scope?: SecretScope): Promise<string[]>;
+  storeBatch?(
+    values: string[],
+    ownerId: string,
+    scope?: SecretScope,
+  ): Promise<string[]>;
 
   /**
    * Associate a secret with an entity (e.g., a provider config, a connection).
    * Enables lookup of secrets by entity rather than by ID.
    */
-  associate?(secretId: string, entityType: string, entityId: string, scope?: SecretScope): Promise<void>;
+  associate?(
+    secretId: string,
+    entityType: string,
+    entityId: string,
+    scope?: SecretScope,
+  ): Promise<void>;
 
   /**
    * Resolve secrets associated with an entity.
    * Returns all secret IDs linked to the given entity.
    */
-  resolveByEntity?(entityType: string, entityId: string, scope?: SecretScope): Promise<string[]>;
+  resolveByEntity?(
+    entityType: string,
+    entityId: string,
+    scope?: SecretScope,
+  ): Promise<string[]>;
 }
 
 // ============================================
@@ -218,10 +235,7 @@ export function createSecretsAgent(
       description: "Encrypted secret storage and management",
       visibility: "internal",
     },
-    tools: [
-      storeSecretTool,
-      revokeSecretTool,
-    ] as ToolDefinition<ToolContext>[],
+    tools: [storeSecretTool, revokeSecretTool] as ToolDefinition<ToolContext>[],
   });
 }
 

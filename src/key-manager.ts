@@ -13,13 +13,7 @@
  * - Signs JWTs with the active key
  */
 
-import {
-  generateKeyPair,
-  exportJWK,
-  importJWK,
-  SignJWT,
-  type JWK,
-} from "jose";
+import { type JWK, SignJWT, exportJWK, generateKeyPair, importJWK } from "jose";
 
 // ── Types ──
 
@@ -103,7 +97,9 @@ function generateKid(): string {
 }
 
 async function generateNewKey(keyLifetimeMs: number): Promise<StoredKey> {
-  const { privateKey, publicKey } = await generateKeyPair(ALG, { extractable: true });
+  const { privateKey, publicKey } = await generateKeyPair(ALG, {
+    extractable: true,
+  });
   const kid = generateKid();
 
   const publicJwk = await exportJWK(publicKey);
@@ -127,13 +123,15 @@ async function generateNewKey(keyLifetimeMs: number): Promise<StoredKey> {
 }
 
 async function toCachedKey(stored: StoredKey): Promise<CachedKey> {
-  const privateKey = await importJWK(stored.privateJwk, ALG) as CryptoKey;
+  const privateKey = (await importJWK(stored.privateJwk, ALG)) as CryptoKey;
   return { ...stored, privateKey };
 }
 
 // ── Key Manager ──
 
-export async function createKeyManager(opts: KeyManagerOptions): Promise<KeyManager> {
+export async function createKeyManager(
+  opts: KeyManagerOptions,
+): Promise<KeyManager> {
   const {
     store,
     issuer,

@@ -24,7 +24,10 @@
  */
 
 import { defineAgent, defineTool } from "../define.js";
-import { pendingCollections, generateCollectionToken } from "../secret-collection.js";
+import {
+  generateCollectionToken,
+  pendingCollections,
+} from "../secret-collection.js";
 import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 
 // ============================================
@@ -135,9 +138,7 @@ export interface GraphqlCallInput {
   variables?: Record<string, unknown>;
 }
 
-export type IntegrationCallInput =
-  | RestCallInput
-  | GraphqlCallInput;
+export type IntegrationCallInput = RestCallInput | GraphqlCallInput;
 
 // ============================================
 // User Connection (stored token)
@@ -343,9 +344,16 @@ export async function exchangeCodeForToken(
   }
 
   const responseText = await response.text();
-  console.log("[token-exchange] Slack response:", responseText.substring(0, 500));
+  console.log(
+    "[token-exchange] Slack response:",
+    responseText.substring(0, 500),
+  );
   let data: Record<string, unknown>;
-  try { data = JSON.parse(responseText); } catch (e) { throw new Error(`Failed to parse JSON: ${responseText.substring(0, 200)}`); }
+  try {
+    data = JSON.parse(responseText);
+  } catch (e) {
+    throw new Error(`Failed to parse JSON: ${responseText.substring(0, 200)}`);
+  }
 
   return {
     accessToken: String(data[oauth.accessTokenField ?? "access_token"] ?? ""),
@@ -412,9 +420,16 @@ export async function refreshAccessToken(
   }
 
   const responseText = await response.text();
-  console.log("[token-exchange] Slack response:", responseText.substring(0, 500));
+  console.log(
+    "[token-exchange] Slack response:",
+    responseText.substring(0, 500),
+  );
   let data: Record<string, unknown>;
-  try { data = JSON.parse(responseText); } catch (e) { throw new Error(`Failed to parse JSON: ${responseText.substring(0, 200)}`); }
+  try {
+    data = JSON.parse(responseText);
+  } catch (e) {
+    throw new Error(`Failed to parse JSON: ${responseText.substring(0, 200)}`);
+  }
 
   return {
     accessToken: String(data[oauth.accessTokenField ?? "access_token"] ?? ""),
@@ -476,7 +491,8 @@ async function executeGraphqlCall(
     ...(config.api?.defaultHeaders ?? {}),
   };
 
-  if (!config.api?.baseUrl) throw new Error("No baseUrl configured for this provider");
+  if (!config.api?.baseUrl)
+    throw new Error("No baseUrl configured for this provider");
   const response = await fetch(config.api.baseUrl, {
     method: "POST",
     headers,
@@ -502,7 +518,6 @@ export interface IntegrationsAgentOptions {
     call(request: any): Promise<any>;
   };
 
-
   /** Secret store for storing/resolving client credentials and tokens */
   secretStore: {
     store(value: string, ownerId: string): Promise<string>;
@@ -517,12 +532,9 @@ export interface IntegrationsAgentOptions {
   callbackBaseUrl?: string;
 }
 
-
 // ============================================
 // Credential Storage Helpers
 // ============================================
-
-
 
 const SYSTEM_OWNER = "__integrations__";
 
@@ -553,7 +565,8 @@ export function createIntegrationsAgent(
         name: { type: "string", description: "Display name" },
         agentPath: {
           type: "string",
-          description: "Agent path that handles this integration (e.g. '@remote-registry', '@databases'). Omit for simple REST/GraphQL integrations.",
+          description:
+            "Agent path that handles this integration (e.g. '@remote-registry', '@databases'). Omit for simple REST/GraphQL integrations.",
         },
         scope: {
           type: "string",
@@ -649,7 +662,8 @@ export function createIntegrationsAgent(
         clientSecret: {
           secret: true,
           type: "string",
-          description: "OAuth client secret for this provider. Stored encrypted.",
+          description:
+            "OAuth client secret for this provider. Stored encrypted.",
         },
       },
       required: ["id", "name", "type", "api"],
@@ -672,7 +686,10 @@ export function createIntegrationsAgent(
         result.clientIdStored = true;
       }
       if (input.clientSecret) {
-        const secretId = await secretStore.store(input.clientSecret, SYSTEM_OWNER);
+        const secretId = await secretStore.store(
+          input.clientSecret,
+          SYSTEM_OWNER,
+        );
         (config as any)._clientSecretSecretId = secretId;
         result.clientSecretStored = true;
       }
@@ -683,11 +700,11 @@ export function createIntegrationsAgent(
       if (config.agentPath && options.registry) {
         try {
           const setupResult = await options.registry.call({
-            action: 'execute_tool',
+            action: "execute_tool",
             path: config.agentPath,
-            tool: 'setup_integration',
+            tool: "setup_integration",
             params: input.config ?? input,
-            callerType: 'system',
+            callerType: "system",
           });
           result.setupResult = (setupResult as any)?.result ?? setupResult;
         } catch (err) {
@@ -699,7 +716,6 @@ export function createIntegrationsAgent(
       return result;
     },
   });
-
 
   // ---- discover_integrations ----
   const discoverTool = defineTool({
@@ -714,11 +730,13 @@ export function createIntegrationsAgent(
       properties: {
         query: {
           type: "string",
-          description: "Search query to filter integrations by name or description",
+          description:
+            "Search query to filter integrations by name or description",
         },
         category: {
           type: "string",
-          description: "Filter by category (e.g. 'infrastructure', 'communication')",
+          description:
+            "Filter by category (e.g. 'infrastructure', 'communication')",
         },
       },
     },
@@ -740,7 +758,7 @@ export function createIntegrationsAgent(
 
       // 1. Agent-backed integrations
       if (options.registry) {
-        for (const agent of (options.registry.list?.() ?? [])) {
+        for (const agent of options.registry.list?.() ?? []) {
           if (agent.config?.integration) {
             const ic = agent.config.integration;
             catalog.push({
@@ -838,7 +856,9 @@ export function createIntegrationsAgent(
       if (options.registry) {
         const agents = options.registry.list?.() ?? [];
         for (const agent of agents) {
-          const hasListTool = agent.tools?.some((t: any) => t.name === 'list_integrations');
+          const hasListTool = agent.tools?.some(
+            (t: any) => t.name === "list_integrations",
+          );
           if (hasListTool && agent.config?.integration) {
             const meta = {
               provider: agent.config.integration.provider,
@@ -849,17 +869,30 @@ export function createIntegrationsAgent(
               description: agent.config.integration.description,
             };
             try {
-              const callResult = options.registry ? await options.registry.call({ action: 'execute_tool', path: agent.path!, tool: 'list_integrations', params: {}, callerType: 'system' }) : null;
-              const result = (callResult as any)?.result ?? callResult ?? { success: false };
+              const callResult = options.registry
+                ? await options.registry.call({
+                    action: "execute_tool",
+                    path: agent.path!,
+                    tool: "list_integrations",
+                    params: {},
+                    callerType: "system",
+                  })
+                : null;
+              const result = (callResult as any)?.result ??
+                callResult ?? { success: false };
               if (result.success && result.data) {
                 // Flatten: if data has an array field, each item becomes an integration
                 const items = Array.isArray(result.data)
                   ? result.data
-                  : Object.values(result.data as Record<string, unknown>).find(Array.isArray) as unknown[] ?? [];
+                  : ((Object.values(
+                      result.data as Record<string, unknown>,
+                    ).find(Array.isArray) as unknown[]) ?? []);
                 for (const item of items) {
                   integrations.push({
                     ...meta,
-                    ...(typeof item === "object" && item !== null ? item as Record<string, unknown> : { value: item }),
+                    ...(typeof item === "object" && item !== null
+                      ? (item as Record<string, unknown>)
+                      : { value: item }),
                   });
                 }
                 // If no items found but agent exists, include it as a provider entry
@@ -929,7 +962,12 @@ export function createIntegrationsAgent(
       required: ["provider"],
     },
     execute: async (
-      input: { provider: string; userId?: string; state?: string; redirectUrl?: string },
+      input: {
+        provider: string;
+        userId?: string;
+        state?: string;
+        redirectUrl?: string;
+      },
       ctx: ToolContext,
     ) => {
       const config = await store.getProvider(input.provider);
@@ -938,11 +976,11 @@ export function createIntegrationsAgent(
       // Delegate to agent's connect_integration tool via registry.call()
       if (config.agentPath && options.registry) {
         const connectResult = await options.registry.call({
-          action: 'execute_tool',
+          action: "execute_tool",
           path: config.agentPath,
-          tool: 'connect_integration',
+          tool: "connect_integration",
           params: { ...input, registryId: config.id },
-          callerType: 'system',
+          callerType: "system",
         });
         return (connectResult as any)?.result ?? connectResult;
       }
@@ -965,7 +1003,11 @@ export function createIntegrationsAgent(
         clientId = await secretStore.resolve(cidSecretId, SYSTEM_OWNER);
       }
       // Also check if auth config has clientId as a secret:ref
-      if (!clientId && (oauth as any).clientId && typeof (oauth as any).clientId === "string") {
+      if (
+        !clientId &&
+        (oauth as any).clientId &&
+        typeof (oauth as any).clientId === "string"
+      ) {
         if ((oauth as any).clientId.startsWith("secret:") && secretStore) {
           const refId = (oauth as any).clientId.slice("secret:".length);
           clientId = await secretStore.resolve(refId, SYSTEM_OWNER);
@@ -976,8 +1018,15 @@ export function createIntegrationsAgent(
       // Check top-level config too
       if (!clientId && (config as any).clientId) {
         const cid = (config as any).clientId;
-        if (typeof cid === "string" && cid.startsWith("secret:") && secretStore) {
-          clientId = await secretStore.resolve(cid.slice("secret:".length), SYSTEM_OWNER);
+        if (
+          typeof cid === "string" &&
+          cid.startsWith("secret:") &&
+          secretStore
+        ) {
+          clientId = await secretStore.resolve(
+            cid.slice("secret:".length),
+            SYSTEM_OWNER,
+          );
         } else if (typeof cid === "string" && !cid.startsWith("secret:")) {
           clientId = cid;
         }
@@ -996,7 +1045,15 @@ export function createIntegrationsAgent(
         redirect_uri: redirectUri,
         response_type: "code",
         ...(scopeStr ? { scope: scopeStr } : {}),
-        state: input.state ?? btoa(JSON.stringify({ userId, providerId: config.id, redirectUrl: input.redirectUrl ?? "/" })),
+        state:
+          input.state ??
+          btoa(
+            JSON.stringify({
+              userId,
+              providerId: config.id,
+              redirectUrl: input.redirectUrl ?? "/",
+            }),
+          ),
         ...(oauth.authUrlExtraParams ?? {}),
       });
 
@@ -1081,12 +1138,16 @@ export function createIntegrationsAgent(
           const rCidId = (config as any)._clientIdSecretId;
           const rCsecId = (config as any)._clientSecretSecretId;
           if (!rCidId || !rCsecId) {
-            throw new Error("No client credentials stored. Re-run setup_integration with clientId/clientSecret.");
+            throw new Error(
+              "No client credentials stored. Re-run setup_integration with clientId/clientSecret.",
+            );
           }
           const clientId = await secretStore.resolve(rCidId, SYSTEM_OWNER);
           const clientSecret = await secretStore.resolve(rCsecId, SYSTEM_OWNER);
           if (!clientId || !clientSecret) {
-            throw new Error("Failed to resolve client credentials from secret store.");
+            throw new Error(
+              "Failed to resolve client credentials from secret store.",
+            );
           }
 
           const refreshed = await refreshAccessToken(
@@ -1143,7 +1204,9 @@ export function createIntegrationsAgent(
           );
 
         default:
-          return { error: `Unknown call type: ${input.type}. Use 'rest' or 'graphql'.` };
+          return {
+            error: `Unknown call type: ${input.type}. Use 'rest' or 'graphql'.`,
+          };
       }
     },
   });
@@ -1180,11 +1243,11 @@ export function createIntegrationsAgent(
       // Delegate to agent's connect_integration tool via registry.call()
       if (config.agentPath && options.registry) {
         const connectResult = await options.registry.call({
-          action: 'execute_tool',
+          action: "execute_tool",
           path: config.agentPath,
-          tool: 'connect_integration',
+          tool: "connect_integration",
           params: { ...input, registryId: config.id },
-          callerType: 'system',
+          callerType: "system",
         });
         return (connectResult as any)?.result ?? connectResult;
       }
@@ -1260,19 +1323,48 @@ export function createIntegrationsAgent(
     inputSchema: {
       type: "object" as const,
       properties: {
-        agent: { type: "string", description: "Target agent path (e.g. '@databases')" },
-        tool: { type: "string", description: "Target tool name (e.g. 'add_connection')" },
-        params: { type: "object", description: "Partial params already collected" },
-        registry: { type: "string", description: "Remote registry URL. Omit for local." },
+        agent: {
+          type: "string",
+          description: "Target agent path (e.g. '@databases')",
+        },
+        tool: {
+          type: "string",
+          description: "Target tool name (e.g. 'add_connection')",
+        },
+        params: {
+          type: "object",
+          description: "Partial params already collected",
+        },
+        registry: {
+          type: "string",
+          description: "Remote registry URL. Omit for local.",
+        },
         source: {
           type: "object",
-          description: "Where to render the form. Determines form delivery method.",
+          description:
+            "Where to render the form. Determines form delivery method.",
           properties: {
-            type: { type: "string", enum: ["slack", "web", "cli"], description: "Platform type" },
-            workspace: { type: "string", description: "Slack workspace ID (for slack)" },
-            channel: { type: "string", description: "Slack channel ID (for slack)" },
-            threadTs: { type: "string", description: "Slack thread timestamp (for slack)" },
-            redirectUrl: { type: "string", description: "URL to redirect after submission (for web)" },
+            type: {
+              type: "string",
+              enum: ["slack", "web", "cli"],
+              description: "Platform type",
+            },
+            workspace: {
+              type: "string",
+              description: "Slack workspace ID (for slack)",
+            },
+            channel: {
+              type: "string",
+              description: "Slack channel ID (for slack)",
+            },
+            threadTs: {
+              type: "string",
+              description: "Slack thread timestamp (for slack)",
+            },
+            redirectUrl: {
+              type: "string",
+              description: "URL to redirect after submission (for web)",
+            },
           },
           required: ["type"],
         },
@@ -1280,26 +1372,45 @@ export function createIntegrationsAgent(
       required: ["agent", "tool"],
     },
     execute: async (
-      input: { agent: string; tool: string; params?: Record<string, unknown>; registry?: string; source?: { type: string; workspace?: string; channel?: string; threadTs?: string; redirectUrl?: string } },
+      input: {
+        agent: string;
+        tool: string;
+        params?: Record<string, unknown>;
+        registry?: string;
+        source?: {
+          type: string;
+          workspace?: string;
+          channel?: string;
+          threadTs?: string;
+          redirectUrl?: string;
+        };
+      },
       ctx: ToolContext,
     ) => {
       // Fetch tool schema from registry
-      let toolSchema: { name: string; inputSchema?: any; description?: string } | null = null;
+      let toolSchema: {
+        name: string;
+        inputSchema?: any;
+        description?: string;
+      } | null = null;
       const registryUrl = input.registry;
 
       if (!registryUrl) {
         return { error: "Registry URL required for now. Pass registry param." };
       }
 
-      const res = await fetch(registryUrl + "/mcp", {
+      const res = await fetch(`${registryUrl}/mcp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          jsonrpc: "2.0", id: 1,
+          jsonrpc: "2.0",
+          id: 1,
           method: "tools/call",
           params: {
             name: "call_agent",
-            arguments: { request: { action: "describe_tools", path: input.agent } },
+            arguments: {
+              request: { action: "describe_tools", path: input.agent },
+            },
           },
         }),
       });
@@ -1319,7 +1430,11 @@ export function createIntegrationsAgent(
 
       // Compute fields: secret fields always, required fields if not provided
       const fields: Array<{
-        name: string; type: string; description: string; secret: boolean; required: boolean;
+        name: string;
+        type: string;
+        description: string;
+        secret: boolean;
+        required: boolean;
       }> = [];
 
       for (const [name, def] of Object.entries(properties) as [string, any][]) {
@@ -1338,7 +1453,10 @@ export function createIntegrationsAgent(
       }
 
       if (fields.length === 0) {
-        return { message: "All fields provided. Call the tool directly.", canCallDirectly: true };
+        return {
+          message: "All fields provided. Call the tool directly.",
+          canCallDirectly: true,
+        };
       }
 
       // Register pending collection
@@ -1354,13 +1472,19 @@ export function createIntegrationsAgent(
           isRoot: false,
         },
         fields: fields.map((f) => ({
-          name: f.name, description: f.description, secret: f.secret, required: f.required,
+          name: f.name,
+          description: f.description,
+          secret: f.secret,
+          required: f.required,
         })),
         createdAt: Date.now(),
       });
 
       // Build callback URL from callbackBaseUrl
-      const baseUrl = callbackBaseUrl?.replace(/\/oauth\/callback$/, "").replace(/\/integrations\/callback$/, "") ?? "";
+      const baseUrl =
+        callbackBaseUrl
+          ?.replace(/\/oauth\/callback$/, "")
+          .replace(/\/integrations\/callback$/, "") ?? "";
 
       return {
         url: `${baseUrl}/secrets/form/${token}`,
@@ -1370,11 +1494,11 @@ export function createIntegrationsAgent(
     },
   });
 
-
   // ---- Facade: discover_integrations (aggregates from all agents) ----
   const discoverFacadeTool = defineTool({
     name: "discover_integrations",
-    description: "Discover all available integrations across all registered agents.",
+    description:
+      "Discover all available integrations across all registered agents.",
     visibility: "public" as const,
     inputSchema: { type: "object" as const, properties: {} },
     execute: async () => {
@@ -1382,16 +1506,18 @@ export function createIntegrationsAgent(
       const results: any[] = [];
       if (options.registry) {
         for (const agent of agents) {
-          const hasDiscoverTool = agent.tools?.some((t: any) => t.name === 'discover_integrations');
+          const hasDiscoverTool = agent.tools?.some(
+            (t: any) => t.name === "discover_integrations",
+          );
           if (hasDiscoverTool) {
             try {
               const res = await options.registry.call({
-                action: 'execute_tool',
+                action: "execute_tool",
                 path: agent.path,
-                tool: 'discover_integrations',
+                tool: "discover_integrations",
                 params: {},
-                callerId: '@integrations',
-                callerType: 'system',
+                callerId: "@integrations",
+                callerType: "system",
               });
               if (res?.result && Array.isArray(res.result)) {
                 results.push(...res.result);
@@ -1423,16 +1549,18 @@ export function createIntegrationsAgent(
           ? agents.filter((a: any) => a.path === input.agent_path)
           : agents;
         for (const agent of targetAgents) {
-          const hasListTool = agent.tools?.some((t: any) => t.name === 'list_integrations');
+          const hasListTool = agent.tools?.some(
+            (t: any) => t.name === "list_integrations",
+          );
           if (hasListTool) {
             try {
               const res = await options.registry.call({
-                action: 'execute_tool',
+                action: "execute_tool",
                 path: agent.path,
-                tool: 'list_integrations',
+                tool: "list_integrations",
                 params: {},
-                callerId: '@integrations',
-                callerType: 'system',
+                callerId: "@integrations",
+                callerType: "system",
               });
               if (res?.result && Array.isArray(res.result)) {
                 results.push(...res.result);

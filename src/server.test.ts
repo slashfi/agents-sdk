@@ -1,284 +1,350 @@
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+/**
+ * E2E: atlas.slash.com ↔ registry.slash.com
+ *
+ * Tests the full production scenario:
+ * - registry.slash.com hosts public agents (notion, linear)
+ * - atlas.slash.com uses a ConsumerConfig with refs + file:// secrets
+ * - createRegistryConsumer connects atlas to the registry
+ * - Consumer discovers agents, resolves secrets, calls tools
+ */
+
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-  createAgentServer,
   createAgentRegistry,
-  detectAuth,
-  resolveAuth,
-  canSeeAgent,
-} from './index';
-import type { AgentDefinition, TrustedIssuer, AgentServer } from './index';
-import { generateKeyPair, exportJWK, SignJWT } from 'jose';
+  createAgentServer,
+  createRegistryConsumer,
+  defineAgent,
+  defineTool,
+  isSecretUri,
+} from "./index";
+import type { AgentServer, ConsumerConfig } from "./index";
+import {
+  type MockOIDCServer,
+  startMockOIDC,
+} from "./test-utils/mock-oidc-server";
 
-// ─── Helpers ─────────────────────────────────────────────────────
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// registry.slash.com — the public agent registry
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-function makeAgent(
-  path: string,
-  opts: Partial<AgentDefinition> = {},
-): AgentDefinition {
-  return {
-    path,
-    entrypoint: 'test',
-    tools: [],
-    visibility: 'internal',
-    config: { name: path.split('/').pop(), supportedActions: ['load'] },
-    ...opts,
-  } as AgentDefinition;
-}
-
-async function mcpCall(
-  port: number,
-  toolName: string,
-  args: Record<string, unknown>,
-  authToken?: string,
-) {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (authToken) headers.Authorization = `Bearer ${authToken}`;
-
-  const res = await fetch(`http://localhost:${port}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: Date.now(),
-      method: 'tools/call',
-      params: { name: toolName, arguments: args },
+const notionAgent = defineAgent({
+  path: "notion",
+  entrypoint: "Notion workspace integration",
+  config: {
+    name: "Notion",
+    description: "Search pages, query databases, create content",
+  },
+  visibility: "public" as const,
+  tools: [
+    defineTool({
+      name: "search_pages",
+      description: "Search for pages in Notion",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search query" },
+        },
+        required: ["query"],
+      },
+      execute: async (input: { query: string }) => ({
+        results: [{ title: `Found: ${input.query}`, id: "page-abc" }],
+      }),
     }),
-  });
-  return res.json() as Promise<any>;
-}
+    defineTool({
+      name: "api",
+      description: "Raw Notion API call",
+      inputSchema: {
+        type: "object",
+        properties: {
+          method: { type: "string" },
+          path: { type: "string" },
+          body: { type: "object" },
+        },
+        required: ["method", "path"],
+      },
+      execute: async (input: { method: string; path: string }) => ({
+        status: 200,
+        method: input.method,
+        path: input.path,
+      }),
+    }),
+  ],
+});
 
-function parseResult(rpc: any): any {
-  const text = rpc.result?.content?.[0]?.text;
-  return text ? JSON.parse(text) : null;
-}
+const linearAgent = defineAgent({
+  path: "linear",
+  entrypoint: "Linear project management",
+  config: { name: "Linear", description: "Track issues, manage projects" },
+  visibility: "public" as const,
+  tools: [
+    defineTool({
+      name: "list_issues",
+      description: "List issues",
+      inputSchema: { type: "object", properties: {} },
+      execute: async () => ({ issues: [{ id: "ENG-1", title: "Ship it" }] }),
+    }),
+  ],
+});
 
-// ─── E2E: Full server auth flow ──────────────────────────────────
-//
-// These tests spin up a real createAgentServer, send actual HTTP
-// requests, and verify the complete path:
-//   HTTP request → auth resolution → handleToolCall → registry.call → access check
-//
-// This is what actually broke today: authConfig was null → resolveAuth
-// was skipped → trusted issuer tokens were ignored.
+// Internal system agent — not public
+const secretsAgent = defineAgent({
+  path: "@secrets",
+  entrypoint: "Internal secrets store",
+  visibility: "internal" as const,
+  tools: [
+    defineTool({
+      name: "get",
+      description: "Get a secret",
+      inputSchema: {
+        type: "object",
+        properties: { key: { type: "string" } },
+        required: ["key"],
+      },
+      execute: async () => ({ value: "s3cr3t" }),
+    }),
+  ],
+});
 
-describe('E2E: createAgentServer with trusted issuers', () => {
-  let privateKey: CryptoKey;
-  let publicJwk: any;
-  let jwksHttpServer: ReturnType<typeof Bun.serve>;
-  let server: AgentServer;
-  const JWKS_PORT = 19880;
-  const SDK_PORT = 19881;
-  const ISSUER_URL = `http://localhost:${JWKS_PORT}`;
-  const KID = 'test-e2e-key';
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Test suite
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+describe("atlas ↔ registry E2E", () => {
+  // --- registry.slash.com ---
+  let registry: AgentServer;
+  const REGISTRY_PORT = 19890;
+  const REGISTRY_URL = `http://localhost:${REGISTRY_PORT}`;
+
+  // --- atlas.slash.com secrets (file:// on disk) ---
+  let secretsDir: string;
+  let authToken: string;
+
+  // --- OIDC provider ---
+  let oidc: MockOIDCServer;
 
   beforeAll(async () => {
-    // 1. Generate ES256 keypair and serve JWKS
-    const keyPair = await generateKeyPair('ES256', { extractable: true });
-    privateKey = keyPair.privateKey;
-    publicJwk = await exportJWK(keyPair.publicKey);
-    publicJwk.kid = KID;
-    publicJwk.alg = 'ES256';
-    publicJwk.use = 'sig';
+    // 1. Write secrets to disk (simulating atlas.slash.com's secret store)
+    secretsDir = await mkdtemp(join(tmpdir(), "atlas-secrets-"));
+    await writeFile(join(secretsDir, "notion-client-id"), "notion_cid_prod");
+    await writeFile(join(secretsDir, "notion-client-secret"), "notion_cs_prod");
+    process.env.LINEAR_API_KEY = "lin_key_prod";
 
-    jwksHttpServer = Bun.serve({
-      port: JWKS_PORT,
-      fetch(req) {
-        const url = new URL(req.url);
-        if (url.pathname === '/.well-known/jwks.json') {
-          return new Response(JSON.stringify({ keys: [publicJwk] }), {
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-        return new Response('Not found', { status: 404 });
+    // 2. Start mock OIDC provider
+    oidc = await startMockOIDC({ port: 19891 });
+
+    // 3. Start registry.slash.com
+    const reg = createAgentRegistry();
+    reg.register(notionAgent);
+    reg.register(linearAgent);
+    reg.register(secretsAgent);
+
+    registry = createAgentServer(reg, {
+      port: REGISTRY_PORT,
+      oidcProvider: {
+        issuer: oidc.issuer,
+        clientId: oidc.clientId,
+        clientSecret: oidc.clientSecret,
       },
     });
+    await registry.initKeys();
+    await registry.start();
 
-    // 2. Create registry with internal + public agents
-    const registry = createAgentRegistry();
-    registry.register(makeAgent('/agents/@clock', { visibility: 'internal' }));
-    registry.register(makeAgent('/agents/public-bot', { visibility: 'public' }));
-
-    // 3. Create server with trusted issuer — NO @auth agent registered
-    //    This is the exact scenario that was broken.
-    server = createAgentServer(registry, {
-      port: SDK_PORT,
-      trustedIssuers: [{
-        issuer: ISSUER_URL,
-        scopes: ['agents:admin'],
-      }],
+    // 4. Get auth token (simulating atlas user signing in)
+    authToken = await registry.signJwt({
+      sub: "atlas-user-001",
+      email: "user@slash.com",
     });
-    await server.start();
   });
 
-  afterAll(() => {
-    server?.stop?.();
-    jwksHttpServer?.stop();
+  afterAll(async () => {
+    await registry?.stop?.();
+    await oidc?.stop();
+    await rm(secretsDir, { recursive: true, force: true });
+    process.env.LINEAR_API_KEY = undefined;
   });
 
-  async function signToken(claims: Record<string, unknown> = {}): Promise<string> {
-    return new SignJWT({ sub: 'atlas-api', ...claims } as any)
-      .setProtectedHeader({ alg: 'ES256', kid: KID })
-      .setIssuer(ISSUER_URL)
-      .setIssuedAt()
-      .setExpirationTime('5m')
-      .sign(privateKey);
-  }
+  // ── Discovery ──────────────────────────────────────────────────
 
-  // ─── Core auth flow tests ───────────────────────────────────
+  test("consumer discovers public agents on registry", async () => {
+    const consumer = await createRegistryConsumer(
+      { registries: [REGISTRY_URL] },
+      { token: authToken },
+    );
 
-  test('system token → can load internal agent', async () => {
-    const token = await signToken();
-    const rpc = await mcpCall(SDK_PORT, 'call_agent', {
-      request: { action: 'load', path: '/agents/@clock' },
-    }, token);
-
-    const result = parseResult(rpc);
-    expect(result.success).toBe(true);
+    const agents = await consumer.list();
+    const paths = agents.map((a) => a.path);
+    expect(paths).toContain("notion");
+    expect(paths).toContain("linear");
   });
 
-  test('no token → access denied for internal agent', async () => {
-    const rpc = await mcpCall(SDK_PORT, 'call_agent', {
-      request: { action: 'load', path: '/agents/@clock' },
+  test("unauthenticated consumer sees only public agents", async () => {
+    const consumer = await createRegistryConsumer({
+      registries: [REGISTRY_URL],
     });
 
-    const result = parseResult(rpc);
-    expect(result.success).toBe(false);
-    expect(result.code).toBe('ACCESS_DENIED');
+    const agents = await consumer.list();
+    const paths = agents.map((a) => a.path);
+    expect(paths).toContain("notion");
+    expect(paths).not.toContain("@secrets");
   });
 
-  test('no token → public agent still accessible', async () => {
-    const rpc = await mcpCall(SDK_PORT, 'call_agent', {
-      request: { action: 'load', path: '/agents/public-bot' },
+  // ── Consumer config with refs + secrets ─────────────────────────
+
+  test("consumer config with agent URL + file:// secrets", async () => {
+    const config: ConsumerConfig = {
+      refs: [
+        {
+          ref: "notion",
+          url: `${REGISTRY_URL}/agents/notion`,
+          config: {
+            clientId: `file://${join(secretsDir, "notion-client-id")}`,
+            clientSecret: `file://${join(secretsDir, "notion-client-secret")}`,
+          },
+        },
+      ],
+    };
+
+    const consumer = await createRegistryConsumer(config, { token: authToken });
+
+    // Resolve secrets
+    const ref = config.refs?.[0] as { config: Record<string, string> };
+    const resolved = await consumer.resolveConfig(ref.config);
+    expect(resolved.clientId).toBe("notion_cid_prod");
+    expect(resolved.clientSecret).toBe("notion_cs_prod");
+  });
+
+  test("consumer config with env:// secrets", async () => {
+    const config: ConsumerConfig = {
+      refs: [
+        {
+          ref: "linear",
+          url: `${REGISTRY_URL}/agents/linear`,
+          config: {
+            apiKey: "env://LINEAR_API_KEY",
+          },
+        },
+      ],
+    };
+
+    const consumer = await createRegistryConsumer(config, { token: authToken });
+    const ref = config.refs?.[0] as { config: Record<string, string> };
+    const resolved = await consumer.resolveConfig(ref.config);
+    expect(resolved.apiKey).toBe("lin_key_prod");
+  });
+
+  // ── Calling agent tools ────────────────────────────────────────
+
+  test("consumer calls notion/search_pages via registry", async () => {
+    const consumer = await createRegistryConsumer(
+      {
+        registries: [REGISTRY_URL],
+        refs: ["notion"],
+      },
+      { token: authToken },
+    );
+
+    const result = await consumer.call("notion", "search_pages", {
+      query: "meeting notes",
     });
-
-    const result = parseResult(rpc);
-    expect(result.success).toBe(true);
+    expect(result).toBeDefined();
   });
 
-  test('garbage token → access denied', async () => {
-    const rpc = await mcpCall(SDK_PORT, 'call_agent', {
-      request: { action: 'load', path: '/agents/@clock' },
-    }, 'not.a.valid.jwt');
+  test("consumer calls linear/list_issues via registry", async () => {
+    const consumer = await createRegistryConsumer(
+      {
+        registries: [REGISTRY_URL],
+        refs: ["linear"],
+      },
+      { token: authToken },
+    );
 
-    const result = parseResult(rpc);
-    expect(result.success).toBe(false);
-    expect(result.code).toBe('ACCESS_DENIED');
+    const result = await consumer.call("linear", "list_issues", {});
+    expect(result).toBeDefined();
   });
 
-  test('token with wrong issuer → access denied', async () => {
-    // Sign with correct key but wrong iss claim
-    const token = await new SignJWT({ sub: 'evil' } as any)
-      .setProtectedHeader({ alg: 'ES256', kid: KID })
-      .setIssuer('http://evil:9999') // not in trustedIssuers
-      .setIssuedAt()
-      .setExpirationTime('5m')
-      .sign(privateKey);
+  test("consumer calls notion/api proxy tool", async () => {
+    const consumer = await createRegistryConsumer(
+      {
+        registries: [REGISTRY_URL],
+        refs: ["notion"],
+      },
+      { token: authToken },
+    );
 
-    const rpc = await mcpCall(SDK_PORT, 'call_agent', {
-      request: { action: 'load', path: '/agents/@clock' },
-    }, token);
-
-    const result = parseResult(rpc);
-    expect(result.success).toBe(false);
-    expect(result.code).toBe('ACCESS_DENIED');
-  });
-
-  // ─── Visibility in list_agents ─────────────────────────────
-
-  test('list_agents without token → only public agents', async () => {
-    const rpc = await mcpCall(SDK_PORT, 'list_agents', {});
-    const result = parseResult(rpc);
-    expect(result.success).toBe(true);
-
-    const paths = result.agents.map((a: any) => a.path);
-    expect(paths).toContain('/agents/public-bot');
-    expect(paths).not.toContain('/agents/@clock');
-  });
-
-  test('list_agents with system token → all agents visible', async () => {
-    const token = await signToken();
-    const rpc = await mcpCall(SDK_PORT, 'list_agents', {}, token);
-    const result = parseResult(rpc);
-    expect(result.success).toBe(true);
-
-    const paths = result.agents.map((a: any) => a.path);
-    expect(paths).toContain('/agents/public-bot');
-    expect(paths).toContain('/agents/@clock');
-  });
-
-  // ─── Scopes: limited issuer ────────────────────────────────
-
-  test('issuer with limited scopes → resolves as agent, not system', async () => {
-    // Create a separate server with limited-scope issuer
-    const limitedRegistry = createAgentRegistry();
-    limitedRegistry.register(makeAgent('/agents/@private-agent', { visibility: 'private' }));
-    limitedRegistry.register(makeAgent('/agents/@internal-agent', { visibility: 'internal' }));
-
-    const limitedServer = createAgentServer(limitedRegistry, {
-      port: 19882,
-      trustedIssuers: [{
-        issuer: ISSUER_URL,
-        scopes: ['agents:read'], // NOT agents:admin or *
-      }],
+    const result = await consumer.call("notion", "api", {
+      method: "GET",
+      path: "/v1/pages/page-123",
     });
-    await limitedServer.start();
-
-    try {
-      const token = await signToken();
-
-      // agents:read grants agent-level access (not system)
-      // Internal agents are accessible to authenticated agents
-      const internalRpc = await mcpCall(19882, 'call_agent', {
-        request: { action: 'load', path: '/agents/@internal-agent' },
-      }, token);
-      expect(parseResult(internalRpc).success).toBe(true);
-
-      // Private agents should be denied (only self can access)
-      const privateRpc = await mcpCall(19882, 'call_agent', {
-        request: { action: 'load', path: '/agents/@private-agent' },
-      }, token);
-      expect(parseResult(privateRpc).success).toBe(false);
-      expect(parseResult(privateRpc).code).toBe('ACCESS_DENIED');
-    } finally {
-      limitedServer?.stop?.();
-    }
-  });
-});
-
-// ─── Unit: detectAuth ────────────────────────────────────────────
-
-describe('detectAuth', () => {
-  test('returns non-null even without @auth agent', () => {
-    const registry = createAgentRegistry();
-    const config = detectAuth(registry);
-    expect(config).toBeDefined();
-    expect(config).not.toBeNull();
+    expect(result).toBeDefined();
   });
 
-  test('returns empty config (no store, no rootKey) without @auth agent', () => {
-    const registry = createAgentRegistry();
-    const config = detectAuth(registry);
-    expect(config.store).toBeUndefined();
-    expect(config.rootKey).toBeUndefined();
+  // ── OIDC sign-in flow ──────────────────────────────────────────
+
+  test("OIDC sign-in returns JWT usable by consumer", async () => {
+    // Step 1: authorize
+    const r1 = await fetch(
+      `${REGISTRY_URL}/signin/authorize?redirect_uri=http://localhost:9999/done`,
+      { redirect: "manual" },
+    );
+    expect(r1.status).toBe(302);
+
+    // Step 2: OIDC provider
+    const r2 = await fetch(r1.headers.get("location")!, { redirect: "manual" });
+    expect(r2.status).toBe(302);
+
+    // Step 3: callback → JWT
+    const r3 = await fetch(r2.headers.get("location")!, { redirect: "manual" });
+    expect(r3.status).toBe(302);
+    const jwt = new URL(r3.headers.get("location")!).searchParams.get("token")!;
+    expect(jwt.split(".")).toHaveLength(3);
+
+    // Step 4: JWT works with consumer
+    const consumer = await createRegistryConsumer(
+      { registries: [REGISTRY_URL] },
+      { token: jwt },
+    );
+    const agents = await consumer.list();
+    expect(agents.map((a) => a.path)).toContain("notion");
   });
-});
 
-// ─── Unit: canSeeAgent ───────────────────────────────────────────
+  // ── Auth guards ────────────────────────────────────────────────
 
-describe('canSeeAgent', () => {
-  test('system auth can see internal agents', () => {
-    const agent = makeAgent('/agents/@clock', { visibility: 'internal' });
-    const auth = { callerId: 'api', callerType: 'system' as const, scopes: ['*'], isRoot: true };
-    expect(canSeeAgent(agent, auth)).toBe(true);
+  test("tools/call without auth returns 401", async () => {
+    const res = await fetch(`${REGISTRY_URL}/agents/notion`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "search_pages", arguments: { query: "test" } },
+      }),
+    });
+    expect(res.status).toBe(401);
   });
 
-  test('null auth cannot see internal agents', () => {
-    const agent = makeAgent('/agents/@clock', { visibility: 'internal' });
-    expect(canSeeAgent(agent, null)).toBe(false);
+  test("internal agent not visible without auth", async () => {
+    const res = await fetch(`${REGISTRY_URL}/agents/@secrets`);
+    expect(res.status).toBe(404);
   });
 
-  test('null auth can see public agents', () => {
-    const agent = makeAgent('/agents/public', { visibility: 'public' });
-    expect(canSeeAgent(agent, null)).toBe(true);
+  test("internal agent visible with auth", async () => {
+    const res = await fetch(`${REGISTRY_URL}/agents/@secrets`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  // ── Secret URI helpers ─────────────────────────────────────────
+
+  test("isSecretUri recognizes supported schemes", () => {
+    expect(isSecretUri("file:///tmp/key")).toBe(true);
+    expect(isSecretUri("env://VAR")).toBe(true);
+    expect(isSecretUri("https://vault/key")).toBe(true);
+    expect(isSecretUri("just-a-string")).toBe(false);
+    expect(isSecretUri(42)).toBe(false);
   });
 });

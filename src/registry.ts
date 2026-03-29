@@ -47,8 +47,15 @@ const DEFAULT_SUPPORTED_ACTIONS: AgentAction[] = [
  */
 export interface RegistryMiddleware {
   load?: (
-    defaultFn: (agent: AgentDefinition, request: CallAgentLoadRequest) => Promise<CallAgentLoadResponse>,
-    ctx: { agent: AgentDefinition; request: CallAgentLoadRequest; registry: AgentRegistry },
+    defaultFn: (
+      agent: AgentDefinition,
+      request: CallAgentLoadRequest,
+    ) => Promise<CallAgentLoadResponse>,
+    ctx: {
+      agent: AgentDefinition;
+      request: CallAgentLoadRequest;
+      registry: AgentRegistry;
+    },
   ) => Promise<CallAgentLoadResponse>;
 }
 
@@ -117,7 +124,9 @@ export interface AgentRegistry {
  * Factory function that enriches the base ToolContext with application-specific data.
  * Called before every tool execution.
  */
-export type ContextFactory = (baseCtx: import("./types.js").ToolContext) => import("./types.js").ToolContext;
+export type ContextFactory = (
+  baseCtx: import("./types.js").ToolContext,
+) => import("./types.js").ToolContext;
 
 export function createAgentRegistry(
   options: AgentRegistryOptions = {},
@@ -281,7 +290,12 @@ export function createAgentRegistry(
         const refAgent = agents.get(refPath);
         const allTools = (refAgent?.tools ?? [])
           .filter((t: ToolDefinition) =>
-            checkToolAccess(refAgent!, t.name, request.callerId, request.callerType),
+            checkToolAccess(
+              refAgent!,
+              t.name,
+              request.callerId,
+              request.callerType,
+            ),
           )
           .map((t: ToolDefinition) => ({
             name: t.name,
@@ -302,7 +316,8 @@ export function createAgentRegistry(
       }
     }
 
-    const systemPrompt = agent.entrypoint + buildToolsSection(toolSchemas, agentRefs);
+    const systemPrompt =
+      agent.entrypoint + buildToolsSection(toolSchemas, agentRefs);
 
     return {
       success: true,
@@ -563,7 +578,11 @@ export function createAgentRegistry(
 
         case "load": {
           if (options.middleware?.load) {
-            return options.middleware.load(defaultLoad, { agent, request, registry });
+            return options.middleware.load(defaultLoad, {
+              agent,
+              request,
+              registry,
+            });
           }
           return defaultLoad(agent, request);
         }
