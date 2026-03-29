@@ -53,6 +53,7 @@ export interface RegistryConfiguration {
   agents_endpoint?: string;
   call_endpoint?: string;
   supported_grant_types?: string[];
+  /** @deprecated Use agents_endpoint + GET /list instead */
   agents?: string[];
 }
 

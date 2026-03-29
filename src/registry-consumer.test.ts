@@ -70,6 +70,20 @@ describe("Registry Consumer E2E", () => {
     await server.stop();
   });
 
+  test("well-known configuration does not leak agent paths", async () => {
+    const res = await fetch(`http://localhost:${PORT}/.well-known/configuration`);
+    const config = await res.json();
+
+    // Should have server metadata
+    expect(config.issuer).toBeDefined();
+    expect(config.jwks_uri).toBeDefined();
+    expect(config.agents_endpoint).toBeDefined();
+    expect(config.call_endpoint).toBeDefined();
+
+    // Should NOT have agent paths
+    expect(config.agents).toBeUndefined();
+  });
+
   test("discover registry via .well-known/configuration", async () => {
     const config = ({
       registries: [`http://localhost:${PORT}`],

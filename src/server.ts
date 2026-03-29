@@ -946,7 +946,6 @@ export function createAgentServer(
           call_endpoint: baseUrl,
           supported_grant_types: ["client_credentials", "jwt_exchange"],
           authorization_endpoint: `${baseUrl}/oauth/authorize`,
-          agents: registry.listPaths(),
         });
         return cors ? addCors(res) : res;
       }
