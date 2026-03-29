@@ -4,18 +4,18 @@
  * Factory functions for creating agent and tool definitions.
  */
 
+import type { EventCallback, EventType } from "./events.js";
 import type {
-  IntegrationHooks,
   AgentConfig,
   AgentDefinition,
   AgentRuntime,
+  IntegrationHooks,
   JsonSchema,
   ListenerEntry,
   ToolContext,
   ToolDefinition,
   Visibility,
 } from "./types.js";
-import type { EventCallback, EventType } from "./events.js";
 
 // ============================================
 // defineTool
@@ -73,15 +73,20 @@ export type ToolWithHooks<
   TInput = unknown,
   TOutput = unknown,
 > = ToolDefinition<TContext, TInput, TOutput> & {
-  on<T extends EventType>(eventType: T, callback: EventCallback<T>): ToolWithHooks<TContext, TInput, TOutput>;
+  on<T extends EventType>(
+    eventType: T,
+    callback: EventCallback<T>,
+  ): ToolWithHooks<TContext, TInput, TOutput>;
 };
 
 /** An AgentDefinition with .on() chaining support */
-export type AgentWithHooks<
-  TContext extends ToolContext = ToolContext,
-> = AgentDefinition<TContext> & {
-  on<T extends EventType>(eventType: T, callback: EventCallback<T>): AgentWithHooks<TContext>;
-};
+export type AgentWithHooks<TContext extends ToolContext = ToolContext> =
+  AgentDefinition<TContext> & {
+    on<T extends EventType>(
+      eventType: T,
+      callback: EventCallback<T>,
+    ): AgentWithHooks<TContext>;
+  };
 
 export function defineTool<
   TContext extends ToolContext = ToolContext,
@@ -209,66 +214,107 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
 
     if (h.setup) {
       const fn = h.setup;
-      tools.push(defineTool({
-        name: "setup_integration",
-        description: `Set up ${h.displayName} integration.`,
-        visibility: "public" as const,
-        inputSchema: { type: "object" as const, properties: { url: { type: "string" }, name: { type: "string" }, config: { type: "object" } } },
-        execute: (input: any, ctx: any) => fn(input, ctx),
-      }) as any);
+      tools.push(
+        defineTool({
+          name: "setup_integration",
+          description: `Set up ${h.displayName} integration.`,
+          visibility: "public" as const,
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              url: { type: "string" },
+              name: { type: "string" },
+              config: { type: "object" },
+            },
+          },
+          execute: (input: any, ctx: any) => fn(input, ctx),
+        }) as any,
+      );
     }
     if (h.connect) {
       const fn = h.connect;
-      tools.push(defineTool({
-        name: "connect_integration",
-        description: `Connect a user to ${h.displayName}.`,
-        visibility: "public" as const,
-        inputSchema: { type: "object" as const, properties: { registryId: { type: "string" }, oidcUserId: { type: "string" }, redirectUri: { type: "string" } }, required: ["registryId"] as const },
-        execute: (input: any, ctx: any) => fn(input, ctx),
-      }) as any);
+      tools.push(
+        defineTool({
+          name: "connect_integration",
+          description: `Connect a user to ${h.displayName}.`,
+          visibility: "public" as const,
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              registryId: { type: "string" },
+              oidcUserId: { type: "string" },
+              redirectUri: { type: "string" },
+            },
+            required: ["registryId"] as const,
+          },
+          execute: (input: any, ctx: any) => fn(input, ctx),
+        }) as any,
+      );
     }
     if (h.discover) {
       const fn = h.discover;
-      tools.push(defineTool({
-        name: "discover_integrations",
-        description: `Discover available ${h.displayName} instances.`,
-        visibility: "public" as const,
-        inputSchema: { type: "object" as const, properties: { url: { type: "string" } } },
-        execute: (input: any, ctx: any) => fn(input, ctx),
-      }) as any);
+      tools.push(
+        defineTool({
+          name: "discover_integrations",
+          description: `Discover available ${h.displayName} instances.`,
+          visibility: "public" as const,
+          inputSchema: {
+            type: "object" as const,
+            properties: { url: { type: "string" } },
+          },
+          execute: (input: any, ctx: any) => fn(input, ctx),
+        }) as any,
+      );
     }
     if (h.list) {
       const fn = h.list;
-      tools.push(defineTool({
-        name: "list_integrations",
-        description: `List connected ${h.displayName} instances.`,
-        visibility: "public" as const,
-        inputSchema: { type: "object" as const, properties: {} },
-        execute: (input: any, ctx: any) => fn(input, ctx),
-      }) as any);
+      tools.push(
+        defineTool({
+          name: "list_integrations",
+          description: `List connected ${h.displayName} instances.`,
+          visibility: "public" as const,
+          inputSchema: { type: "object" as const, properties: {} },
+          execute: (input: any, ctx: any) => fn(input, ctx),
+        }) as any,
+      );
     }
     if (h.get) {
       const fn = h.get;
-      tools.push(defineTool({
-        name: "get_integration",
-        description: `Get details of a ${h.displayName} instance.`,
-        visibility: "public" as const,
-        inputSchema: { type: "object" as const, properties: { registryId: { type: "string" } }, required: ["registryId"] as const },
-        execute: (input: any, ctx: any) => fn(input, ctx),
-      }) as any);
+      tools.push(
+        defineTool({
+          name: "get_integration",
+          description: `Get details of a ${h.displayName} instance.`,
+          visibility: "public" as const,
+          inputSchema: {
+            type: "object" as const,
+            properties: { registryId: { type: "string" } },
+            required: ["registryId"] as const,
+          },
+          execute: (input: any, ctx: any) => fn(input, ctx),
+        }) as any,
+      );
     }
     if (h.update) {
       const fn = h.update;
-      tools.push(defineTool({
-        name: "update_integration",
-        description: `Update a ${h.displayName} instance.`,
-        visibility: "public" as const,
-        inputSchema: { type: "object" as const, properties: { registryId: { type: "string" }, name: { type: "string" }, url: { type: "string" } }, required: ["registryId"] as const },
-        execute: (input: any, ctx: any) => fn(input, ctx),
-      }) as any);
+      tools.push(
+        defineTool({
+          name: "update_integration",
+          description: `Update a ${h.displayName} instance.`,
+          visibility: "public" as const,
+          inputSchema: {
+            type: "object" as const,
+            properties: {
+              registryId: { type: "string" },
+              name: { type: "string" },
+              url: { type: "string" },
+            },
+            required: ["registryId"] as const,
+          },
+          execute: (input: any, ctx: any) => fn(input, ctx),
+        }) as any,
+      );
     }
   }
-
 
   const agentListeners: ListenerEntry[] = [];
 
