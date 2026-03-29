@@ -81,6 +81,7 @@ function contentHash(content: string): string {
 function diffDefinitions(
   current: SerializedAgentDefinition,
   previous: SerializedAgentDefinition,
+  previousRawContent: string,
 ): VersionChanges {
   const prevToolNames = new Set(previous.tools.map((t) => t.name));
   const currToolNames = new Set(current.tools.map((t) => t.name));
@@ -136,7 +137,7 @@ function diffDefinitions(
   }
 
   return {
-    previousHash: contentHash(JSON.stringify(previous)),
+    previousHash: contentHash(previousRawContent),
     toolsAdded,
     toolsRemoved,
     toolsModified,
@@ -186,7 +187,7 @@ export function pack(options: PackOptions): PackResult {
     if (existsSync(prevPath)) {
       const prevContent = readFileSync(prevPath, "utf-8");
       const prevDef = parseJsonc(prevContent) as SerializedAgentDefinition;
-      meta.changes = diffDefinitions(definition, prevDef);
+      meta.changes = diffDefinitions(definition, prevDef, prevContent);
     }
   }
 
