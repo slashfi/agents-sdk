@@ -1,5 +1,5 @@
 /**
- * ADK module — barrel export for local store, registry client, and commands.
+ * ADK module — barrel export for local store, MCP client, and commands.
  */
 
 export {
@@ -21,8 +21,11 @@ export {
   getKeyPath,
 } from "./local-store.js";
 
+export { McpRegistryClient } from "./mcp-client.js";
+export type { McpTool, ParsedTool, AgentInfo } from "./mcp-client.js";
+
+// Keep REST client for web consumers
 export { RegistryClient } from "./registry-client.js";
-export type { AgentDetail, SearchResult } from "./registry-client.js";
 
 export {
   cmdInit,

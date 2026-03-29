@@ -18,8 +18,7 @@ import {
   getSecret,
   listSecretKeys,
 } from "./local-store.js";
-import { RegistryClient } from "./registry-client.js";
-import type { AgentDetail } from "./registry-client.js";
+import { McpRegistryClient } from "./mcp-client.js";
 
 // ============================================
 // Helpers
@@ -32,7 +31,7 @@ function ensureInit(): void {
   }
 }
 
-function getClient(): RegistryClient {
+function getClient(): McpRegistryClient {
   const config = readConfig();
   const urls = (config.registries ?? []).map((r) =>
     typeof r === "string" ? r : r.url,
@@ -41,7 +40,7 @@ function getClient(): RegistryClient {
     console.error("No registries configured. Run 'adk init' or edit ~/adk/config.json.");
     process.exit(1);
   }
-  return new RegistryClient(urls);
+  return new McpRegistryClient(urls);
 }
 
 async function promptSecret(question: string): Promise<string> {
@@ -108,9 +107,8 @@ export async function cmdSearch(args: string[]): Promise<void> {
     console.log(`│ ${registry}`);
     console.log(`│`);
     for (const agent of agents) {
-      const toolCount = agent.tools?.length ?? 0;
-      const auth = agent.requiresAuth ? "🔒" : "";
-      console.log(`│  ${agent.path.padEnd(20)} ${String(toolCount).padStart(3)} tools  ${auth}  ${agent.description ?? ""}`);
+      const toolCount = agent.tools.length;
+      console.log(`│  ${agent.name.padEnd(20)} ${String(toolCount).padStart(3)} tools  ${agent.description ?? ""}`);
       totalAgents++;
     }
     console.log();
@@ -148,32 +146,14 @@ export async function cmdAdd(args: string[]): Promise<void> {
   }
 
   const { agent, registry } = result;
-  console.log(`Found: ${agent.name ?? agent.path} (${agent.tools.length} tools) from ${registry}`);
+  console.log(`Found: ${agent.name} (${agent.tools.length} tools) from ${registry}`);
 
-  // Handle credentials based on security scheme
-  const scheme = agent.securityScheme;
-
-  if (scheme && scheme.type === "apiKey") {
-    console.log(`\n${agent.name ?? agentName} requires an API key.`);
-    const fields = scheme.fields ?? [{ name: "apiKey", description: "API Key", required: true }];
-
-    for (const field of fields) {
-      const desc = field.description ? ` (${field.description})` : "";
-      const value = await promptSecret(`  ${field.name}${desc}: `);
-      if (value) {
-        await setSecret(alias, field.name, value);
-      } else if (field.required) {
-        console.error(`  ${field.name} is required.`);
-        process.exit(1);
-      }
-    }
+  // For now, prompt for API key if this looks like an integration
+  // TODO: registry should expose security scheme via MCP metadata
+  const needsCreds = await promptSecret(`\nDoes ${agent.name} require credentials? Enter API key (or press Enter to skip): `);
+  if (needsCreds) {
+    await setSecret(alias, "apiKey", needsCreds);
     console.log("\n✓ Credentials saved (encrypted)");
-  } else if (scheme && scheme.type === "oauth2") {
-    console.log(`\n${agent.name ?? agentName} requires OAuth2 authorization.`);
-    console.log("Starting OAuth flow...\n");
-    await handleOAuthFlow(alias, scheme);
-  } else {
-    console.log("\nNo credentials required.");
   }
 
   // Add ref to config
@@ -188,126 +168,6 @@ export async function cmdAdd(args: string[]): Promise<void> {
 
 /**
  * Handle OAuth2 flow with localhost callback server.
- */
-async function handleOAuthFlow(
-  alias: string,
-  scheme: NonNullable<AgentDetail["securityScheme"]>,
-): Promise<void> {
-  const port = 9876;
-  const redirectUri = `http://localhost:${port}/callback`;
-
-  if (!scheme.authorizationUrl || !scheme.tokenUrl) {
-    console.error("OAuth2 agent is missing authorizationUrl or tokenUrl.");
-    process.exit(1);
-  }
-
-  const state = Math.random().toString(36).substring(2);
-  const authUrl = new URL(scheme.authorizationUrl);
-  if (scheme.clientId) authUrl.searchParams.set("client_id", scheme.clientId);
-  authUrl.searchParams.set("redirect_uri", redirectUri);
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("state", state);
-  if (scheme.scopes?.length) {
-    authUrl.searchParams.set("scope", scheme.scopes.join(" "));
-  }
-
-  console.log(`▸ Listening on ${redirectUri}`);
-  console.log(`▸ Authorize at: ${authUrl.toString()}\n`);
-
-  // Try to open browser
-  try {
-    const { exec } = await import("node:child_process");
-    const cmd = process.platform === "darwin"
-      ? `open "${authUrl.toString()}"`
-      : process.platform === "win32"
-        ? `start "${authUrl.toString()}"`
-        : `xdg-open "${authUrl.toString()}"`;
-    exec(cmd);
-  } catch {
-    // Browser open failed, user can copy URL
-  }
-
-  // Start localhost callback server
-  const code = await new Promise<string>((resolve, reject) => {
-    const server = Bun.serve({
-      port,
-      fetch(req) {
-        const url = new URL(req.url);
-        if (url.pathname !== "/callback") {
-          return new Response("Not found", { status: 404 });
-        }
-
-        const receivedState = url.searchParams.get("state");
-        if (receivedState !== state) {
-          reject(new Error("State mismatch — possible CSRF attack"));
-          return new Response("State mismatch", { status: 400 });
-        }
-
-        const code = url.searchParams.get("code");
-        const error = url.searchParams.get("error");
-
-        if (error) {
-          reject(new Error(`OAuth error: ${error}`));
-          return new Response("Authorization failed. You can close this tab.", {
-            headers: { "Content-Type": "text/html" },
-          });
-        }
-
-        if (!code) {
-          reject(new Error("No code received"));
-          return new Response("No authorization code received.", { status: 400 });
-        }
-
-        // Success — resolve and close server
-        setTimeout(() => server.stop(), 100);
-        resolve(code);
-
-        return new Response(
-          "<html><body><h2>✓ Authorized!</h2><p>You can close this tab.</p></body></html>",
-          { headers: { "Content-Type": "text/html" } },
-        );
-      },
-    });
-
-    // Timeout after 5 minutes
-    setTimeout(() => {
-      server.stop();
-      reject(new Error("OAuth flow timed out after 5 minutes"));
-    }, 5 * 60 * 1000);
-  });
-
-  // Exchange code for token
-  console.log("▸ Token received, exchanging...");
-
-  const tokenRes = await fetch(scheme.tokenUrl!, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirectUri,
-      client_id: scheme.clientId,
-    }),
-  });
-
-  if (!tokenRes.ok) {
-    const text = await tokenRes.text();
-    console.error(`Token exchange failed: ${tokenRes.status} ${text}`);
-    process.exit(1);
-  }
-
-  const tokenData = (await tokenRes.json()) as any;
-
-  await setSecret(alias, "access_token", tokenData.access_token);
-  if (tokenData.refresh_token) {
-    await setSecret(alias, "refresh_token", tokenData.refresh_token);
-  }
-
-  console.log("✓ Token saved (encrypted)");
-}
-
-/**
- * adk remove <agent>
  */
 export async function cmdRemove(args: string[]): Promise<void> {
   ensureInit();
@@ -351,14 +211,9 @@ export async function cmdInfo(args: string[]): Promise<void> {
 
   const { agent, registry } = result;
 
-  console.log(`\n${agent.name ?? agent.path}`);
+  console.log(`\n${agent.name}`);
   if (agent.description) console.log(`  ${agent.description}`);
   console.log(`  Registry: ${registry}`);
-
-  const scheme = agent.securityScheme;
-  if (scheme) {
-    console.log(`  Auth: ${scheme.type}${scheme.displayName ? ` (${scheme.displayName})` : ""}`);
-  }
 
   // Check if locally configured
   const secrets = listSecretKeys(name);
@@ -368,7 +223,7 @@ export async function cmdInfo(args: string[]): Promise<void> {
 
   console.log(`\nTools (${agent.tools.length}):`);
   for (const tool of agent.tools) {
-    console.log(`  ${tool.name}`);
+    console.log(`  ${tool.tool}`);
     if (tool.description) console.log(`    ${tool.description}`);
     if (tool.inputSchema) {
       const schema = tool.inputSchema as any;
@@ -380,17 +235,13 @@ export async function cmdInfo(args: string[]): Promise<void> {
           const req = required.has(p) ? "*" : " ";
           const type = props[p].type ?? "any";
           const desc = props[p].description ?? "";
-          console.log(`    ${req} ${p}: ${type}${desc ? ` — ${desc}` : ""}`);
+          console.log(`    ${req} ${p}: ${type}${desc ? " \u2014 " + desc : ""}`);
         }
       }
     }
   }
   console.log();
 }
-
-/**
- * adk call <agent> <tool> [json]
- */
 export async function cmdCall(args: string[]): Promise<void> {
   ensureInit();
 
@@ -490,14 +341,23 @@ export async function cmdServe(args: string[]): Promise<void> {
   // Build tool list from all agents
   const allTools: Array<{
     agentName: string;
-    tool: { name: string; description?: string; inputSchema?: Record<string, unknown> };
+    toolName: string;
+    fullName: string;
+    description?: string;
+    inputSchema?: Record<string, unknown>;
   }> = [];
 
   for (const { name } of refs) {
     const result = await client.getAgent(name);
     if (result) {
       for (const tool of result.agent.tools) {
-        allTools.push({ agentName: name, tool });
+        allTools.push({
+          agentName: name,
+          toolName: tool.tool,
+          fullName: tool.fullName,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+        });
       }
     }
   }
@@ -513,10 +373,10 @@ export async function cmdServe(args: string[]): Promise<void> {
         // GET /tools/list for discovery
         if (req.method === "GET" && new URL(req.url).pathname === "/tools/list") {
           return Response.json({
-            tools: allTools.map(({ agentName, tool }) => ({
-              name: `${agentName}__${tool.name}`,
-              description: `[${agentName}] ${tool.description ?? tool.name}`,
-              inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
+            tools: allTools.map((t) => ({
+              name: t.fullName,
+              description: `[${t.agentName}] ${t.description ?? t.toolName}`,
+              inputSchema: t.inputSchema ?? { type: "object", properties: {} },
             })),
           });
         }
@@ -530,10 +390,10 @@ export async function cmdServe(args: string[]): Promise<void> {
           jsonrpc: "2.0",
           id: body.id,
           result: {
-            tools: allTools.map(({ agentName, tool }) => ({
-              name: `${agentName}__${tool.name}`,
-              description: `[${agentName}] ${tool.description ?? tool.name}`,
-              inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
+            tools: allTools.map((t) => ({
+              name: t.fullName,
+              description: `[${t.agentName}] ${t.description ?? t.toolName}`,
+              inputSchema: t.inputSchema ?? { type: "object", properties: {} },
             })),
           },
         });
