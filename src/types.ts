@@ -21,7 +21,7 @@ export interface ListenerEntry {
  * JSON Schema definition for tool input parameters.
  */
 export type JsonSchema = {
-  type: "object" | "array" | "string" | "number" | "integer" | "boolean" | "null";
+  type: "object" | "array" | "string" | "number" | "integer" | "boolean" | "null" | string[];
   properties?: Record<string, JsonSchema>;
   items?: JsonSchema;
   required?: string[];

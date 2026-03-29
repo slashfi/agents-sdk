@@ -1,4 +1,3 @@
-// @ts-nocheck — WIP codegen module, type errors will be fixed in a dedicated PR
 /**
  * MCP Codegen
  *
@@ -184,7 +183,7 @@ function createStdioTransport(source: {
   >();
 
   // Error handlers for pipes (prevent unhandled errors)
-  proc.on("error", (err) => {
+  proc.on("error", (err: Error) => {
     for (const [id, p] of pending) {
       p.reject(new Error(`Process error: ${err.message}`));
       pending.delete(id);
@@ -681,7 +680,7 @@ function createSpawnHttpTransport(source: {
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
       try {
-        const _res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+        await fetch(`http://127.0.0.1:${port}${endpoint}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: "{}",
@@ -717,7 +716,7 @@ function createSpawnHttpTransport(source: {
 // ============================================
 
 /** Convert tool name to a valid TypeScript identifier (camelCase) */
-function toIdentifier(name: string): string {
+export function toIdentifier(name: string): string {
   return name
     .replace(/[^a-zA-Z0-9_]/g, "_")
     .split("_")
@@ -731,7 +730,7 @@ function toIdentifier(name: string): string {
 }
 
 /** Convert tool name to PascalCase for type names */
-function toPascalCase(name: string): string {
+export function toPascalCase(name: string): string {
   return name
     .replace(/[^a-zA-Z0-9_]/g, "_")
     .split("_")
@@ -750,7 +749,7 @@ function toKebabCase(name: string): string {
 }
 
 /** Serialize a JSON schema to a readable TypeScript literal string */
-function schemaToString(schema: JsonSchema, indent = 4): string {
+export function schemaToString(schema: JsonSchema, indent = 4): string {
   const pad = " ".repeat(indent);
   const lines: string[] = [];
 
@@ -811,7 +810,7 @@ function schemaToString(schema: JsonSchema, indent = 4): string {
 }
 
 /** Generate a TypeScript interface from a JSON Schema */
-function schemaToInterface(
+export function schemaToInterface(
   name: string,
   schema: JsonSchema,
 ): string {
