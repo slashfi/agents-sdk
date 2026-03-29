@@ -53,6 +53,8 @@ export interface McpServerInfo {
 /** Transport for communicating with an MCP server */
 export interface McpTransport {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** Send a JSON-RPC notification (no id, no response expected) */
+  notify(method: string, params?: Record<string, unknown>): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -109,9 +111,54 @@ export interface CodegenResult {
 }
 
 // ============================================
+// Protocol Constants
+// ============================================
+
+const LATEST_PROTOCOL_VERSION = "2025-03-26";
+const SUPPORTED_PROTOCOL_VERSIONS = [
+  "2025-03-26",
+  "2024-11-05",
+  "2024-10-07",
+];
+
+// ============================================
+// Safe Environment (security)
+// ============================================
+
+/** Only inherit safe env vars when spawning MCP servers (prevents secret leakage). */
+const DEFAULT_INHERITED_ENV_VARS =
+  process.platform === "win32"
+    ? [
+        "APPDATA",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LOCALAPPDATA",
+        "PATH",
+        "PROCESSOR_ARCHITECTURE",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
+        "USERNAME",
+        "USERPROFILE",
+        "PROGRAMFILES",
+      ]
+    : ["HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER"];
+
+function getDefaultEnvironment(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of DEFAULT_INHERITED_ENV_VARS) {
+    const value = process.env[key];
+    if (value === undefined || value.startsWith("()")) continue;
+    env[key] = value;
+  }
+  return env;
+}
+
+// ============================================
 // Transport: stdio
 // ============================================
 
+import spawn from "cross-spawn";
 import { spawn as nodeSpawn } from "node:child_process";
 
 function createStdioTransport(source: {
@@ -119,10 +166,14 @@ function createStdioTransport(source: {
   args?: string[];
   env?: Record<string, string>;
 }): McpTransport {
-  // Use Node.js child_process for reliable pipe handling
-  const proc = nodeSpawn(source.command, source.args ?? [], {
+  // Use cross-spawn for Windows compatibility (.cmd/.bat wrappers, spaces in paths)
+  // Env: if explicit env provided, use safe defaults + explicit. Otherwise inherit process.env.
+  const env = source.env
+    ? { ...getDefaultEnvironment(), ...source.env }
+    : { ...process.env } as Record<string, string>;
+  const proc = spawn(source.command, source.args ?? [], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, ...source.env },
+    env,
   });
 
   let requestId = 0;
@@ -130,6 +181,17 @@ function createStdioTransport(source: {
     number,
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
+
+  // Error handlers for pipes (prevent unhandled errors)
+  proc.on("error", (err) => {
+    for (const [id, p] of pending) {
+      p.reject(new Error(`Process error: ${err.message}`));
+      pending.delete(id);
+    }
+  });
+  proc.stdin?.on("error", () => { /* ignore broken pipe */ });
+  proc.stdout?.on("error", () => { /* ignore */ });
+  proc.stderr?.on("error", () => { /* ignore */ });
 
   // Read stdout with Content-Length framing (MCP spec) or newline-delimited fallback
   let buffer = "";
@@ -213,9 +275,7 @@ function createStdioTransport(source: {
       });
 
       // Send as newline-delimited JSON (compatible with all MCP SDK versions)
-      // Note: older MCP SDKs (< 1.0) use newline-delimited, newer use Content-Length.
-      // Newline-delimited works with both since Content-Length parsers also handle it.
-      proc.stdin.write(message + "\n");
+      proc.stdin!.write(message + "\n");
 
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -235,8 +295,32 @@ function createStdioTransport(source: {
         });
       });
     },
+    async notify(method: string, params?: Record<string, unknown>) {
+      // Notification = no id field, no response expected
+      const message = JSON.stringify({
+        jsonrpc: "2.0",
+        method,
+        ...(params ? { params } : {}),
+      });
+      proc.stdin!.write(message + "\n");
+    },
     async close() {
-      proc.kill();
+      // Graceful shutdown: stdin.end → wait → SIGTERM → wait → SIGKILL
+      const closePromise = new Promise<void>((resolve) => {
+        proc.once("close", () => resolve());
+      });
+
+      try { proc.stdin?.end(); } catch { /* ignore */ }
+      await Promise.race([closePromise, new Promise((r) => setTimeout(r, 2000))]);
+
+      if (proc.exitCode === null) {
+        try { proc.kill("SIGTERM"); } catch { /* ignore */ }
+        await Promise.race([closePromise, new Promise((r) => setTimeout(r, 2000))]);
+      }
+
+      if (proc.exitCode === null) {
+        try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+      }
     },
   };
 }
@@ -315,6 +399,27 @@ function createHttpTransport(source: {
         );
       }
       return msg.result;
+    },
+    async notify(method: string, params?: Record<string, unknown>) {
+      // Send notification (no id, accept 202 Accepted)
+      const res = await fetch(source.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          ...source.headers,
+          ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method,
+          ...(params ? { params } : {}),
+        }),
+      });
+      // 202 Accepted is expected for notifications
+      if (!res.ok && res.status !== 202) {
+        await res.text().catch(() => {});
+      }
     },
     async close() {
       // nothing to close for HTTP
@@ -487,6 +592,21 @@ function createSseTransport(source: {
         await sseController.cancel().catch(() => {});
       }
     },
+    async notify(method: string, params?: Record<string, unknown>) {
+      await connectPromise;
+      await fetch(postEndpoint!, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...source.headers,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method,
+          ...(params ? { params } : {}),
+        }),
+      }).catch(() => {});
+    },
   };
 }
 
@@ -542,11 +662,14 @@ function createSpawnHttpTransport(source: {
   const endpoint = source.endpoint ?? "/mcp";
   const args = [...(source.args ?? []), "--port", String(port)];
 
+  const spawnEnv = source.env
+    ? { ...getDefaultEnvironment(), ...source.env }
+    : { ...process.env } as Record<string, string>;
   const proc = Bun.spawn([source.spawn, ...args], {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ...source.env },
+    env: spawnEnv,
   });
 
   // Create inner HTTP transport
@@ -577,7 +700,12 @@ function createSpawnHttpTransport(source: {
       await readyPromise;
       return inner.send(method, params);
     },
+    async notify(method: string, params?: Record<string, unknown>) {
+      await readyPromise;
+      return inner.notify(method, params);
+    },
     async close() {
+      await inner.close();
       proc.kill();
     },
   };
@@ -1003,24 +1131,44 @@ export async function codegen(options: CodegenOptions): Promise<CodegenResult> {
   try {
     // 2. Initialize handshake
     const initResult = (await transport.send("initialize", {
-      protocolVersion: "2024-11-05",
+      protocolVersion: LATEST_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: "agents-sdk-codegen", version: "1.0.0" },
     })) as {
       serverInfo?: McpServerInfo;
       protocolVersion?: string;
+      capabilities?: { tools?: unknown };
     };
+
+    // Validate protocol version
+    if (
+      initResult?.protocolVersion &&
+      !SUPPORTED_PROTOCOL_VERSIONS.includes(initResult.protocolVersion)
+    ) {
+      throw new Error(
+        `Server protocol version ${initResult.protocolVersion} is not supported. Supported: ${SUPPORTED_PROTOCOL_VERSIONS.join(", ")}`,
+      );
+    }
 
     serverInfo = initResult?.serverInfo ?? {};
 
-    // Send initialized notification
-    await transport.send("notifications/initialized").catch(() => {});
+    // Send initialized notification (no id — this is a notification, not a request)
+    await transport.notify("notifications/initialized");
 
-    // 3. List tools
-    const toolsResult = (await transport.send("tools/list", {})) as {
-      tools?: McpToolDefinition[];
-    };
-    tools = toolsResult?.tools ?? [];
+    // 3. List tools (with pagination)
+    const allTools: McpToolDefinition[] = [];
+    let cursor: string | undefined;
+    do {
+      const toolsResult = (await transport.send("tools/list", {
+        ...(cursor ? { cursor } : {}),
+      })) as {
+        tools?: McpToolDefinition[];
+        nextCursor?: string;
+      };
+      allTools.push(...(toolsResult?.tools ?? []));
+      cursor = toolsResult?.nextCursor;
+    } while (cursor);
+    tools = allTools;
   } finally {
     await transport.close();
   }
@@ -1138,12 +1286,12 @@ export async function useAgent(options: {
 
   try {
     await transport.send("initialize", {
-      protocolVersion: "2024-11-05",
+      protocolVersion: LATEST_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: "agents-sdk-use", version: "1.0.0" },
     });
 
-    await transport.send("notifications/initialized").catch(() => {});
+    await transport.notify("notifications/initialized");
 
     const result = await transport.send("tools/call", {
       name: options.tool,

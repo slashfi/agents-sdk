@@ -13,6 +13,7 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/bun": "^1.1.0",
+    "@types/cross-spawn": "^6.0.6",
     "postgres": "^3.4.8",
     "typescript": "^5.7.0"
   },
@@ -59,6 +60,7 @@
     "examples/*"
   ],
   "dependencies": {
+    "cross-spawn": "^7.0.6",
     "jose": "^6.2.2"
   }
 }

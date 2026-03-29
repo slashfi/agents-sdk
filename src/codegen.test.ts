@@ -63,17 +63,22 @@ beforeAll(() => {
     fetch(req) {
       return (async () => {
         const body = (await req.json()) as {
-          id: number;
+          id?: number;
           method: string;
           params?: Record<string, unknown>;
         };
+
+        // Handle notifications (no id) — return 202 Accepted
+        if (body.id === undefined) {
+          return new Response(null, { status: 202 });
+        }
 
         let result: unknown;
 
         switch (body.method) {
           case "initialize":
             result = {
-              protocolVersion: "2024-11-05",
+              protocolVersion: "2025-03-26",
               serverInfo: {
                 name: "mock-notion",
                 version: "1.0.0",
@@ -268,6 +273,105 @@ describe("listAgentTools", () => {
     expect(tools[0].name).toBe("search_pages");
     expect(tools[1].name).toBe("create_page");
     expect(tools[2].name).toBe("get_page");
+  });
+});
+
+describe("codegen pagination", () => {
+  const PAGINATED_OUT_DIR = "/tmp/agents-sdk-codegen-paginated-test";
+  let paginatedServer: ReturnType<typeof Bun.serve>;
+  let paginatedPort: number;
+
+  beforeAll(async () => {
+    rmSync(PAGINATED_OUT_DIR, { recursive: true, force: true });
+
+    // Mock server that paginates tools across 2 pages
+    paginatedServer = Bun.serve({
+      port: 0,
+      fetch(req) {
+        return (async () => {
+          const body = (await req.json()) as {
+            id?: number;
+            method: string;
+            params?: Record<string, unknown>;
+          };
+
+          if (body.id === undefined) {
+            return new Response(null, { status: 202 });
+          }
+
+          let result: unknown;
+
+          switch (body.method) {
+            case "initialize":
+              result = {
+                protocolVersion: "2025-03-26",
+                serverInfo: { name: "paginated-server", version: "1.0.0" },
+                capabilities: { tools: {} },
+              };
+              break;
+
+            case "tools/list": {
+              const cursor = (body.params as { cursor?: string })?.cursor;
+              if (!cursor) {
+                // Page 1: return first 2 tools + nextCursor
+                result = {
+                  tools: [MOCK_TOOLS[0], MOCK_TOOLS[1]],
+                  nextCursor: "page2",
+                };
+              } else {
+                // Page 2: return last tool, no nextCursor
+                result = {
+                  tools: [MOCK_TOOLS[2]],
+                };
+              }
+              break;
+            }
+
+            default:
+              return Response.json(
+                {
+                  jsonrpc: "2.0",
+                  id: body.id,
+                  error: { code: -32601, message: `Unknown: ${body.method}` },
+                },
+                { status: 200 },
+              );
+          }
+
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result,
+          });
+        })();
+      },
+    });
+    paginatedPort = paginatedServer.port;
+
+    await codegen({
+      server: `http://localhost:${paginatedPort}`,
+      outDir: PAGINATED_OUT_DIR,
+      name: "paginated",
+    });
+  });
+
+  afterAll(() => {
+    paginatedServer.stop();
+    rmSync(PAGINATED_OUT_DIR, { recursive: true, force: true });
+  });
+
+  test("collects all tools across paginated responses", () => {
+    // All 3 tools should be present despite being split across 2 pages
+    expect(existsSync(join(PAGINATED_OUT_DIR, "search-pages.tool.ts"))).toBe(true);
+    expect(existsSync(join(PAGINATED_OUT_DIR, "create-page.tool.ts"))).toBe(true);
+    expect(existsSync(join(PAGINATED_OUT_DIR, "get-page.tool.ts"))).toBe(true);
+  });
+
+  test("manifest contains all paginated tools", () => {
+    const manifest = JSON.parse(
+      readFileSync(join(PAGINATED_OUT_DIR, ".codegen-manifest.json"), "utf-8"),
+    );
+    expect(manifest.tools.length).toBe(3);
   });
 });
 
