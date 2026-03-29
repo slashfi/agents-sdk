@@ -5,3 +5,4 @@ dist/
 *.tgz
 drizzle/
 test-notion-client.ts
+package-lock.json
