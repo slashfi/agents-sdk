@@ -237,6 +237,7 @@ function runPublish() {
   const dryRun = hasFlag("--dry-run");
   const tag = getArg("--tag");
   const access = getArg("--access") as "public" | "restricted" | undefined;
+  const registry = getArg("--registry");
 
   if (!existsSync(resolve(agentFile))) {
     console.error(`agent.json not found at ${resolve(agentFile)}`);
@@ -244,18 +245,24 @@ function runPublish() {
     process.exit(1);
   }
 
-  const result = publish({
-    agentFile,
-    outDir,
-    scope,
-    previousAgentFile,
-    dryRun,
-    tag,
-    access,
-  });
-  console.log(
-    `\n\u2705 Published ${result.packageName}@${result.version} (hash: ${result.hash})`,
-  );
+  try {
+    const result = publish({
+      agentFile,
+      outDir,
+      scope,
+      previousAgentFile,
+      dryRun,
+      tag,
+      access,
+      registry,
+    });
+    console.log(
+      `\n\u2705 Published ${result.packageName}@${result.version} (hash: ${result.hash})`,
+    );
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
 }
 
 async function runUse() {

@@ -276,23 +276,120 @@ export interface PublishOptions extends PackOptions {
   tag?: string;
   /** npm access level */
   access?: "public" | "restricted";
+  /** npm registry URL */
+  registry?: string;
+}
+
+/**
+ * Compare semver: returns true if `a` is older than `b`.
+ */
+function isOlderVersion(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) < (pb[i] || 0)) return true;
+    if ((pa[i] || 0) > (pb[i] || 0)) return false;
+  }
+  return false; // equal
 }
 
 export function publish(options: PublishOptions): PackResult {
   const result = pack(options);
 
+  // Check if this version already exists in the registry
+  const registryArgs = options.registry ? ["--registry", options.registry] : [];
+  const viewProc = spawnSync(
+    "npm",
+    ["view", `${result.packageName}`, "versions", "--json", ...registryArgs],
+    { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+  );
+
+  if (viewProc.status === 0 && viewProc.stdout) {
+    try {
+      const raw = JSON.parse(viewProc.stdout);
+      const existing: string[] = Array.isArray(raw) ? raw : [raw];
+
+      // E409 prevention: version already exists
+      if (existing.includes(result.version)) {
+        const versions = existing.join(", ");
+        throw new Error(
+          `\x1b[31m\u2717 ${result.packageName}@${result.version} already exists in registry\x1b[0m\n\n  Published versions: ${versions}\n  Hint: bump the version in agent.json, or use --tag to publish a pre-release`,
+        );
+      }
+
+      // Out-of-order protection: warn if publishing older than latest
+      const latestViewProc = spawnSync(
+        "npm",
+        ["view", `${result.packageName}`, "dist-tags.latest", ...registryArgs],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+      );
+      if (latestViewProc.status === 0 && latestViewProc.stdout) {
+        const latest = latestViewProc.stdout.trim();
+        if (latest && !options.tag && isOlderVersion(result.version, latest)) {
+          console.warn(
+            `\x1b[33m\u26A0 Warning: publishing ${result.version} which is older than latest (${latest})\x1b[0m`,
+          );
+          console.warn(
+            `  This will move the "latest" tag from ${latest} to ${result.version}.`,
+          );
+          console.warn(
+            "  Use --tag <name> to publish without affecting latest.",
+          );
+          throw new Error(
+            `Refusing to clobber latest tag. Use --tag <name> to publish ${result.version} alongside ${latest}.`,
+          );
+        }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("already exists")) throw e;
+      if (e instanceof Error && e.message.includes("Refusing to clobber"))
+        throw e;
+      // JSON parse error or other issue — continue with publish
+    }
+  }
+
   const npmArgs = ["publish", result.packageDir];
   npmArgs.push("--access", options.access || "public");
   if (options.tag) npmArgs.push("--tag", options.tag);
   if (options.dryRun) npmArgs.push("--dry-run");
+  if (options.registry) npmArgs.push("--registry", options.registry);
 
   console.log(
     `Publishing ${result.packageName}@${result.version} (hash: ${result.hash})`,
   );
-  const proc = spawnSync("npm", npmArgs, { stdio: "inherit" });
+  const proc = spawnSync("npm", npmArgs, {
+    stdio: ["pipe", "pipe", "pipe"],
+    encoding: "utf-8",
+  });
 
   if (proc.status !== 0) {
-    throw new Error(`npm publish failed with exit code ${proc.status}`);
+    const stderr = proc.stderr || "";
+    // Extract npm log path for debug hint
+    const logMatch = stderr.match(/complete log[^:]*:\s*(.+\.log)/i);
+    const logHint = logMatch
+      ? `\n  Debug: cat ${logMatch[1].trim()} | tail -40`
+      : "";
+    // Parse npm error for better messages
+    if (stderr.includes("E409") || stderr.includes("already present")) {
+      throw new Error(
+        `\x1b[31m\u2717 ${result.packageName}@${result.version} already exists in registry\x1b[0m\n\n` +
+          `  Hint: bump the version in agent.json, or use --tag to publish a pre-release${logHint}`,
+      );
+    }
+    if (stderr.includes("E401") || stderr.includes("authentication")) {
+      throw new Error(
+        `\x1b[31m\u2717 Authentication failed\x1b[0m\n\n  Run: npm login --scope=@agentdef\n  Or set NPM_TOKEN in your environment${logHint}`,
+      );
+    }
+    if (stderr.includes("E403") || stderr.includes("Forbidden")) {
+      throw new Error(
+        `\x1b[31m\u2717 Permission denied publishing ${result.packageName}\x1b[0m\n\n  Make sure you have publish access to the @agentdef scope.\n  Run: npm access ls-packages @agentdef${logHint}`,
+      );
+    }
+    // Fallback: show raw error
+    throw new Error(
+      `npm publish failed (exit ${proc.status}):${logHint}\n${stderr}`,
+    );
   }
 
   return result;
