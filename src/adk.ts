@@ -35,6 +35,19 @@ import { join, resolve } from "node:path";
 import { codegen, listAgentTools, useAgent } from "./codegen.js";
 import type { CodegenManifest } from "./codegen.js";
 import { pack, publish } from "./pack.js";
+import {
+  cmdInit,
+  cmdSearch,
+  cmdAdd,
+  cmdRemove,
+  cmdInfo,
+  cmdCall,
+  cmdListConsumer,
+  cmdServe,
+  cmdLogin,
+  isInitialized,
+  listRefs,
+} from "./adk/index.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -73,50 +86,49 @@ function findAgentDir(name: string): string | null {
 }
 
 function printUsage() {
-  console.log(`
-adk — Agent Development Kit
+  // Show configured agents if initialized
+  let agentsSummary = "";
+  try {
+    if (isInitialized()) {
+      const refs = listRefs();
+      if (refs.length > 0) {
+        agentsSummary = "\nYour agents:\n";
+        for (const { name, ref, hasSecrets } of refs) {
+          const alias = name !== ref ? ` (${ref})` : "";
+          const creds = hasSecrets ? "  \u{1F511}" : "";
+          agentsSummary += `  ${name}${alias}${creds}\n`;
+        }
+      }
+    }
+  } catch {
+    // Not initialized, skip
+  }
 
-Usage:
+  console.log(`
+adk \u2014 Agent Development Kit
+
+Call and manage integrations from the command line.
+Config: ~/adk/config.json
+
+Commands:
+  adk init                           Initialize ~/adk/ (config, secrets, key)
+  adk search [query]                 Search the registry for agents
+  adk add <agent> [--as <alias>]     Add an agent (prompts for credentials)
+  adk remove <agent>                 Remove an agent
+  adk list                           List your configured agents
+  adk call <agent> <tool> [json]     Call a tool on an agent
+  adk info <agent>                   Show agent details + all tools
+  adk serve [--port <port>]          Start local MCP server with all agents
+  adk login                          Authenticate with registry.slash.com
+
   adk codegen [options]              Generate agent from MCP server (full codegen)
-  adk introspect [options]           Introspect MCP server → agent.json
+  adk introspect [options]           Introspect MCP server \u2192 agent.json
   adk pack [options]                 Generate publishable package from agent.json
   adk publish [options]              Pack + npm publish to @agentdef/*
   adk use <agent> [options]          Execute a tool on a generated agent
-  adk list                           List all generated agents
-
-Codegen options:
-  --server <source>     MCP server (command string or URL)
-  --name <name>         Agent name (default: derived from server)
-  --out <dir>           Output directory (default: ./agents/@<name>)
-  --path <path>         Agent path override
-  --no-cli              Skip CLI generation
-  --no-types            Skip TypeScript interface generation
-  --visibility <level>  Agent visibility (public|internal|private)
-
-Introspect options:
-  --server <cmd>        MCP server command to introspect
-  --name <name>         Agent name for output
-  --out <path>          Output path (default: ./<name>.json)
-
-Pack / Publish options:
-  --agent <path>        Path to agent.json (default: ./agent.json)
-  --out <dir>           Output directory (default: ./dist)
-  --scope <scope>       npm scope (default: @agentdef)
-  --previous <path>     Previous agent.json for diff
-  --dry-run             Don't actually publish (publish only)
-  --tag <tag>           npm dist-tag (default: latest)
-  --access <level>      npm access: public | restricted (default: public)
-
-Use options:
-  adk use <agent> <tool> [params_json]
-  adk use <agent> --list              List tools on the agent
-
-Examples:
-  adk codegen --server 'npx @mcp/notion' --name notion
-  adk introspect --server 'npx @notionhq/notion-mcp-server' --name notion
-  adk pack --agent ./agent.json
-  adk publish --dry-run
-  adk use notion search_pages '{"query": "hello"}'
+${agentsSummary}
+Run \`adk call <agent> <tool> --help\` for params.
+Run \`adk search\` to discover more integrations.
 `);
 }
 
@@ -367,7 +379,45 @@ function runList() {
 // Main
 // ============================================
 
+// ============================================
+// Main
+// ============================================
+
+const subArgs = args.slice(1);
+
 switch (command) {
+  // Consumer commands
+  case "init":
+    await cmdInit(subArgs);
+    break;
+  case "search":
+    await cmdSearch(subArgs);
+    break;
+  case "add":
+    await cmdAdd(subArgs);
+    break;
+  case "remove":
+    await cmdRemove(subArgs);
+    break;
+  case "info":
+    await cmdInfo(subArgs);
+    break;
+  case "call":
+    await cmdCall(subArgs);
+    break;
+  case "serve":
+    await cmdServe(subArgs);
+    break;
+  case "login":
+    await cmdLogin(subArgs);
+    break;
+  case "list":
+    // Show both consumer refs and codegen'd agents
+    await cmdListConsumer(subArgs);
+    runList();
+    break;
+
+  // Builder commands
   case "codegen":
     await runCodegen();
     break;
@@ -383,9 +433,7 @@ switch (command) {
   case "use":
     await runUse();
     break;
-  case "list":
-    runList();
-    break;
+
   case "--help":
   case "-h":
   case undefined:
