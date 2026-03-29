@@ -314,3 +314,29 @@ export type {
   AgentClient,
   CreateClientOptions,
 } from "./client.js";
+
+// ============================================
+// JSONC Parser
+// ============================================
+
+export { parseJsonc, readJsoncFile } from "./jsonc.js";
+
+// ============================================
+// Pack & Publish
+// ============================================
+
+export { pack, publish } from "./pack.js";
+export type {
+  PackOptions,
+  PackResult,
+  PublishOptions,
+  VersionMeta,
+  VersionChanges,
+} from "./pack.js";
+
+// ============================================
+// Introspect
+// ============================================
+
+export { introspectMcp } from "./introspect.js";
+export type { IntrospectOptions } from "./introspect.js";
