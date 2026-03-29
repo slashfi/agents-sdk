@@ -196,3 +196,30 @@ export * from "./integrations-store.js";
 export * from "./integration-interface.js";
 export type { ContextFactory } from "./registry.js";
 export { createKeyManager, type KeyManager, type KeyStore, type KeyManagerOptions, type StoredKey, type KeyStatus } from "./key-manager.js";
+
+// Config & Consumer
+export {
+  defineConfig,
+  normalizeRef,
+  normalizeRegistry,
+  isSecretUrl,
+} from "./define-config.js";
+export type {
+  RegistryAuth,
+  RegistryEntry,
+  RefConfig,
+  RefEntry,
+  ConsumerConfig,
+  ResolvedRegistry,
+  ResolvedRef,
+  ResolvedConfig,
+} from "./define-config.js";
+
+export { createRegistryConsumer } from "./registry-consumer.js";
+export type {
+  RegistryConsumer,
+  RegistryConsumerOptions,
+  RegistryConfiguration,
+  AgentListing,
+  SecretResolver,
+} from "./registry-consumer.js";
