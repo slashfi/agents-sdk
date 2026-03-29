@@ -165,9 +165,9 @@ describe("codegen", () => {
   });
 
   test("generates tool files for each MCP tool", () => {
-    expect(existsSync(join(TEST_OUT_DIR, "search-pages.tool.ts"))).toBe(true);
-    expect(existsSync(join(TEST_OUT_DIR, "create-page.tool.ts"))).toBe(true);
-    expect(existsSync(join(TEST_OUT_DIR, "get-page.tool.ts"))).toBe(true);
+    expect(existsSync(join(TEST_OUT_DIR, "search-pages.tool.md"))).toBe(true);
+    expect(existsSync(join(TEST_OUT_DIR, "create-page.tool.md"))).toBe(true);
+    expect(existsSync(join(TEST_OUT_DIR, "get-page.tool.md"))).toBe(true);
   });
 
   test("generates agent.config.ts", () => {
@@ -177,9 +177,6 @@ describe("codegen", () => {
     );
     expect(content).toContain("defineAgent");
     expect(content).toContain("'@notion'");
-    expect(content).toContain("searchPagesTool");
-    expect(content).toContain("createPageTool");
-    expect(content).toContain("getPageTool");
   });
 
   test("generates entrypoint.md", () => {
@@ -193,12 +190,9 @@ describe("codegen", () => {
     expect(content).toContain("get_page");
   });
 
-  test("generates index.ts with re-exports", () => {
+  test("generates index.ts with agent export", () => {
     const content = readFileSync(join(TEST_OUT_DIR, "index.ts"), "utf-8");
-    expect(content).toContain("searchPagesTool");
-    expect(content).toContain("createPageTool");
-    expect(content).toContain("getPageTool");
-    expect(content).toContain("agent");
+    expect(content).toContain("agent.config");
   });
 
   test("generates cli.ts", () => {
@@ -220,36 +214,34 @@ describe("codegen", () => {
     expect(manifest.tools[0].name).toBe("search_pages");
   });
 
-  test("tool files contain defineTool with correct schema", () => {
+  test("tool files contain markdown with parameters", () => {
     const content = readFileSync(
-      join(TEST_OUT_DIR, "search-pages.tool.ts"),
+      join(TEST_OUT_DIR, "search-pages.tool.md"),
       "utf-8",
     );
-    expect(content).toContain("defineTool");
-    expect(content).toContain("'search_pages'");
+    expect(content).toContain("# search_pages");
     expect(content).toContain("Search for pages by query");
-    expect(content).toContain("query");
-    expect(content).toContain("limit");
+    expect(content).toContain("| query");
+    expect(content).toContain("| limit");
+    expect(content).toContain("## Parameters");
   });
 
-  test("tool files generate TypeScript interfaces", () => {
+  test("tool files include type and required info", () => {
     const content = readFileSync(
-      join(TEST_OUT_DIR, "search-pages.tool.ts"),
+      join(TEST_OUT_DIR, "search-pages.tool.md"),
       "utf-8",
     );
-    expect(content).toContain("export interface SearchPagesInput");
-    expect(content).toContain("query: string");
-    expect(content).toContain("limit?: number");
+    expect(content).toContain("`string`");
+    expect(content).toContain("✓"); // required marker for query
   });
 
-  test("agent.config.ts imports from correct file paths", () => {
+  test("agent.config.ts has defineAgent", () => {
     const content = readFileSync(
       join(TEST_OUT_DIR, "agent.config.ts"),
       "utf-8",
     );
-    expect(content).toContain("from './search-pages.tool.js'");
-    expect(content).toContain("from './create-page.tool.js'");
-    expect(content).toContain("from './get-page.tool.js'");
+    expect(content).toContain("defineAgent");
+    expect(content).toContain("entrypoint");
   });
 });
 
@@ -362,9 +354,9 @@ describe("codegen pagination", () => {
 
   test("collects all tools across paginated responses", () => {
     // All 3 tools should be present despite being split across 2 pages
-    expect(existsSync(join(PAGINATED_OUT_DIR, "search-pages.tool.ts"))).toBe(true);
-    expect(existsSync(join(PAGINATED_OUT_DIR, "create-page.tool.ts"))).toBe(true);
-    expect(existsSync(join(PAGINATED_OUT_DIR, "get-page.tool.ts"))).toBe(true);
+    expect(existsSync(join(PAGINATED_OUT_DIR, "search-pages.tool.md"))).toBe(true);
+    expect(existsSync(join(PAGINATED_OUT_DIR, "create-page.tool.md"))).toBe(true);
+    expect(existsSync(join(PAGINATED_OUT_DIR, "get-page.tool.md"))).toBe(true);
   });
 
   test("manifest contains all paginated tools", () => {
