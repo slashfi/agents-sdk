@@ -376,6 +376,33 @@ export function canSeeAgent(
   return false;
 }
 
+/**
+ * Filter tools visible on a public agent endpoint.
+ * For /agents/ routes, tools inherit the agent's visibility:
+ * - If agent is public, tools without explicit visibility are shown
+ * - Tool-level visibility still overrides (e.g. visibility: "private" hides it)
+ */
+function getVisibleTools(
+  agent: AgentDefinition,
+  auth: ResolvedAuth | null,
+): typeof agent.tools {
+  const agentVisibility = ((agent as any).visibility ??
+    agent.config?.visibility ??
+    "internal") as Visibility;
+  return agent.tools.filter((t) => {
+    const tv = t.visibility;
+    if (auth?.isRoot) return true;
+    // Tool has explicit visibility — respect it
+    if (tv === "public") return true;
+    if (tv === "private") return auth?.isRoot ?? false;
+    if (tv === "internal" && auth) return true;
+    // No explicit tool visibility — inherit from agent
+    if (!tv && agentVisibility === "public") return true;
+    if (!tv && agentVisibility === "internal" && auth) return true;
+    return false;
+  });
+}
+
 // ============================================
 // MCP Tool Definitions
 // ============================================
@@ -992,6 +1019,127 @@ export function createAgentServer(
                 description: t.description,
               })),
           })),
+        );
+        return cors ? addCors(res) : res;
+      }
+
+      // ── GET /agents → List public agents (discovery endpoint) ──
+      if (path === "/agents" && req.method === "GET") {
+        const agents = registry.list();
+        const visible = agents.filter((agent) => {
+          // Only show agents with explicit visibility
+          if (!agent.visibility) return false;
+          return canSeeAgent(agent, effectiveAuth);
+        });
+        const res = jsonResponse(
+          visible.map((agent) => ({
+            path: agent.path,
+            name: agent.config?.name,
+            description: agent.config?.description ?? agent.entrypoint?.slice(0, 200),
+            tools: getVisibleTools(agent, effectiveAuth)
+              .map((t) => ({
+                name: t.name,
+                description: t.description,
+              })),
+          })),
+        );
+        return cors ? addCors(res) : res;
+      }
+
+      // ── GET /agents/{name} → Agent info (single agent discovery) ──
+      if (path.startsWith("/agents/") && req.method === "GET") {
+        const agentPath = path.slice("/agents/".length); // e.g. "notion"
+        const agent = registry.get(agentPath) ?? registry.get(`@${agentPath}`);
+        if (!agent || !canSeeAgent(agent, effectiveAuth)) {
+          const res = jsonResponse({ error: "not_found", message: `Agent not found: ${agentPath}` }, 404);
+          return cors ? addCors(res) : res;
+        }
+        const res = jsonResponse({
+          path: agent.path,
+          name: agent.config?.name,
+          description: agent.config?.description ?? agent.entrypoint?.slice(0, 200),
+          tools: getVisibleTools(agent, effectiveAuth)
+            .map((t) => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: t.inputSchema,
+            })),
+        });
+        return cors ? addCors(res) : res;
+      }
+
+      // ── POST /agents/{name} → Scoped MCP call to single agent ──
+      if (path.startsWith("/agents/") && req.method === "POST") {
+        const agentPath = path.slice("/agents/".length);
+        const agent = registry.get(agentPath) ?? registry.get(`@${agentPath}`);
+        if (!agent || !canSeeAgent(agent, effectiveAuth)) {
+          const res = jsonResponse({ error: "not_found", message: `Agent not found: ${agentPath}` }, 404);
+          return cors ? addCors(res) : res;
+        }
+
+        const body = (await req.json()) as JsonRpcRequest;
+
+        // Scoped JSON-RPC: tools/list only shows this agent's tools
+        if (body.method === "initialize") {
+          const res = jsonResponse(
+            jsonRpcSuccess(body.id, {
+              protocolVersion: "2024-11-05",
+              capabilities: { tools: { listChanged: false } },
+              serverInfo: { name: agent.config?.name ?? agent.path, version: "1.0.0" },
+            }),
+          );
+          return cors ? addCors(res) : res;
+        }
+
+        if (body.method === "tools/list") {
+          const tools = getVisibleTools(agent, effectiveAuth)
+            .map((t) => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: t.inputSchema,
+            }));
+          const res = jsonResponse(jsonRpcSuccess(body.id, { tools }));
+          return cors ? addCors(res) : res;
+        }
+
+        if (body.method === "tools/call") {
+          const { name, arguments: args } = (body.params ?? {}) as {
+            name: string;
+            arguments?: Record<string, unknown>;
+          };
+          try {
+            const result = await registry.call({
+              action: "execute_tool",
+              path: agent.path,
+              tool: name,
+              params: args ?? {},
+              callerId: effectiveAuth?.callerId,
+              callerType: effectiveAuth?.callerType ?? "external",
+              metadata: effectiveAuth ? {
+                scopes: effectiveAuth.scopes,
+                isRoot: effectiveAuth.isRoot,
+                ...(effectiveAuth.issuer ? { issuer: effectiveAuth.issuer } : {}),
+              } : undefined,
+            });
+            const res = jsonResponse(jsonRpcSuccess(body.id, result));
+            return cors ? addCors(res) : res;
+          } catch (err) {
+            console.error("[server] Scoped tool call error:", err);
+            const res = jsonResponse(
+              jsonRpcSuccess(
+                body.id,
+                mcpResult(
+                  `Error: ${err instanceof Error ? err.message : String(err)}`,
+                  true,
+                ),
+              ),
+            );
+            return cors ? addCors(res) : res;
+          }
+        }
+
+        const res = jsonResponse(
+          jsonRpcError(body.id, -32601, `Method not found: ${body.method}`),
         );
         return cors ? addCors(res) : res;
       }
