@@ -8,8 +8,8 @@
   },
   "main": "dist/index.js",
   "bin": {
-    "agents-sdk": "./src/cli.ts",
-    "adk": "./src/adk.ts"
+    "adk": "./src/adk.ts",
+    "agents-sdk": "./src/adk.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
