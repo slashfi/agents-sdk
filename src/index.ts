@@ -97,10 +97,15 @@ export type {
 
 // Define functions
 export { defineAgent, defineTool } from "./define.js";
-export type { DefineAgentOptions, DefineToolOptions, AgentWithHooks, ToolWithHooks } from "./define.js";
+export type {
+  DefineAgentOptions,
+  DefineToolOptions,
+  AgentWithHooks,
+  ToolWithHooks,
+} from "./define.js";
 
 // Registry
-export { createAgentRegistry } from "./registry.js";
+export { createAgentRegistry, agentFromSerialized } from "./registry.js";
 export type {
   AgentRegistry,
   AgentRegistryOptions,
@@ -340,3 +345,15 @@ export type {
 
 export { introspectMcp } from "./introspect.js";
 export type { IntrospectOptions } from "./introspect.js";
+
+// ============================================
+// Validation
+// ============================================
+
+export {
+  SerializedAgentDefinitionSchema,
+  SerializedToolSchema,
+  validateDefinition,
+  assertValidDefinition,
+} from "./validate.js";
+export type { ValidationResult } from "./validate.js";
