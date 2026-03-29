@@ -268,6 +268,126 @@ describe("listAgentTools", () => {
   });
 });
 
+describe("codegen JSON Schema support", () => {
+  const SCHEMA_OUT_DIR = "/tmp/agents-sdk-codegen-schema-test";
+  let schemaServer: ReturnType<typeof Bun.serve>;
+  let schemaPort: number;
+
+  const COMPLEX_TOOLS: McpToolDefinition[] = [
+    {
+      name: "complex_tool",
+      description: "Tool with advanced JSON Schema features",
+      inputSchema: {
+        type: "object",
+        properties: {
+          status: { enum: ["open", "closed", "pending"] },
+          value: { oneOf: [{ type: "string" }, { type: "number" }] },
+          merged: { allOf: [{ type: "object", properties: { a: { type: "string" } } }, { type: "object", properties: { b: { type: "number" } } }] },
+          flexible: { anyOf: [{ type: "string" }, { type: "null" }] },
+          literal: { const: "fixed_value" },
+          excluded: { not: { type: "string" } },
+          email: { type: "string", format: "email" },
+          age: { type: "integer" },
+          nullable: { type: ["string", "null"] },
+          tags: { type: "array", items: { type: "string" } },
+          metadata: { type: "object", additionalProperties: { type: "string" } },
+          coords: { type: "array", prefixItems: [{ type: "number" }, { type: "number" }] },
+        },
+        required: ["status", "value"],
+      },
+    },
+  ];
+
+  beforeAll(async () => {
+    rmSync(SCHEMA_OUT_DIR, { recursive: true, force: true });
+
+    schemaServer = Bun.serve({
+      port: 0,
+      fetch(req) {
+        return (async () => {
+          const body = (await req.json()) as { id?: number; method: string; params?: Record<string, unknown> };
+          if (body.id === undefined) return new Response(null, { status: 202 });
+
+          let result: unknown;
+          switch (body.method) {
+            case "initialize":
+              result = { protocolVersion: "2025-03-26", serverInfo: { name: "schema-test", version: "1.0.0" }, capabilities: { tools: {} } };
+              break;
+            case "tools/list":
+              result = { tools: COMPLEX_TOOLS };
+              break;
+            default:
+              return Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: `Unknown: ${body.method}` } });
+          }
+          return Response.json({ jsonrpc: "2.0", id: body.id, result });
+        })();
+      },
+    });
+    schemaPort = schemaServer.port;
+
+    await codegen({
+      server: `http://localhost:${schemaPort}`,
+      outDir: SCHEMA_OUT_DIR,
+      name: "schema-test",
+    });
+  });
+
+  afterAll(() => {
+    schemaServer.stop();
+    rmSync(SCHEMA_OUT_DIR, { recursive: true, force: true });
+  });
+
+  test("renders enum as union", () => {
+    const content = readFileSync(join(SCHEMA_OUT_DIR, "complex-tool.tool.md"), "utf-8");
+    expect(content).toContain('"open" | "closed" | "pending"');
+  });
+
+  test("renders oneOf as union", () => {
+    const content = readFileSync(join(SCHEMA_OUT_DIR, "complex-tool.tool.md"), "utf-8");
+    expect(content).toContain("string | number");
+  });
+
+  test("renders allOf as intersection", () => {
+    const content = readFileSync(join(SCHEMA_OUT_DIR, "complex-tool.tool.md"), "utf-8");
+    expect(content).toContain("&");
+  });
+
+  test("renders const as literal", () => {
+    const content = readFileSync(join(SCHEMA_OUT_DIR, "complex-tool.tool.md"), "utf-8");
+    expect(content).toContain('"fixed_value"');
+  });
+
+  test("renders not", () => {
+    const content = readFileSync(join(SCHEMA_OUT_DIR, "complex-tool.tool.md"), "utf-8");
+    expect(content).toContain("Exclude");
+  });
+
+  test("renders format hint", () => {
+    const content = readFileSync(join(SCHEMA_OUT_DIR, "complex-tool.tool.md"), "utf-8");
+    expect(content).toContain("email");
+  });
+
+  test("renders integer as number", () => {
+    const content = readFileSync(join(SCHEMA_OUT_DIR, "complex-tool.tool.md"), "utf-8");
+    expect(content).toContain("integer");
+  });
+
+  test("renders nullable type array", () => {
+    const content = readFileSync(join(SCHEMA_OUT_DIR, "complex-tool.tool.md"), "utf-8");
+    expect(content).toContain("string | null");
+  });
+
+  test("renders additionalProperties as Record", () => {
+    const content = readFileSync(join(SCHEMA_OUT_DIR, "complex-tool.tool.md"), "utf-8");
+    expect(content).toContain("Record<string, string>");
+  });
+
+  test("renders tuple arrays", () => {
+    const content = readFileSync(join(SCHEMA_OUT_DIR, "complex-tool.tool.md"), "utf-8");
+    expect(content).toContain("[number, number]");
+  });
+});
+
 describe("codegen pagination", () => {
   const PAGINATED_OUT_DIR = "/tmp/agents-sdk-codegen-paginated-test";
   let paginatedServer: ReturnType<typeof Bun.serve>;

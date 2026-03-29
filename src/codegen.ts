@@ -839,13 +839,49 @@ function schemaToInterface(
 
 /** Convert a JSON Schema type to a TypeScript type string */
 function jsonSchemaToTsType(schema: JsonSchema): string {
+  // const literal
+  if (schema.const !== undefined) {
+    return JSON.stringify(schema.const);
+  }
+
+  // enum
   if (schema.enum) {
     return schema.enum.map((v) => JSON.stringify(v)).join(" | ");
   }
 
+  // oneOf / anyOf → union
+  if (schema.oneOf) {
+    return (schema.oneOf as JsonSchema[]).map(jsonSchemaToTsType).join(" | ");
+  }
+  if (schema.anyOf) {
+    return (schema.anyOf as JsonSchema[]).map(jsonSchemaToTsType).join(" | ");
+  }
+
+  // allOf → intersection
+  if (schema.allOf) {
+    return (schema.allOf as JsonSchema[]).map(jsonSchemaToTsType).join(" & ");
+  }
+
+  // not → exclude
+  if (schema.not) {
+    return `Exclude<unknown, ${jsonSchemaToTsType(schema.not as JsonSchema)}>`;
+  }
+
+  // $ref
+  if (schema.$ref) {
+    const ref = schema.$ref as string;
+    // Extract name from #/$defs/Foo or #/definitions/Foo
+    const match = ref.match(/\/([^/]+)$/);
+    return match ? match[1] : "unknown";
+  }
+
   switch (schema.type) {
     case "string":
+      // Include format hint if present
+      if (schema.format) return `string /* ${schema.format} */`;
       return "string";
+    case "integer":
+      return "number /* integer */";
     case "number":
       return "number";
     case "boolean":
@@ -856,20 +892,39 @@ function jsonSchemaToTsType(schema: JsonSchema): string {
       if (schema.items) {
         return `${jsonSchemaToTsType(schema.items as JsonSchema)}[]`;
       }
+      // Tuple arrays (prefixItems)
+      if (schema.prefixItems) {
+        const items = (schema.prefixItems as JsonSchema[]).map(jsonSchemaToTsType);
+        return `[${items.join(", ")}]`;
+      }
       return "unknown[]";
     case "object":
       if (schema.properties) {
-        const required = new Set(schema.required ?? []);
+        const required = new Set((schema.required as string[]) ?? []);
         const props = Object.entries(schema.properties)
           .map(([k, v]) => {
             const opt = required.has(k) ? "" : "?";
             return `${k}${opt}: ${jsonSchemaToTsType(v as JsonSchema)}`;
           })
           .join("; ");
+        // additionalProperties
+        if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
+          const addlType = jsonSchemaToTsType(schema.additionalProperties as JsonSchema);
+          return props
+            ? `{ ${props}; [key: string]: ${addlType} }`
+            : `Record<string, ${addlType}>`;
+        }
         return `{ ${props} }`;
+      }
+      if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
+        return `Record<string, ${jsonSchemaToTsType(schema.additionalProperties as JsonSchema)}>`;
       }
       return "Record<string, unknown>";
     default:
+      // type as array (e.g., ["string", "null"])
+      if (Array.isArray(schema.type)) {
+        return schema.type.map((t: string) => (t === "null" ? "null" : t === "integer" ? "number" : t)).join(" | ");
+      }
       return "unknown";
   }
 }
