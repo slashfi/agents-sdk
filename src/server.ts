@@ -45,6 +45,11 @@ import { type OIDCProviderConfig, createOIDCSignIn } from "./oidc-signin.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 
+import type {
+  AgentCallbackStore,
+  AgentCallbackTrigger,
+} from "./callback/index.js";
+
 // ============================================
 // Server Types
 // ============================================
@@ -117,6 +122,8 @@ export interface AgentServerOptions {
   keyStore?: import("./key-manager.js").KeyStore;
   /** OIDC provider for user sign-in (authorization code flow) */
   oidcProvider?: OIDCProviderConfig;
+  /** Callback store for deferred call_agent execution with triggers */
+  callbackStore?: AgentCallbackStore;
 }
 
 export interface AgentServer {
@@ -490,6 +497,7 @@ export function createAgentServer(
     serverVersion = "1.0.0",
     secretStore,
     oauthIdentityProvider,
+    callbackStore,
   } = options;
 
   // OIDC sign-in handler (if configured)
@@ -572,6 +580,7 @@ export function createAgentServer(
   ) {
     switch (toolName) {
       case "call_agent": {
+        const trigger = args.trigger as AgentCallbackTrigger | undefined;
         const req = (args.request ?? args) as CallAgentRequest;
 
         // Inject auth context
@@ -585,6 +594,26 @@ export function createAgentServer(
         }
         if (auth?.isRoot) {
           req.callerType = "system";
+        }
+
+        // Deferred execution: if trigger is present and callback store is
+        // configured, store the call_agent command as a callback instead
+        // of executing it immediately. The callback fires when the trigger
+        // is resolved (e.g., webhook POST, form submission).
+        if (trigger && callbackStore) {
+          const callbackId = await callbackStore.create({
+            callback: req as unknown as Record<string, unknown>,
+            trigger,
+            metadata: {
+              creatorId: auth?.callerId,
+              creatorType: auth?.callerType,
+            },
+          });
+          return mcpResult({
+            success: true,
+            callbackId,
+            message: `Callback created. It will execute when the trigger fires.`,
+          });
         }
 
         // Process secret params: resolve refs, store raw secrets
