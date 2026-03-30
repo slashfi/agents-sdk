@@ -482,13 +482,13 @@ export function createAgentRegistry(
       // configured, store the call_agent command as a callback instead
       // of executing it immediately.
       if (request.trigger && options.callbackStore) {
-        const { trigger, ...rest } = request;
+        // The trigger stays as part of the callback — cockroach stores it in the
+        // callback JSON column. Attributes are first-class key-value metadata.
         const callbackId = await options.callbackStore.create({
-          callback: rest as unknown as Record<string, unknown>,
-          trigger,
-          metadata: {
-            creatorId: request.callerId,
-            creatorType: request.callerType,
+          callback: request as unknown as Record<string, unknown>,
+          attributes: {
+            ...(request.callerId && { creatorId: request.callerId }),
+            ...(request.callerType && { creatorType: request.callerType }),
           },
         });
         return {

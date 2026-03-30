@@ -48,19 +48,13 @@ export type AgentCallbackStatus =
 /**
  * A stored agent_callback — a call_agent command waiting for its trigger to fire.
  */
-export interface AgentCallbackEntry<TMetadata = Record<string, unknown>> {
+export interface AgentCallbackEntry {
   id: string;
   status: AgentCallbackStatus;
-  /** The call_agent command. Params may contain {{trigger.x}} templates. */
+  /** The call_agent command (includes trigger). Params may contain {{trigger.x}} templates. */
   callback: Record<string, unknown>;
-  /** Trigger definition — how values are collected. */
-  trigger?: AgentCallbackTrigger;
-  /** Implementation-specific context (e.g., creator branch, user ID). */
-  metadata?: TMetadata;
-  /** Resolved values from the trigger, keyed by variable name. */
-  resolvedValues?: Record<string, string>;
-  /** Callback expires after this time. */
-  expiresAt?: Date;
+  /** Key-value attributes for this callback (e.g., creator info, trigger metadata). */
+  attributes: Record<string, string>;
   createdAt: Date;
   completedAt?: Date;
 }
@@ -69,15 +63,11 @@ export interface AgentCallbackEntry<TMetadata = Record<string, unknown>> {
 // Create Options
 // ---------------------------------------------------------------------------
 
-export interface CreateAgentCallbackOptions<TMetadata = Record<string, unknown>> {
-  /** The call_agent command. May contain {{trigger.x}} template references in params. */
+export interface CreateAgentCallbackOptions {
+  /** The call_agent command (includes trigger). May contain {{trigger.x}} template references in params. */
   callback: Record<string, unknown>;
-  /** Trigger definition. */
-  trigger?: AgentCallbackTrigger;
-  /** Implementation-specific context. */
-  metadata?: TMetadata;
-  /** TTL in milliseconds (default: implementation-defined). */
-  ttlMs?: number;
+  /** Initial attributes to set on creation. */
+  attributes?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,13 +89,12 @@ export interface ResolveAgentCallbackOptions {
  * Agent Callback Store — persistence layer for deferred call_agent commands.
  * Implementations can use any backing store (CockroachDB, SQLite, in-memory, etc.).
  */
-export interface AgentCallbackStore<TMetadata = Record<string, unknown>> {
-  create(options: CreateAgentCallbackOptions<TMetadata>): Promise<string>;
-  get(id: string): Promise<AgentCallbackEntry<TMetadata> | null>;
-  resolve(options: ResolveAgentCallbackOptions): Promise<AgentCallbackEntry<TMetadata>>;
+export interface AgentCallbackStore {
+  create(options: CreateAgentCallbackOptions): Promise<string>;
+  get(id: string): Promise<AgentCallbackEntry | null>;
+  resolve(options: ResolveAgentCallbackOptions): Promise<AgentCallbackEntry>;
   cancel(id: string): Promise<boolean>;
-  listPending(limit?: number): Promise<AgentCallbackEntry<TMetadata>[]>;
-  expireStale(): Promise<number>;
+  listPending(limit?: number): Promise<AgentCallbackEntry[]>;
 }
 
 // ---------------------------------------------------------------------------
