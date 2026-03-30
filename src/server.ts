@@ -49,6 +49,8 @@ import type {
   AgentCallbackTrigger,
 } from "./callback/index.js";
 
+import { callAgentInputSchema } from "./call-agent-schema.js";
+
 // ============================================
 // Server Types
 // ============================================
@@ -434,37 +436,7 @@ function getToolDefinitions() {
       name: "call_agent",
       description:
         "Execute a tool on a registered agent. Provide the agent path and tool name.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          request: {
-            type: "object",
-            description: "The call request",
-            properties: {
-              action: {
-                type: "string",
-                enum: ["execute_tool", "describe_tools", "load"],
-                description: "Action to perform",
-              },
-              path: {
-                type: "string",
-                description: "Agent path (e.g., '@my-agent')",
-              },
-              tool: {
-                type: "string",
-                description: "Tool name to call",
-              },
-              params: {
-                type: "object",
-                description: "Parameters for the tool",
-                additionalProperties: true,
-              },
-            },
-            required: ["action", "path"],
-          },
-        },
-        required: ["request"],
-      },
+      inputSchema: callAgentInputSchema,
     },
     {
       name: "list_agents",

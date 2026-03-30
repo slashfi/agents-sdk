@@ -360,6 +360,15 @@ export type {
 } from "./callback/index.js";
 
 // ============================================
+// call_agent Schema (shared source of truth)
+// ============================================
+
+export {
+  callAgentInputSchema,
+  CALL_AGENT_ACTIONS,
+} from "./call-agent-schema.js";
+
+// ============================================
 // Validation
 // ============================================
 
