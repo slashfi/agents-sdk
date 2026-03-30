@@ -7,6 +7,9 @@
 import { dirname, resolve } from "node:path";
 import type { AgentEvent, EventCallback, EventType } from "./events.js";
 import { createEventBus } from "./events.js";
+import type {
+  AgentCallbackStore,
+} from "./callback/index.js";
 import type { SerializedAgentDefinition } from "./serialized.js";
 import type {
   AgentAction,
@@ -67,6 +70,8 @@ export interface AgentRegistryOptions {
   contextFactory?: ContextFactory;
   /** Lifecycle middleware hooks */
   middleware?: RegistryMiddleware;
+  /** Callback store for deferred call_agent execution with triggers */
+  callbackStore?: AgentCallbackStore;
 }
 
 /**
@@ -473,6 +478,26 @@ export function createAgentRegistry(
     },
 
     async call(request: CallAgentRequest): Promise<CallAgentResponse> {
+      // Deferred execution: if trigger is present and callback store is
+      // configured, store the call_agent command as a callback instead
+      // of executing it immediately.
+      if (request.trigger && options.callbackStore) {
+        const { trigger, ...rest } = request;
+        const callbackId = await options.callbackStore.create({
+          callback: rest as unknown as Record<string, unknown>,
+          trigger,
+          metadata: {
+            creatorId: request.callerId,
+            creatorType: request.callerType,
+          },
+        });
+        return {
+          success: true,
+          callbackId,
+          message: "Callback created. It will execute when the trigger fires.",
+        } as CallAgentResponse;
+      }
+
       const agent = agents.get(request.path);
 
       if (!agent) {

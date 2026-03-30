@@ -59,6 +59,7 @@ export type {
   CallAgentDescribeToolsRequest,
   CallAgentDescribeToolsResponse,
   CallAgentErrorResponse,
+  CallAgentCallbackResponse,
   CallAgentExecuteToolRequest,
   CallAgentExecuteToolResponse,
   CallAgentInvokeRequest,
