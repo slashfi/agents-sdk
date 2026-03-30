@@ -346,7 +346,9 @@ export async function createRegistryConsumer(
         );
       }
 
-      const registry = resolvedRegistries.find((r) => r.url === ref.registry);
+      const registry = resolvedRegistries.find(
+        (r) => r.url === ref.registry || r.name === ref.registry,
+      );
       if (!registry) {
         throw new Error(
           `Registry "${ref.registry}" not found for ref "${refName}"`,
