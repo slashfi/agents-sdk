@@ -24,8 +24,14 @@
   "exports": {
     ".": {
       "bun": "./src/index.ts",
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
     }
   },
   "description": "SDK for building AI agents with tool definitions and JSON-RPC servers",
@@ -48,12 +54,14 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsc -p tsconfig.cjs.json && node -e \"fs=require('fs');fs.writeFileSync('dist/cjs/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\"",
     "dev": "tsc --watch",
     "test": "bun test",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "build:esm": "tsc",
+    "build:cjs": "tsc -p tsconfig.cjs.json"
   },
   "type": "module",
   "types": "dist/index.d.ts",
