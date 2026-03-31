@@ -122,6 +122,7 @@ export type {
   ToolErrorEvent,
   StepEvent,
   InvokeEvent,
+  CallEvent,
   EventMap,
   SystemEventMap,
   ListenerEntry,

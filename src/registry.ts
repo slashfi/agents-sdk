@@ -56,32 +56,6 @@ export interface RegistryMiddleware {
     },
   ) => Promise<CallAgentLoadResponse>;
 
-  /**
-   * Intercept all call_agent requests before they reach the default handler.
-   * Use this to add routing, trigger/callback handling, upstream proxying, etc.
-   *
-   * @example
-   * ```ts
-   * const registry = createAgentRegistry({
-   *   middleware: {
-   *     call: async (defaultFn, { request }) => {
-   *       if (request.trigger) {
-   *         // handle trigger/callback creation
-   *         return { success: true, result: { callbackId } };
-   *       }
-   *       return defaultFn(request);
-   *     },
-   *   },
-   * });
-   * ```
-   */
-  call?: (
-    defaultFn: (request: CallAgentRequest) => Promise<CallAgentResponse>,
-    ctx: {
-      request: CallAgentRequest;
-      registry: AgentRegistry;
-    },
-  ) => Promise<CallAgentResponse>;
 }
 
 /**
@@ -523,12 +497,18 @@ export function createAgentRegistry(
     },
 
     async call(request: CallAgentRequest): Promise<CallAgentResponse> {
-      if (options.middleware?.call) {
-        return options.middleware.call(
-          (req) => callInternal(req),
-          { request, registry: registryObj },
-        );
-      }
+      // Emit call event — listeners can resolve() to short-circuit
+      let intercepted: CallAgentResponse | undefined;
+      await eventBus.emit({
+        type: "call",
+        agentPath: request.path,
+        timestamp: Date.now(),
+        request,
+        resolve(response: CallAgentResponse) {
+          intercepted = response;
+        },
+      });
+      if (intercepted) return intercepted;
       return callInternal(request);
     },
   };

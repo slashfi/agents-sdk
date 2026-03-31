@@ -10,6 +10,7 @@
  * Filtering happens in the callback, not the API.
  */
 
+import type { CallAgentRequest, CallAgentResponse } from "./types.js";
 // =============================================================================
 // Event Types
 // =============================================================================
@@ -22,7 +23,8 @@ export type SystemEventType =
   | "tool/result"
   | "tool/error"
   | "step"
-  | "invoke";
+  | "invoke"
+  | "call";
 
 /**
  * Augmentable map for custom event types. Consumers extend this
@@ -122,6 +124,19 @@ export interface InvokeEvent extends BaseEvent {
 }
 
 /**
+ * Event emitted when a call_agent request is received.
+ * Call `resolve(response)` to short-circuit the default handler.
+ * If no listener resolves, the default call handler runs.
+ */
+export interface CallEvent extends BaseEvent {
+  type: "call";
+  /** The incoming call_agent request */
+  request: CallAgentRequest;
+  /** Short-circuit the default handler with this response */
+  resolve(response: CallAgentResponse): void;
+}
+
+/**
  * Union of all built-in event types.
  */
 export type AgentEvent =
@@ -129,7 +144,8 @@ export type AgentEvent =
   | ToolResultEvent
   | ToolErrorEvent
   | StepEvent
-  | InvokeEvent;
+  | InvokeEvent
+  | CallEvent;
 
 /**
  * Map from system event type string to event interface.
@@ -140,6 +156,7 @@ export interface SystemEventMap {
   "tool/error": ToolErrorEvent;
   step: StepEvent;
   invoke: InvokeEvent;
+  call: CallEvent;
 }
 
 /**
