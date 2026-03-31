@@ -1,16 +1,16 @@
 /**
- * MCP Client — Connect to remote MCP servers.
+ * MCP Client Auth — OAuth utilities for connecting to MCP servers.
  *
- * Handles:
- * - MCP-over-HTTP transport (JSON-RPC)
- * - initialize handshake + tools/list + tools/call
- * - OAuth auth discovery (.well-known/oauth-authorization-server)
+ * Standalone utilities for:
+ * - OAuth Authorization Server discovery (.well-known/oauth-authorization-server, RFC 8414)
  * - Dynamic client registration (RFC 7591)
- * - PKCE OAuth flow (RFC 7636)
- * - Static auth (bearer token, headers)
- * - Automatic token refresh on 401
+ * - PKCE OAuth authorization URL construction
+ * - Authorization code → token exchange (with PKCE)
+ * - Token refresh
  *
- * Used by registry-consumer for `registry: 'mcp'` refs.
+ * These are used by registry-consumer.ts when connecting to MCP servers
+ * or registries that require OAuth. The MCP transport itself is handled
+ * by registry-consumer — this module only provides auth primitives.
  */
 
 import { generatePkcePair } from "./pkce.js";
@@ -30,113 +30,6 @@ export interface OAuthServerMetadata {
   grant_types_supported?: string[];
   code_challenge_methods_supported?: string[];
   token_endpoint_auth_methods_supported?: string[];
-}
-
-/** MCP server capabilities from initialize response */
-export interface McpServerCapabilities {
-  tools?: { listChanged?: boolean };
-  /** Registry-specific capabilities (only on agent registries) */
-  registry?: {
-    version: string;
-    features?: string[];
-    oauthCallbackUrl?: string;
-  };
-}
-
-/** MCP server info from initialize response */
-export interface McpServerInfo {
-  name: string;
-  version: string;
-}
-
-/** MCP initialize result */
-export interface McpInitializeResult {
-  protocolVersion: string;
-  capabilities: McpServerCapabilities;
-  serverInfo: McpServerInfo;
-}
-
-/** MCP tool definition from tools/list */
-export interface McpToolDefinition {
-  name: string;
-  description?: string;
-  inputSchema?: Record<string, unknown>;
-}
-
-/** Auth configuration for MCP client */
-export type McpClientAuth =
-  | { type: "none" }
-  | { type: "bearer"; token: string }
-  | { type: "headers"; headers: Record<string, string> }
-  | {
-      type: "oauth";
-      accessToken: string;
-      refreshToken?: string;
-      expiresAt?: number;
-      tokenEndpoint: string;
-      clientId: string;
-      clientSecret?: string;
-    };
-
-/** Options for creating an MCP client */
-export interface McpClientOptions {
-  /** MCP server URL */
-  url: string;
-  /** Auth configuration */
-  auth?: McpClientAuth;
-  /** Custom fetch implementation */
-  fetch?: typeof globalThis.fetch;
-}
-
-/** MCP client interface */
-export interface McpClient {
-  /** Server info from initialize */
-  serverInfo: McpServerInfo;
-  /** Server capabilities from initialize */
-  capabilities: McpServerCapabilities;
-  /** Whether this server is an agent registry (has registry capabilities) */
-  isRegistry: boolean;
-  /** List available tools */
-  listTools(): Promise<McpToolDefinition[]>;
-  /** Call a tool */
-  callTool(
-    name: string,
-    params?: Record<string, unknown>,
-  ): Promise<unknown>;
-  /** Disconnect / cleanup */
-  close(): void;
-}
-
-// ============================================
-// JSON-RPC Helpers
-// ============================================
-
-interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  id: number;
-  method: string;
-  params?: Record<string, unknown>;
-}
-
-interface JsonRpcResponse {
-  jsonrpc: "2.0";
-  id: number;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-}
-
-let requestId = 0;
-
-function makeRequest(
-  method: string,
-  params?: Record<string, unknown>,
-): JsonRpcRequest {
-  return {
-    jsonrpc: "2.0",
-    id: ++requestId,
-    method,
-    ...(params && { params }),
-  };
 }
 
 // ============================================
@@ -161,6 +54,10 @@ export async function discoverOAuthMetadata(
     return null;
   }
 }
+
+// ============================================
+// Dynamic Client Registration
+// ============================================
 
 /**
  * Dynamically register a client with an OAuth server.
@@ -200,6 +97,10 @@ export async function dynamicClientRegistration(
   };
 }
 
+// ============================================
+// Authorization URL
+// ============================================
+
 /**
  * Build an OAuth authorization URL with PKCE.
  * Returns the URL + the code_verifier (to be stored server-side).
@@ -229,6 +130,10 @@ export async function buildOAuthAuthorizeUrl(params: {
   }
   return { url: url.toString(), codeVerifier: pkce.codeVerifier };
 }
+
+// ============================================
+// Token Exchange
+// ============================================
 
 /**
  * Exchange an authorization code for tokens (with PKCE).
@@ -278,6 +183,10 @@ export async function exchangeCodeForTokens(
   };
 }
 
+// ============================================
+// Token Refresh
+// ============================================
+
 /**
  * Refresh an access token.
  */
@@ -318,157 +227,4 @@ export async function refreshAccessToken(
     refreshToken: data.refresh_token as string | undefined,
     expiresIn: data.expires_in as number | undefined,
   };
-}
-
-// ============================================
-// MCP Client
-// ============================================
-
-/**
- * Create an MCP client connected to a remote server.
- *
- * Performs the MCP initialize handshake and returns a client
- * that can list tools and call them.
- */
-export async function createMcpClient(
-  options: McpClientOptions,
-): Promise<McpClient> {
-  const fetchFn = options.fetch ?? globalThis.fetch;
-  const serverUrl = options.url.replace(/\/$/, "");
-  let auth = options.auth ?? { type: "none" as const };
-
-  /** Build headers for authenticated requests */
-  function getHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    switch (auth.type) {
-      case "bearer":
-        headers.Authorization = `Bearer ${auth.token}`;
-        break;
-      case "oauth":
-        headers.Authorization = `Bearer ${auth.accessToken}`;
-        break;
-      case "headers":
-        Object.assign(headers, auth.headers);
-        break;
-    }
-    return headers;
-  }
-
-  /** Make an MCP JSON-RPC call */
-  async function rpc(
-    method: string,
-    params?: Record<string, unknown>,
-  ): Promise<unknown> {
-    const request = makeRequest(method, params);
-    const res = await fetchFn(serverUrl, {
-      method: "POST",
-      headers: getHeaders(),
-      body: JSON.stringify(request),
-    });
-
-    // Auto-refresh on 401 for OAuth
-    if (res.status === 401 && auth.type === "oauth" && auth.refreshToken) {
-      const refreshed = await refreshAccessToken(auth.tokenEndpoint, {
-        refreshToken: auth.refreshToken,
-        clientId: auth.clientId,
-        clientSecret: auth.clientSecret,
-      });
-      auth = {
-        ...auth,
-        accessToken: refreshed.accessToken,
-        ...(refreshed.refreshToken && {
-          refreshToken: refreshed.refreshToken,
-        }),
-        ...(refreshed.expiresIn && {
-          expiresAt: Date.now() + refreshed.expiresIn * 1000,
-        }),
-      };
-      // Retry with new token
-      const retryRes = await fetchFn(serverUrl, {
-        method: "POST",
-        headers: getHeaders(),
-        body: JSON.stringify(request),
-      });
-      if (!retryRes.ok) {
-        throw new Error(
-          `MCP call failed after token refresh: ${retryRes.status}`,
-        );
-      }
-      const retryJson = (await retryRes.json()) as JsonRpcResponse;
-      if (retryJson.error) {
-        throw new Error(
-          `MCP RPC error: ${retryJson.error.message}`,
-        );
-      }
-      return retryJson.result;
-    }
-
-    if (!res.ok) {
-      throw new Error(`MCP call failed: ${res.status} ${res.statusText}`);
-    }
-    const json = (await res.json()) as JsonRpcResponse;
-    if (json.error) {
-      throw new Error(`MCP RPC error: ${json.error.message}`);
-    }
-    return json.result;
-  }
-
-  // Initialize handshake
-  const initResult = (await rpc("initialize", {
-    protocolVersion: "2024-11-05",
-    capabilities: {},
-    clientInfo: { name: "agents-sdk-client", version: "1.0.0" },
-  })) as McpInitializeResult;
-
-  // Send initialized notification
-  await rpc("notifications/initialized");
-
-  const client: McpClient = {
-    serverInfo: initResult.serverInfo,
-    capabilities: initResult.capabilities,
-    isRegistry: !!initResult.capabilities.registry,
-
-    async listTools(): Promise<McpToolDefinition[]> {
-      const result = (await rpc("tools/list")) as {
-        tools: McpToolDefinition[];
-      };
-      return result.tools ?? [];
-    },
-
-    async callTool(
-      name: string,
-      params: Record<string, unknown> = {},
-    ): Promise<unknown> {
-      const result = (await rpc("tools/call", {
-        name,
-        arguments: params,
-      })) as { content?: unknown[] };
-      // Extract text content if available
-      if (result.content && Array.isArray(result.content)) {
-        const textItem = result.content.find(
-          (c: unknown) =>
-            typeof c === "object" &&
-            c !== null &&
-            "type" in c &&
-            (c as Record<string, unknown>).type === "text",
-        ) as { text?: string } | undefined;
-        if (textItem?.text) {
-          try {
-            return JSON.parse(textItem.text);
-          } catch {
-            return textItem.text;
-          }
-        }
-      }
-      return result;
-    },
-
-    close() {
-      // No persistent connection to clean up for HTTP transport
-    },
-  };
-
-  return client;
 }

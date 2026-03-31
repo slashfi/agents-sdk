@@ -297,9 +297,8 @@ export {
   generatePkcePair,
 } from "./pkce.js";
 
-// MCP Client
+// MCP Client Auth (OAuth utilities for connecting to MCP servers/registries)
 export {
-  createMcpClient,
   discoverOAuthMetadata,
   dynamicClientRegistration,
   buildOAuthAuthorizeUrl,
@@ -307,13 +306,6 @@ export {
   refreshAccessToken as refreshMcpAccessToken,
 } from "./mcp-client.js";
 export type {
-  McpClient,
-  McpClientOptions,
-  McpClientAuth,
-  McpServerCapabilities,
-  McpServerInfo as McpClientServerInfo,
-  McpInitializeResult,
-  McpToolDefinition as McpClientToolDefinition,
   OAuthServerMetadata,
 } from "./mcp-client.js";
 
