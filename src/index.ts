@@ -351,7 +351,6 @@ export {
   validateCallbackTemplates,
 } from "./callback/index.js";
 export type {
-  AgentCallbackTrigger,
   AgentCallbackStatus,
   AgentCallbackEntry,
   AgentCallbackStore,

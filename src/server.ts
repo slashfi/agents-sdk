@@ -45,10 +45,6 @@ import { type OIDCProviderConfig, createOIDCSignIn } from "./oidc-signin.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 
-import type {
-  AgentCallbackTrigger,
-} from "./callback/index.js";
-
 import { callAgentInputSchema } from "./call-agent-schema.js";
 
 // ============================================
@@ -548,7 +544,6 @@ export function createAgentServer(
   ) {
     switch (toolName) {
       case "call_agent": {
-        const trigger = args.trigger as AgentCallbackTrigger | undefined;
         const req = (args.request ?? args) as CallAgentRequest;
 
         // Inject auth context
@@ -562,12 +557,6 @@ export function createAgentServer(
         }
         if (auth?.isRoot) {
           req.callerType = "system";
-        }
-
-        // Pass trigger through to registry.call() which handles
-        // deferred execution via callbackStore if configured.
-        if (trigger) {
-          req.trigger = trigger;
         }
 
         // Process secret params: resolve refs, store raw secrets

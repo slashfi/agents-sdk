@@ -63,20 +63,6 @@ export const callAgentInputSchema = {
       },
       required: ["action", "path"] as const,
     },
-    trigger: {
-      type: "object" as const,
-      description:
-        "When present, the call is deferred and stored as a callback. " +
-        "The call executes when the trigger fires with the required values.",
-      properties: {
-        type: {
-          type: "string" as const,
-          description: "Trigger type (e.g., 'webhook')",
-        },
-      },
-      required: ["type"] as const,
-      additionalProperties: true,
-    },
   },
   required: ["request"] as const,
 };

@@ -702,8 +702,6 @@ export interface AgentDefinition<TContext extends ToolContext = ToolContext> {
 // CallAgent Request Types
 // ============================================
 
-import type { AgentCallbackTrigger } from "./callback/index.js";
-
 /** Base request fields */
 interface CallAgentBaseRequest {
   /** Target agent path */
@@ -714,9 +712,6 @@ interface CallAgentBaseRequest {
   callerType?: CallerType;
   /** Additional metadata */
   metadata?: Record<string, unknown>;
-  /** When present, the call is deferred and stored as a callback.
-   *  The call executes when the trigger fires with the required values. */
-  trigger?: AgentCallbackTrigger;
 }
 
 /** Invoke: fire-and-forget */
