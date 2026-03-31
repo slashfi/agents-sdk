@@ -499,18 +499,25 @@ export function createAgentRegistry(
     async call(request: CallAgentRequest): Promise<CallAgentResponse> {
       // Emit call event — listeners can next()/resolve() to control flow
       let intercepted: CallAgentResponse | undefined;
+      let nextCalled = false;
+      let nextResult: CallAgentResponse | undefined;
       await eventBus.emit({
         type: "call",
         agentPath: request.path,
         timestamp: Date.now(),
         request,
-        next: () => callInternal(request),
+        async next() {
+          nextCalled = true;
+          nextResult = await callInternal(request);
+          return nextResult;
+        },
         resolve(response: CallAgentResponse) {
           intercepted = response;
         },
       });
       if (intercepted) return intercepted;
-      // No listener resolved — run default
+      if (nextCalled) return nextResult!;
+      // No listener engaged — run default
       return callInternal(request);
     },
   };
