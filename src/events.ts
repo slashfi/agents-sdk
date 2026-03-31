@@ -149,20 +149,10 @@ export interface SystemEventMap {
 export interface EventMap extends SystemEventMap, CustomEventMap {}
 
 /**
- * Resolve the event interface for a given event type.
- */
-type ResolveEvent<T extends EventType> =
-  T extends keyof SystemEventMap
-    ? SystemEventMap[T]
-    : T extends keyof CustomEventMap
-      ? CustomEventMap[T]
-      : BaseEvent;
-
-/**
  * Callback for a specific event type.
  */
 export type EventCallback<T extends EventType = EventType> = (
-  event: ResolveEvent<T>,
+  event: T extends keyof EventMap ? EventMap[T] : BaseEvent,
 ) => void | Promise<void>;
 
 // =============================================================================
