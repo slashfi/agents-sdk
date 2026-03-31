@@ -830,13 +830,6 @@ export interface CallAgentErrorResponse {
   code?: string;
 }
 
-/** Success response for deferred callback creation */
-export interface CallAgentCallbackResponse {
-  success: true;
-  callbackId: string;
-  message: string;
-}
-
 /** Union of all response types */
 export type CallAgentResponse =
   | CallAgentInvokeResponse
@@ -845,5 +838,4 @@ export type CallAgentResponse =
   | CallAgentDescribeToolsResponse
   | CallAgentLoadResponse
   | CallAgentLearnResponse
-  | CallAgentCallbackResponse
   | CallAgentErrorResponse;

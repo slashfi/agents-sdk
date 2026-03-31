@@ -343,22 +343,6 @@ export { introspectMcp } from "./introspect.js";
 export type { IntrospectOptions } from "./introspect.js";
 
 // ============================================
-// Agent Callbacks (deferred call_agent commands)
-// ============================================
-
-export {
-  resolveCallbackTemplates,
-  validateCallbackTemplates,
-} from "./callback/index.js";
-export type {
-  AgentCallbackStatus,
-  AgentCallbackEntry,
-  AgentCallbackStore,
-  CreateAgentCallbackOptions,
-  ResolveAgentCallbackOptions,
-} from "./callback/index.js";
-
-// ============================================
 // call_agent Schema (shared source of truth)
 // ============================================
 
