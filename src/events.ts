@@ -132,7 +132,9 @@ export interface CallEvent extends BaseEvent {
   type: "call";
   /** The incoming call_agent request */
   request: CallAgentRequest;
-  /** Short-circuit the default handler with this response */
+  /** Run the default call handler and return its result */
+  next(): Promise<CallAgentResponse>;
+  /** Short-circuit with a response (skips default handler if next() not called) */
   resolve(response: CallAgentResponse): void;
 }
 
