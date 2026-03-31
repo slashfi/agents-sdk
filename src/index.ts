@@ -112,14 +112,20 @@ export { createEventBus } from "./events.js";
 export type {
   EventBus,
   EventType,
+  SystemEventType,
+  CustomEventMap,
   EventCallback,
   AgentEvent,
+  BaseEvent,
   ToolCallEvent,
   ToolResultEvent,
   ToolErrorEvent,
   StepEvent,
   InvokeEvent,
+  CallEvent,
   EventMap,
+  SystemEventMap,
+  ListenerEntry,
 } from "./events.js";
 
 // Server

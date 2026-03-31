@@ -5,7 +5,7 @@
  */
 
 import { dirname, resolve } from "node:path";
-import type { AgentEvent, EventCallback, EventType } from "./events.js";
+import type { AgentEvent, BaseEvent, CustomEventMap, EventCallback, EventType } from "./events.js";
 import { createEventBus } from "./events.js";
 import type { SerializedAgentDefinition } from "./serialized.js";
 import type {
@@ -55,6 +55,7 @@ export interface RegistryMiddleware {
       registry: AgentRegistry;
     },
   ) => Promise<CallAgentLoadResponse>;
+
 }
 
 /**
@@ -97,6 +98,21 @@ export interface AgentRegistry {
 
   /** Emit an event to all listeners. Used by the runtime to push lifecycle events. */
   emit(event: AgentEvent): Promise<void>;
+
+  /**
+   * Trigger a custom event. Only accepts custom event types (not system events
+   * like tool/call, tool/result, etc. which are managed by the runtime).
+   *
+   * @example
+   * ```ts
+   * // After augmenting CustomEventMap:
+   * registry.trigger('callback/resolve', { type: 'callback/resolve', ... });
+   * ```
+   */
+  trigger<T extends Extract<keyof CustomEventMap, string>>(
+    eventType: T,
+    event: CustomEventMap[T] & BaseEvent,
+  ): Promise<void>;
 }
 
 // ============================================
@@ -412,7 +428,7 @@ export function createAgentRegistry(
     };
   }
 
-  const registry: AgentRegistry = {
+  const registryObj: AgentRegistry = {
     register(input: AgentDefinition | SerializedAgentDefinition): void {
       let agent: AgentDefinition;
       if (isSerialized(input)) {
@@ -473,7 +489,42 @@ export function createAgentRegistry(
       await eventBus.emit(event);
     },
 
+    async trigger<T extends Extract<keyof CustomEventMap, string>>(
+      _eventType: T,
+      event: CustomEventMap[T] & BaseEvent,
+    ): Promise<void> {
+      await eventBus.emit(event as never);
+    },
+
     async call(request: CallAgentRequest): Promise<CallAgentResponse> {
+      // Emit call event — listeners can next()/resolve() to control flow
+      let intercepted: CallAgentResponse | undefined;
+      let nextCalled = false;
+      let nextResult: CallAgentResponse | undefined;
+      await eventBus.emit({
+        type: "call",
+        agentPath: request.path,
+        timestamp: Date.now(),
+        request,
+        async next() {
+          nextCalled = true;
+          nextResult = await callInternal(request);
+          return nextResult;
+        },
+        resolve(response: CallAgentResponse) {
+          intercepted = response;
+        },
+      });
+      if (intercepted) return intercepted;
+      if (nextCalled) return nextResult!;
+      // No listener engaged — run default
+      return callInternal(request);
+    },
+  };
+
+  return registryObj;
+
+  async function callInternal(request: CallAgentRequest): Promise<CallAgentResponse> {
       const agent = agents.get(request.path);
 
       if (!agent) {
@@ -673,7 +724,7 @@ export function createAgentRegistry(
             return options.middleware.load(defaultLoad, {
               agent,
               request,
-              registry,
+              registry: registryObj,
             });
           }
           return defaultLoad(agent, request);
@@ -717,8 +768,5 @@ export function createAgentRegistry(
           } as CallAgentErrorResponse;
         }
       }
-    },
-  };
-
-  return registry;
-}
+    }
+  }
