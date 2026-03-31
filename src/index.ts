@@ -361,3 +361,16 @@ export {
   assertValidDefinition,
 } from "./validate.js";
 export type { ValidationResult } from "./validate.js";
+
+// ============================================
+// BM25 Search
+// ============================================
+
+export {
+  createBM25Index,
+} from "./bm25.js";
+export type {
+  BM25Options,
+  BM25Document,
+  BM25Result,
+} from "./bm25.js";
