@@ -1219,9 +1219,12 @@ export function createAgentServer(
       }
 
       // ── GET /.well-known/oauth-authorization-server → OAuth Server Metadata (RFC 8414) ──
+      // Only exposed when the server requires auth (private registries).
+      // Public registries (e.g. registry.slash.com) skip this entirely.
       if (
         path === "/.well-known/oauth-authorization-server" &&
-        req.method === "GET"
+        req.method === "GET" &&
+        (options.registry?.oauthCallbackUrl || serverSigningKeys.length > 0)
       ) {
         const baseUrl = resolveBaseUrl(req);
         const res = jsonResponse({
