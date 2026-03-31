@@ -120,6 +120,19 @@ export interface AgentServerOptions {
   keyStore?: import("./key-manager.js").KeyStore;
   /** OIDC provider for user sign-in (authorization code flow) */
   oidcProvider?: OIDCProviderConfig;
+  /**
+   * Registry capabilities — advertised in MCP initialize response.
+   * When set, this server identifies as an agent registry (superset of MCP).
+   * Consumers use this to differentiate `registry` type from plain `mcp`.
+   */
+  registry?: {
+    /** Registry protocol version */
+    version?: string;
+    /** Feature flags (e.g., 'shared-oauth', 'agent-listing') */
+    features?: string[];
+    /** OAuth callback URL for shared OAuth flows */
+    oauthCallbackUrl?: string;
+  };
 }
 
 export interface AgentServer {
@@ -518,7 +531,16 @@ export function createAgentServer(
       case "initialize":
         return jsonRpcSuccess(request.id, {
           protocolVersion: "2024-11-05",
-          capabilities: { tools: { listChanged: false } },
+          capabilities: {
+            tools: { listChanged: false },
+            ...(options.registry && {
+              registry: {
+                version: options.registry.version ?? "1.0",
+                ...(options.registry.features && { features: options.registry.features }),
+                ...(options.registry.oauthCallbackUrl && { oauthCallbackUrl: options.registry.oauthCallbackUrl }),
+              },
+            }),
+          },
           serverInfo: { name: serverName, version: serverVersion },
         });
 
@@ -1178,7 +1200,7 @@ export function createAgentServer(
         return cors ? addCors(res) : res;
       }
 
-      // ── GET /.well-known/configuration → Server discovery ──
+      // ── GET /.well-known/configuration → Server discovery (deprecated, use MCP initialize capabilities) ──
       if (path === "/.well-known/configuration" && req.method === "GET") {
         const baseUrl = resolveBaseUrl(req);
         const res = jsonResponse({
@@ -1192,6 +1214,28 @@ export function createAgentServer(
           ...(oidcSignIn
             ? { signin_endpoint: `${baseUrl}/signin/authorize` }
             : {}),
+        });
+        return cors ? addCors(res) : res;
+      }
+
+      // ── GET /.well-known/oauth-authorization-server → OAuth Server Metadata (RFC 8414) ──
+      if (
+        path === "/.well-known/oauth-authorization-server" &&
+        req.method === "GET"
+      ) {
+        const baseUrl = resolveBaseUrl(req);
+        const res = jsonResponse({
+          issuer: baseUrl,
+          authorization_endpoint: `${baseUrl}/oauth/authorize`,
+          token_endpoint: `${baseUrl}/oauth/token`,
+          jwks_uri: `${baseUrl}/.well-known/jwks.json`,
+          response_types_supported: ["code"],
+          grant_types_supported: ["authorization_code", "client_credentials", "jwt_exchange"],
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
+          ...(options.registry?.oauthCallbackUrl && {
+            registration_endpoint: `${baseUrl}/oauth/register`,
+          }),
         });
         return cors ? addCors(res) : res;
       }
