@@ -15,9 +15,9 @@
 // =============================================================================
 
 /**
- * All supported event types.
+ * Built-in system event types managed by the runtime.
  */
-export type EventType =
+export type SystemEventType =
   | "tool/call"
   | "tool/result"
   | "tool/error"
@@ -25,11 +25,31 @@ export type EventType =
   | "invoke";
 
 /**
+ * Augmentable map for custom event types. Consumers extend this
+ * via declaration merging to register their own events:
+ *
+ * ```ts
+ * declare module '@slashfi/agents-sdk' {
+ *   interface CustomEventMap {
+ *     'callback/resolve': MyCallbackResolveEvent;
+ *   }
+ * }
+ * ```
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface CustomEventMap {}
+
+/**
+ * All event types — system + consumer-defined custom events.
+ */
+export type EventType = SystemEventType | Extract<keyof CustomEventMap, string>;
+
+/**
  * Base event shape — every event has these fields.
  */
 export interface BaseEvent {
   /** Event type */
-  type: EventType;
+  type: string;
   /** Agent path (e.g., '/agents/atlas-slack') */
   agentPath: string;
   /** Timestamp */
@@ -102,7 +122,7 @@ export interface InvokeEvent extends BaseEvent {
 }
 
 /**
- * Union of all event types.
+ * Union of all built-in event types.
  */
 export type AgentEvent =
   | ToolCallEvent
@@ -112,9 +132,9 @@ export type AgentEvent =
   | InvokeEvent;
 
 /**
- * Map from event type string to event interface.
+ * Map from system event type string to event interface.
  */
-export interface EventMap {
+export interface SystemEventMap {
   "tool/call": ToolCallEvent;
   "tool/result": ToolResultEvent;
   "tool/error": ToolErrorEvent;
@@ -123,10 +143,26 @@ export interface EventMap {
 }
 
 /**
+ * Map from event type string to event interface.
+ * Combines system events with custom events.
+ */
+export type EventMap = SystemEventMap & CustomEventMap;
+
+/**
+ * Resolve the event interface for a given event type.
+ */
+type ResolveEvent<T extends EventType> =
+  T extends keyof SystemEventMap
+    ? SystemEventMap[T]
+    : T extends keyof CustomEventMap
+      ? CustomEventMap[T]
+      : BaseEvent;
+
+/**
  * Callback for a specific event type.
  */
 export type EventCallback<T extends EventType = EventType> = (
-  event: EventMap[T],
+  event: ResolveEvent<T>,
 ) => void | Promise<void>;
 
 // =============================================================================
@@ -136,7 +172,7 @@ export type EventCallback<T extends EventType = EventType> = (
 /**
  * Listener entry — callback + optional scope for agent/tool filtering.
  */
-interface ListenerEntry {
+export interface ListenerEntry {
   eventType: EventType;
   callback: EventCallback<EventType>;
   /** If set, only fire for events matching this agent path */
@@ -161,7 +197,7 @@ export interface EventBus {
    * Listeners are called in registration order.
    * Errors in listeners are caught and logged, never propagated.
    */
-  emit(event: AgentEvent): Promise<void>;
+  emit(event: AgentEvent | (BaseEvent & { type: string })): Promise<void>;
 
   /**
    * Register a scoped listener (used internally by agent.on / tool.on).
@@ -202,7 +238,9 @@ export function createEventBus(): EventBus {
     });
   }
 
-  async function emit(event: AgentEvent): Promise<void> {
+  async function emit(
+    event: AgentEvent | (BaseEvent & { type: string }),
+  ): Promise<void> {
     for (const listener of listeners) {
       // Match event type
       if (listener.eventType !== event.type) continue;
@@ -222,7 +260,7 @@ export function createEventBus(): EventBus {
       }
 
       try {
-        await listener.callback(event);
+        await listener.callback(event as never);
       } catch (err) {
         // Never propagate listener errors — log and continue
         console.error(
