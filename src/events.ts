@@ -146,7 +146,7 @@ export interface SystemEventMap {
  * Map from event type string to event interface.
  * Combines system events with custom events.
  */
-export type EventMap = SystemEventMap & CustomEventMap;
+export interface EventMap extends SystemEventMap, CustomEventMap {}
 
 /**
  * Resolve the event interface for a given event type.
