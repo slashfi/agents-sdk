@@ -112,6 +112,9 @@ export interface CodegenResult {
 
   /** OAuth server metadata (if discovered via .well-known/oauth-authorization-server) */
   oauth?: OAuthServerMetadata;
+
+  /** Connection spec for consumers */
+  connection?: ConnectionSpec;
 }
 
 // ============================================
@@ -1129,11 +1132,31 @@ function generateCli(
 // ============================================
 
 /** Manifest stored in outDir for `agents-sdk use` */
+/** How a consumer connects to this MCP server */
+export interface ConnectionSpec {
+  /** MCP server URL (for HTTP/SSE transports) */
+  url?: string;
+  /** Transport type */
+  transport: 'http' | 'sse' | 'stdio';
+  /** Auth requirements */
+  auth: {
+    /** Auth type: oauth, api_key, or none */
+    type: 'oauth' | 'api_key' | 'none';
+    /** OAuth discovery URL (.well-known/oauth-authorization-server) */
+    discovery?: string;
+    /** Whether dynamic client registration (RFC 7591) is supported */
+    dynamic_registration?: boolean;
+  };
+}
+
 export interface CodegenManifest {
   agentPath: string;
   serverSource: ServerSource;
   serverInfo: McpServerInfo;
   tools: { name: string; description?: string }[];
+  /** How to connect to and authenticate with this MCP server */
+  connection?: ConnectionSpec;
+  /** Raw OAuth server metadata (from .well-known discovery) */
   oauth?: OAuthServerMetadata;
   generatedAt: string;
 }
@@ -1145,11 +1168,31 @@ function generateManifest(
   agentPath: string,
   oauth?: OAuthServerMetadata | null,
 ): string {
+  // Build connection spec from server source + OAuth discovery
+  const serverUrl = resolveServerUrl(serverSource);
+  const connection: ConnectionSpec | undefined = serverUrl
+    ? {
+        url: serverUrl,
+        transport: (typeof serverSource === 'string' && serverSource.endsWith('/sse')) ||
+                   (typeof serverSource === 'object' && 'url' in serverSource && serverSource.url.endsWith('/sse'))
+          ? 'sse' as const
+          : 'http' as const,
+        auth: oauth
+          ? {
+              type: 'oauth' as const,
+              discovery: `${serverUrl.replace(/\/mcp$/, '')}/.well-known/oauth-authorization-server`,
+              dynamic_registration: !!oauth.registration_endpoint,
+            }
+          : { type: 'none' as const },
+      }
+    : undefined;
+
   const manifest: CodegenManifest = {
     agentPath,
     serverSource,
     serverInfo,
     tools: tools.map((t) => ({ name: t.name, description: t.description })),
+    ...(connection ? { connection } : {}),
     ...(oauth ? { oauth } : {}),
     generatedAt: new Date().toISOString(),
   };

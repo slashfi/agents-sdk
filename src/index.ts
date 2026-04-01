@@ -319,6 +319,7 @@ export type {
   CodegenOptions,
   CodegenResult,
   CodegenManifest,
+  ConnectionSpec,
   McpToolDefinition,
   McpServerInfo,
   McpTransport,
