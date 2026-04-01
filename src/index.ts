@@ -313,13 +313,6 @@ export type {
   OAuthServerMetadata,
 } from "./mcp-client.js";
 
-// Config Agent
-export { createConfigAgent } from "./agent-definitions/config.js";
-export type {
-  ConfigAgentOptions,
-  FsStore,
-} from "./agent-definitions/config.js";
-
 // Codegen
 export { codegen, useAgent, listAgentTools } from "./codegen.js";
 export type {
