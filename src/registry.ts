@@ -506,9 +506,9 @@ export function createAgentRegistry(
         agentPath: request.path,
         timestamp: Date.now(),
         request,
-        async next() {
+        async next(overrideRequest?: CallAgentRequest) {
           nextCalled = true;
-          nextResult = await callInternal(request);
+          nextResult = await callInternal(overrideRequest ?? request);
           return nextResult;
         },
         resolve(response: CallAgentResponse) {
