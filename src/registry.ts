@@ -15,7 +15,6 @@ import type {
   CallAgentDescribeToolsResponse,
   CallAgentErrorResponse,
   CallAgentExecuteToolResponse,
-  CallAgentLearnResponse,
   CallAgentLoadRequest,
   CallAgentLoadResponse,
   CallAgentRequest,
@@ -728,34 +727,6 @@ export function createAgentRegistry(
             });
           }
           return defaultLoad(agent, request);
-        }
-
-        case "learn": {
-          // Get runtime if available
-          const runtime = agent.runtime?.();
-
-          // Call onLearn hook if defined
-          if (runtime?.onLearn) {
-            await runtime.onLearn({
-              tenantId: "default",
-              agentPath: request.path,
-              content: request.content,
-              scope: request.scope ?? "session",
-              category: request.category,
-              callerId: request.callerId ?? "unknown",
-            });
-
-            return {
-              success: true,
-              action: "stored",
-            } as CallAgentLearnResponse;
-          }
-
-          // No runtime or no onLearn hook - ignore
-          return {
-            success: true,
-            action: "ignored",
-          } as CallAgentLearnResponse;
         }
 
         default: {
