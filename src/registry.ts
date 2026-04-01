@@ -96,8 +96,8 @@ export interface AgentRegistry {
   /** Register an event listener (global scope — fires for all agents) */
   on<T extends EventType>(eventType: T, callback: EventCallback<T>): void;
 
-  /** Emit an event to all listeners. Used by the runtime to push lifecycle events. */
-  emit(event: AgentEvent): Promise<void>;
+  /** Emit an event to all listeners. Accepts system events and custom events from CustomEventMap. */
+  emit(event: AgentEvent | CustomEventMap[keyof CustomEventMap]): Promise<void>;
 
   /**
    * Trigger a custom event. Only accepts custom event types (not system events
@@ -485,7 +485,7 @@ export function createAgentRegistry(
       eventBus.on(eventType, callback);
     },
 
-    async emit(event: AgentEvent): Promise<void> {
+    async emit(event: AgentEvent | CustomEventMap[keyof CustomEventMap]): Promise<void> {
       await eventBus.emit(event);
     },
 
