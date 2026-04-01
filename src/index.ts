@@ -399,8 +399,16 @@ export type { ValidationResult } from "./validate.js";
 export {
   createBM25Index,
 } from "./bm25.js";
+
 export type {
   BM25Options,
   BM25Document,
   BM25Result,
 } from "./bm25.js";
+
+// Config Agent
+export { createConfigAgent } from "./agent-definitions/config.js";
+export type {
+  ConfigAgentOptions,
+  FsStore,
+} from "./agent-definitions/config.js";
