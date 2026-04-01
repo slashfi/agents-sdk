@@ -63,8 +63,7 @@ export type {
   CallAgentExecuteToolResponse,
   CallAgentInvokeRequest,
   CallAgentInvokeResponse,
-  CallAgentLearnRequest,
-  CallAgentLearnResponse,
+  CallAgentCallbackResponse,
   CallAgentLoadRequest,
   CallAgentLoadResponse,
   CallAgentRequest,
@@ -74,7 +73,6 @@ export type {
   CoreContext,
   InvokeContext,
   JsonSchema,
-  LearnContext,
   MessageContext,
   StepContext,
   TickContext,
@@ -378,6 +376,13 @@ export type { IntrospectOptions } from "./introspect.js";
 
 export {
   callAgentInputSchema,
+  callAgentRequestSchema,
+  invokeActionSchema,
+  askActionSchema,
+  executeToolActionSchema,
+  describeToolsActionSchema,
+  loadActionSchema,
+  callerTypeSchema,
   CALL_AGENT_ACTIONS,
 } from "./call-agent-schema.js";
 

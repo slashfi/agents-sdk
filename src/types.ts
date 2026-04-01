@@ -5,6 +5,7 @@
  */
 
 import type { EventCallback, EventType } from "./events.js";
+import type { AgentAction, CallerType } from "./call-agent-schema.js";
 
 /** Internal listener entry stored on agents/tools */
 export interface ListenerEntry {
@@ -262,16 +263,8 @@ export type SecurityScheme =
 // Agent Configuration
 // ============================================
 
-/**
- * Supported actions for agents.
- */
-export type AgentAction =
-  | "invoke"
-  | "ask"
-  | "execute_tool"
-  | "describe_tools"
-  | "load"
-  | "learn";
+// AgentAction is derived from the zod schema in call-agent-schema.ts
+export type { AgentAction } from "./call-agent-schema.js";
 
 /**
  * Agent configuration options.
@@ -336,7 +329,7 @@ export interface AgentConfig {
 /**
  * Caller type for context.
  */
-export type CallerType = "agent" | "user" | "system";
+export type { CallerType } from "./call-agent-schema.js";
 
 /**
  * Core context shared across all executions.
@@ -458,25 +451,6 @@ export interface MessageContext extends CoreContext {
 }
 
 /**
- * Context for the onLearn hook.
- *
- * @experimental The onLearn hook is not yet implemented.
- */
-export interface LearnContext extends CoreContext {
-  /** Content to internalize */
-  content: string;
-
-  /** How long to remember */
-  scope: "session" | "persistent" | "global";
-
-  /** Category/topic for organization */
-  category?: string;
-
-  /** Who is teaching */
-  callerId: string;
-}
-
-/**
  * Context for dynamic tool selection.
  */
 export interface ToolSelectionContext extends CoreContext {
@@ -540,14 +514,6 @@ export interface AgentRuntime {
    * @experimental Not yet implemented in the agent runtime.
    */
   onMessage?: (ctx: MessageContext) => Promise<void>;
-
-  /**
-   * Called when learning new information.
-   * Use for memory management, knowledge updates.
-   *
-   * @experimental Not yet implemented in the agent runtime.
-   */
-  onLearn?: (ctx: LearnContext) => Promise<void>;
 
   /**
    * Dynamically select which tools to expose for a request.
@@ -699,72 +665,17 @@ export interface AgentDefinition<TContext extends ToolContext = ToolContext> {
 }
 
 // ============================================
-// CallAgent Request Types
+// CallAgent Request Types (derived from zod schemas)
 // ============================================
 
-/** Base request fields */
-interface CallAgentBaseRequest {
-  /** Target agent path */
-  path: string;
-  /** Caller ID for access control */
-  callerId?: string;
-  /** Caller type */
-  callerType?: CallerType;
-  /** Additional metadata */
-  metadata?: Record<string, unknown>;
-}
-
-/** Invoke: fire-and-forget */
-export interface CallAgentInvokeRequest extends CallAgentBaseRequest {
-  action: "invoke";
-  prompt: string;
-  sessionId?: string;
-  branchAttributes?: Record<string, string>;
-}
-
-/** Ask: invoke and wait for response */
-export interface CallAgentAskRequest extends CallAgentBaseRequest {
-  action: "ask";
-  prompt: string;
-  sessionId?: string;
-  branchAttributes?: Record<string, string>;
-}
-
-/** Execute a specific tool */
-export interface CallAgentExecuteToolRequest extends CallAgentBaseRequest {
-  action: "execute_tool";
-  tool: string;
-  params?: Record<string, unknown>;
-}
-
-/** Get tool schemas */
-export interface CallAgentDescribeToolsRequest extends CallAgentBaseRequest {
-  action: "describe_tools";
-  /** Optional: filter to specific tools */
-  tools?: string[];
-}
-
-/** Load: get agent definition */
-export interface CallAgentLoadRequest extends CallAgentBaseRequest {
-  action: "load";
-}
-
-/** Learn: teach the agent something */
-export interface CallAgentLearnRequest extends CallAgentBaseRequest {
-  action: "learn";
-  content: string;
-  scope?: "session" | "persistent" | "global";
-  category?: string;
-}
-
-/** Union of all request types */
-export type CallAgentRequest =
-  | CallAgentInvokeRequest
-  | CallAgentAskRequest
-  | CallAgentExecuteToolRequest
-  | CallAgentDescribeToolsRequest
-  | CallAgentLoadRequest
-  | CallAgentLearnRequest;
+export type {
+  CallAgentRequest,
+  CallAgentInvokeRequest,
+  CallAgentAskRequest,
+  CallAgentExecuteToolRequest,
+  CallAgentDescribeToolsRequest,
+  CallAgentLoadRequest,
+} from "./call-agent-schema.js";
 
 // ============================================
 // CallAgent Response Types
@@ -817,10 +728,10 @@ export interface CallAgentLoadResponse {
   };
 }
 
-/** Success response for learn */
-export interface CallAgentLearnResponse {
+/** Callback response (fire-and-forget confirmation) */
+export interface CallAgentCallbackResponse {
   success: true;
-  action: "stored" | "updated" | "ignored";
+  callbackId: string;
 }
 
 /** Error response */
@@ -837,5 +748,5 @@ export type CallAgentResponse =
   | CallAgentExecuteToolResponse
   | CallAgentDescribeToolsResponse
   | CallAgentLoadResponse
-  | CallAgentLearnResponse
+  | CallAgentCallbackResponse
   | CallAgentErrorResponse;
