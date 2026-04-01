@@ -281,7 +281,11 @@ export type {
   ResolvedConfig,
 } from "./define-config.js";
 
-export { createRegistryConsumer } from "./registry-consumer.js";
+export {
+  createRegistryConsumer,
+  REGISTRY_TYPE_MCP,
+  REGISTRY_TYPE_HTTPS,
+} from "./registry-consumer.js";
 export type {
   RegistryConsumer,
   RegistryConsumerOptions,

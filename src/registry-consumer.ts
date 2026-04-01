@@ -42,6 +42,18 @@ import {
   normalizeRef,
   normalizeRegistry,
 } from "./define-config.js";
+// TODO: wire discoverOAuthMetadata from ./mcp-client.js into MCP server auth negotiation
+
+// ============================================
+// Registry Type Constants
+// ============================================
+
+/** Special registry type: connect directly to an MCP server */
+export const REGISTRY_TYPE_MCP = "mcp";
+/** Special registry type: raw HTTP/REST API */
+export const REGISTRY_TYPE_HTTPS = "https";
+/** Built-in registry types that bypass normal registry resolution */
+const DIRECT_REGISTRY_TYPES = new Set([REGISTRY_TYPE_MCP, REGISTRY_TYPE_HTTPS]);
 
 // ============================================
 // Registry Discovery Types
@@ -138,6 +150,190 @@ async function defaultSecretResolver(
     default:
       throw new Error(`Unsupported secret URI scheme: ${parsed.protocol}`);
   }
+}
+
+// ============================================
+// Direct MCP Resolution
+// ============================================
+
+/**
+ * List tools from a direct MCP server (registry type: 'mcp').
+ * Connects via JSON-RPC, does MCP initialize handshake, then tools/list.
+ */
+async function listFromMcpServer(
+  url: string,
+  auth: { token?: string; headers?: Record<string, string> },
+  fetchFn: typeof globalThis.fetch,
+): Promise<AgentListing[]> {
+  const serverUrl = url.replace(/\/$/, "");
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(auth.headers ?? {}),
+  };
+  if (auth.token) {
+    headers.Authorization = `Bearer ${auth.token}`;
+  }
+
+  let reqId = 0;
+  async function rpc(method: string, params?: Record<string, unknown>) {
+    const res = await fetchFn(serverUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: ++reqId,
+        method,
+        ...(params && { params }),
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`MCP call to ${serverUrl} failed: ${res.status}`);
+    }
+    const json = (await res.json()) as { result?: unknown; error?: { message: string } };
+    if (json.error) {
+      throw new Error(`MCP RPC error: ${json.error.message}`);
+    }
+    return json.result;
+  }
+
+  // Initialize handshake
+  const initResult = (await rpc("initialize", {
+    protocolVersion: "2024-11-05",
+    capabilities: {},
+    clientInfo: { name: "agents-sdk-consumer", version: "1.0.0" },
+  })) as { serverInfo?: { name?: string }; capabilities?: { registry?: unknown } };
+
+  // Send initialized notification
+  await rpc("notifications/initialized").catch(() => {});
+
+  // List tools
+  const toolsResult = (await rpc("tools/list")) as {
+    tools?: Array<{ name: string; description?: string }>;
+  };
+
+  const serverName = initResult?.serverInfo?.name ?? new URL(serverUrl).hostname;
+
+  // Return as a single agent listing with all tools
+  return [{
+    path: serverName,
+    description: `MCP server at ${serverUrl}`,
+    publisher: serverName,
+    tools: toolsResult?.tools ?? [],
+    requiresAuth: false,
+  }];
+}
+
+/**
+ * Call a tool on a direct MCP server.
+ */
+async function callMcpTool(
+  url: string,
+  toolName: string,
+  params: Record<string, unknown>,
+  auth: { token?: string; headers?: Record<string, string> },
+  fetchFn: typeof globalThis.fetch,
+): Promise<unknown> {
+  const serverUrl = url.replace(/\/$/, "");
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(auth.headers ?? {}),
+  };
+  if (auth.token) {
+    headers.Authorization = `Bearer ${auth.token}`;
+  }
+
+  const res = await fetchFn(serverUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: toolName, arguments: params },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`MCP tool call failed: ${res.status}`);
+  }
+  const json = (await res.json()) as { result?: unknown; error?: { message: string } };
+  if (json.error) {
+    throw new Error(`MCP RPC error: ${json.error.message}`);
+  }
+
+  // Extract text content
+  const result = json.result as { content?: Array<{ type: string; text?: string }> };
+  if (result?.content) {
+    const textItem = result.content.find((c) => c.type === "text");
+    if (textItem?.text) {
+      try { return JSON.parse(textItem.text); } catch { return textItem.text; }
+    }
+  }
+  return result;
+}
+
+// ============================================
+// Direct HTTPS Resolution
+// ============================================
+
+/**
+ * List available operations from an HTTPS API (registry type: 'https').
+ * Returns a single generic 'call' tool since we can't auto-discover REST endpoints
+ * without an OpenAPI spec.
+ */
+function listFromHttpsApi(url: string): AgentListing[] {
+  const hostname = new URL(url).hostname;
+  return [{
+    path: hostname,
+    description: `REST API at ${url}`,
+    publisher: hostname,
+    tools: [{
+      name: "call",
+      description: "Make an HTTP request to the API. Params: method, path, body, headers.",
+    }],
+    requiresAuth: false,
+  }];
+}
+
+/**
+ * Call an HTTPS API (registry type: 'https').
+ * Generic HTTP proxy with auth injection.
+ */
+async function callHttpsTool(
+  baseUrl: string,
+  _toolName: string,
+  params: Record<string, unknown>,
+  auth: { token?: string; headers?: Record<string, string> },
+  fetchFn: typeof globalThis.fetch,
+): Promise<unknown> {
+  const method = (params.method as string) ?? "GET";
+  const path = (params.path as string) ?? "";
+  const body = params.body as Record<string, unknown> | undefined;
+  const extraHeaders = (params.headers as Record<string, string>) ?? {};
+
+  const url = `${baseUrl.replace(/\/$/, "")}${path}`;
+  const headers: Record<string, string> = {
+    ...extraHeaders,
+    ...(auth.headers ?? {}),
+  };
+  if (auth.token) {
+    headers.Authorization = `Bearer ${auth.token}`;
+  }
+  if (body) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  const res = await fetchFn(url, {
+    method,
+    headers,
+    ...(body && { body: JSON.stringify(body) }),
+  });
+
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("json")) {
+    return res.json();
+  }
+  return res.text();
 }
 
 // ============================================
@@ -320,10 +516,42 @@ export async function createRegistryConsumer(
   // Build the consumer
   const consumer: RegistryConsumer = {
     async list(): Promise<AgentListing[]> {
-      const results = await Promise.allSettled(
+      // Collect from standard registries
+      const registryResults = await Promise.allSettled(
         resolvedRegistries.map(listFromRegistry),
       );
-      return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+      const listings = registryResults.flatMap((r) =>
+        r.status === "fulfilled" ? r.value : [],
+      );
+
+      // Also collect from direct MCP/HTTPS refs
+      for (const ref of resolvedRefs) {
+        if (!DIRECT_REGISTRY_TYPES.has(ref.registry)) continue;
+        const refEntry = (config.refs ?? []).find((r) => {
+          const n = normalizeRef(r);
+          return n.name === ref.name;
+        });
+        const url =
+          typeof refEntry === "object" ? refEntry?.url : undefined;
+        if (!url) continue;
+
+        try {
+          if (ref.registry === REGISTRY_TYPE_MCP) {
+            const mcpListings = await listFromMcpServer(
+              url,
+              { token: options.token },
+              fetchFn,
+            );
+            listings.push(...mcpListings);
+          } else if (ref.registry === REGISTRY_TYPE_HTTPS) {
+            listings.push(...listFromHttpsApi(url));
+          }
+        } catch {
+          // Skip unreachable direct refs during list
+        }
+      }
+
+      return listings;
     },
 
     refs(): ResolvedRef[] {
@@ -346,6 +574,33 @@ export async function createRegistryConsumer(
         );
       }
 
+      // Direct MCP ref — bypass registry, call MCP server directly
+      if (ref.registry === REGISTRY_TYPE_MCP) {
+        const refEntry = (config.refs ?? []).find((r) => {
+          const n = normalizeRef(r);
+          return n.name === ref.name;
+        });
+        const url = typeof refEntry === "object" ? refEntry?.url : undefined;
+        if (!url) {
+          throw new Error(`MCP ref "${refName}" has no url`);
+        }
+        return callMcpTool(url, tool, params, { token: options.token }, fetchFn);
+      }
+
+      // Direct HTTPS ref — bypass registry, call REST API directly
+      if (ref.registry === REGISTRY_TYPE_HTTPS) {
+        const refEntry = (config.refs ?? []).find((r) => {
+          const n = normalizeRef(r);
+          return n.name === ref.name;
+        });
+        const url = typeof refEntry === "object" ? refEntry?.url : undefined;
+        if (!url) {
+          throw new Error(`HTTPS ref "${refName}" has no url`);
+        }
+        return callHttpsTool(url, tool, params, { token: options.token }, fetchFn);
+      }
+
+      // Standard registry ref
       const registry = resolvedRegistries.find(
         (r) => r.url === ref.registry || r.name === ref.registry,
       );
