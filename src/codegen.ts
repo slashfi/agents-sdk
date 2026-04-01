@@ -31,6 +31,7 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { JsonSchema } from "./types.js";
+import { discoverOAuthMetadata, type OAuthServerMetadata } from "./mcp-client.js";
 
 // ============================================
 // Types
@@ -108,6 +109,9 @@ export interface CodegenResult {
 
   /** All generated file paths */
   files: string[];
+
+  /** OAuth server metadata (if discovered via .well-known/oauth-authorization-server) */
+  oauth?: OAuthServerMetadata;
 }
 
 // ============================================
@@ -614,6 +618,23 @@ function createSseTransport(source: {
 // Source Parsing
 // ============================================
 
+/**
+ * Extract the base URL from a server source (for OAuth discovery).
+ * Returns null for stdio/command-based sources.
+ */
+function resolveServerUrl(source: ServerSource): string | null {
+  if (typeof source === "string") {
+    if (source.startsWith("http://") || source.startsWith("https://")) {
+      return source.replace(/\/sse$/, "");
+    }
+    return null;
+  }
+  if ("url" in source) {
+    return source.url.replace(/\/sse$/, "");
+  }
+  return null;
+}
+
 function parseServerSource(source: ServerSource): McpTransport {
   if (typeof source === "string") {
     // URL -> HTTP or SSE transport
@@ -1113,6 +1134,7 @@ export interface CodegenManifest {
   serverSource: ServerSource;
   serverInfo: McpServerInfo;
   tools: { name: string; description?: string }[];
+  oauth?: OAuthServerMetadata;
   generatedAt: string;
 }
 
@@ -1121,12 +1143,14 @@ function generateManifest(
   serverInfo: McpServerInfo,
   tools: McpToolDefinition[],
   agentPath: string,
+  oauth?: OAuthServerMetadata | null,
 ): string {
   const manifest: CodegenManifest = {
     agentPath,
     serverSource,
     serverInfo,
     tools: tools.map((t) => ({ name: t.name, description: t.description })),
+    ...(oauth ? { oauth } : {}),
     generatedAt: new Date().toISOString(),
   };
   return JSON.stringify(manifest, null, 2) + "\n";
@@ -1204,6 +1228,13 @@ export async function codegen(options: CodegenOptions): Promise<CodegenResult> {
     );
   }
 
+  // 3.5. Discover OAuth metadata (for URL-based servers)
+  let oauth: OAuthServerMetadata | null = null;
+  const serverUrl = resolveServerUrl(options.server);
+  if (serverUrl) {
+    oauth = await discoverOAuthMetadata(serverUrl);
+  }
+
   // 4. Derive agent path
   const agentPath =
     options.agentPath ??
@@ -1253,7 +1284,7 @@ export async function codegen(options: CodegenOptions): Promise<CodegenResult> {
   }
 
   // 11. Generate manifest (for `agents-sdk use`)
-  const manifest = generateManifest(options.server, serverInfo, tools, agentPath);
+  const manifest = generateManifest(options.server, serverInfo, tools, agentPath, oauth);
   writeFileSync(join(outDir, ".codegen-manifest.json"), manifest);
   files.push(".codegen-manifest.json");
 
@@ -1263,6 +1294,7 @@ export async function codegen(options: CodegenOptions): Promise<CodegenResult> {
     toolCount: tools.length,
     toolFiles,
     files,
+    ...(oauth ? { oauth } : {}),
   };
 }
 

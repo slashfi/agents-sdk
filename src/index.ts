@@ -211,7 +211,8 @@ export type {
 
 // Postgres Secret Store
 
-// Integrations
+// Integrations (DEPRECATED — use createConfigAgent + refs instead)
+/** @deprecated Use createConfigAgent instead */
 export {
   createIntegrationsAgent,
   createInMemoryIntegrationStore,
@@ -280,7 +281,11 @@ export type {
   ResolvedConfig,
 } from "./define-config.js";
 
-export { createRegistryConsumer } from "./registry-consumer.js";
+export {
+  createRegistryConsumer,
+  REGISTRY_TYPE_MCP,
+  REGISTRY_TYPE_HTTPS,
+} from "./registry-consumer.js";
 export type {
   RegistryConsumer,
   RegistryConsumerOptions,
@@ -288,6 +293,25 @@ export type {
   AgentListing,
   SecretResolver,
 } from "./registry-consumer.js";
+
+// PKCE
+export {
+  generateCodeVerifier,
+  generateCodeChallenge,
+  generatePkcePair,
+} from "./pkce.js";
+
+// MCP Client Auth (OAuth utilities for connecting to MCP servers/registries)
+export {
+  discoverOAuthMetadata,
+  dynamicClientRegistration,
+  buildOAuthAuthorizeUrl,
+  exchangeCodeForTokens,
+  refreshAccessToken as refreshMcpAccessToken,
+} from "./mcp-client.js";
+export type {
+  OAuthServerMetadata,
+} from "./mcp-client.js";
 
 // Codegen
 export { codegen, useAgent, listAgentTools } from "./codegen.js";
