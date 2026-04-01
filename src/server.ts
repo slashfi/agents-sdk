@@ -188,6 +188,8 @@ export interface ResolvedAuth {
   callerType: "agent" | "user" | "system";
   scopes: string[];
   isRoot: boolean;
+  /** All JWT claims from the verified token (passthrough) */
+  claims: Record<string, unknown>;
 }
 
 // ============================================
@@ -296,6 +298,7 @@ export async function resolveAuth(
       callerType: "system",
       scopes: ["*"],
       isRoot: true,
+      claims: {},
     };
   }
 
@@ -311,6 +314,7 @@ export async function resolveAuth(
             callerType: "agent",
             scopes: verified.scopes ?? ["*"],
             isRoot: false,
+            claims: verified as unknown as Record<string, unknown>,
           };
         }
       } catch {}
@@ -342,6 +346,7 @@ export async function resolveAuth(
               callerType: isSystem ? "system" : "agent",
               scopes,
               isRoot: isSystem,
+              claims: verified as unknown as Record<string, unknown>,
             };
           }
         }
@@ -373,6 +378,7 @@ export async function resolveAuth(
               callerType: "agent",
               scopes: verified.scopes,
               isRoot: false,
+              claims: verified as unknown as Record<string, unknown>,
             };
           }
         }
@@ -393,6 +399,7 @@ export async function resolveAuth(
     callerType: "agent",
     scopes: token.scopes,
     isRoot: false,
+    claims: {},
   };
 }
 
@@ -1033,6 +1040,7 @@ export function createAgentServer(
                 callerType: (actorType as any) ?? "agent",
                 scopes: ["*"],
                 isRoot: false,
+                claims: {},
               };
             }
             return null;
