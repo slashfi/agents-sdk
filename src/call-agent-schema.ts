@@ -142,7 +142,8 @@ export const callAgentToolInputSchema = z.object({
  *
  * Fully derived from the zod schemas — no hand-written JSON Schema.
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const callAgentInputSchema = zodToJsonSchema(
-  callAgentToolInputSchema as z.ZodType,
+  callAgentToolInputSchema as any,
   { target: "openAi" }
 );
