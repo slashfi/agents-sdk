@@ -123,64 +123,26 @@ export const CALL_AGENT_ACTIONS: AgentAction[] =
   );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// JSON Schema for MCP (flat, for LLM tool definitions)
+// JSON Schema for MCP (derived from zod)
 // ─────────────────────────────────────────────────────────────────────────────
+
+import { zodToJsonSchema } from "zod-to-json-schema";
+
+/**
+ * Zod schema for the full MCP tool input (wraps request in an outer object).
+ * This is the schema that gets converted to JSON Schema for the LLM.
+ */
+export const callAgentToolInputSchema = z.object({
+  request: callAgentRequestSchema.describe("The call request"),
+});
 
 /**
  * The MCP input schema for the `call_agent` tool.
  * This is what the LLM sees via `tools/list`.
  *
- * MCP uses flat JSON Schema (no discriminated unions), so we flatten
- * the zod schemas into a single object with all optional fields
- * plus the required `action` and `path`.
+ * Fully derived from the zod schemas — no hand-written JSON Schema.
  */
-export const callAgentInputSchema = {
-  type: "object" as const,
-  properties: {
-    request: {
-      type: "object" as const,
-      description: "The call request",
-      properties: {
-        action: {
-          type: "string" as const,
-          enum: [...CALL_AGENT_ACTIONS],
-          description: "Action to perform",
-        },
-        path: {
-          type: "string" as const,
-          description: "Agent path (e.g., '@my-agent')",
-        },
-        tool: {
-          type: "string" as const,
-          description: "Tool name to call",
-        },
-        tools: {
-          type: "array" as const,
-          items: { type: "string" as const },
-          description:
-            "Tool names to describe (for describe_tools). Omit to list all.",
-        },
-        params: {
-          type: "object" as const,
-          description: "Parameters for the tool",
-          additionalProperties: true,
-        },
-        prompt: {
-          type: "string" as const,
-          description: "Prompt text (for invoke/ask actions)",
-        },
-        sessionId: {
-          type: "string" as const,
-          description: "Session ID for continuity (omit for new session)",
-        },
-        branchAttributes: {
-          type: "object" as const,
-          description: "Key-value attributes to set on the new branch",
-          additionalProperties: { type: "string" as const },
-        },
-      },
-      required: ["action", "path"] as const,
-    },
-  },
-  required: ["request"] as const,
-};
+export const callAgentInputSchema = zodToJsonSchema(
+  callAgentToolInputSchema,
+  { target: "openAi" }
+);
