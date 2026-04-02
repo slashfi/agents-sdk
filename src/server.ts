@@ -1375,7 +1375,7 @@ export function createAgentServer(
             tool: body.tool,
             params: body.params ?? {},
             callerId: effectiveAuth?.callerId,
-            callerType: effectiveAuth?.callerType ?? "external",
+            callerType: effectiveAuth?.callerType ?? "system",
             metadata: effectiveAuth
               ? { scopes: effectiveAuth.scopes, isRoot: effectiveAuth.isRoot }
               : undefined,
@@ -1458,7 +1458,7 @@ export function createAgentServer(
               tool: name,
               params: args ?? {},
               callerId: effectiveAuth?.callerId,
-              callerType: effectiveAuth?.callerType ?? "external",
+              callerType: effectiveAuth?.callerType ?? "system",
               metadata: effectiveAuth
                 ? {
                     scopes: effectiveAuth.scopes,
