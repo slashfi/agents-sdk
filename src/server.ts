@@ -1230,7 +1230,7 @@ export function createAgentServer(
           jwks_uri: `${baseUrl}/.well-known/jwks.json`,
           token_endpoint: `${baseUrl}/oauth/token`,
           agents_endpoint: `${baseUrl}/list`,
-          call_endpoint: `${baseUrl}/call`,
+          call_endpoint: baseUrl,
           supported_grant_types: ["client_credentials", "jwt_exchange"],
           authorization_endpoint: `${baseUrl}/oauth/authorize`,
           ...(oidcSignIn
