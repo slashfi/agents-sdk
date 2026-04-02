@@ -474,13 +474,7 @@ export async function createRegistryConsumer(
 
   // Normalize refs
   const resolvedRefs: ResolvedRef[] = (config.refs ?? []).map((entry) => {
-    const normalized = normalizeRef(entry);
-    return {
-      ref: normalized.ref,
-      name: normalized.name,
-      registry: normalized.registry ?? resolvedRegistries[0]?.url ?? "unknown",
-      config: normalized.config,
-    };
+    return normalizeRef(entry);
   });
 
   // Cache for registry configurations
@@ -592,24 +586,24 @@ export async function createRegistryConsumer(
 
       // Also collect from direct MCP/HTTPS refs
       for (const ref of resolvedRefs) {
-        if (!DIRECT_REGISTRY_TYPES.has(ref.registry)) continue;
+        if (!ref.scheme || !DIRECT_REGISTRY_TYPES.has(ref.scheme)) continue;
         const refEntry = (config.refs ?? []).find((r) => {
           const n = normalizeRef(r);
           return n.name === ref.name;
         });
         const url =
-          typeof refEntry === "object" ? refEntry?.url : undefined;
+          refEntry?.url;
         if (!url) continue;
 
         try {
-          if (ref.registry === REGISTRY_TYPE_MCP) {
+          if (ref.scheme === REGISTRY_TYPE_MCP) {
             const mcpListings = await listFromMcpServer(
               url,
               { token: options.token },
               fetchFn,
             );
             listings.push(...mcpListings);
-          } else if (ref.registry === REGISTRY_TYPE_HTTPS) {
+          } else if (ref.scheme === REGISTRY_TYPE_HTTPS) {
             listings.push(...listFromHttpsApi(url));
           }
         } catch {
@@ -641,12 +635,12 @@ export async function createRegistryConsumer(
       }
 
       // Direct MCP ref — bypass registry, call MCP server directly
-      if (ref.registry === REGISTRY_TYPE_MCP) {
+      if (ref.scheme === REGISTRY_TYPE_MCP) {
         const refEntry = (config.refs ?? []).find((r) => {
           const n = normalizeRef(r);
           return n.name === ref.name;
         });
-        const url = typeof refEntry === "object" ? refEntry?.url : undefined;
+        const url = refEntry?.url;
         if (!url) {
           throw new Error(`MCP ref "${refName}" has no url`);
         }
@@ -654,12 +648,12 @@ export async function createRegistryConsumer(
       }
 
       // Direct HTTPS ref — bypass registry, call REST API directly
-      if (ref.registry === REGISTRY_TYPE_HTTPS) {
+      if (ref.scheme === REGISTRY_TYPE_HTTPS) {
         const refEntry = (config.refs ?? []).find((r) => {
           const n = normalizeRef(r);
           return n.name === ref.name;
         });
-        const url = typeof refEntry === "object" ? refEntry?.url : undefined;
+        const url = refEntry?.url;
         if (!url) {
           throw new Error(`HTTPS ref "${refName}" has no url`);
         }
@@ -667,12 +661,15 @@ export async function createRegistryConsumer(
       }
 
       // Standard registry ref
-      const registry = resolvedRegistries.find(
-        (r) => r.url === ref.registry || r.name === ref.registry,
-      );
+      const registryUrl = ref.sourceRegistry?.url;
+      const registry = registryUrl
+        ? resolvedRegistries.find(
+            (r) => r.url === registryUrl || r.name === registryUrl,
+          )
+        : resolvedRegistries[0]; // Default to first registry if no source specified
       if (!registry) {
         throw new Error(
-          `Registry "${ref.registry}" not found for ref "${refName}"`,
+          `Registry not found for ref "${refName}"${registryUrl ? ` (source: ${registryUrl})` : ''}`,
         );
       }
 

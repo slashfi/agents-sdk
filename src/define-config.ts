@@ -56,10 +56,8 @@ export interface RegistryEntry {
 /** Inline config for a ref — values can be literals or secret URLs */
 export type RefConfig = Record<string, string | number | boolean>;
 
-/** A ref can be a simple string or a full object */
-export type RefEntry =
-  | string
-  | {
+/** A ref entry — describes how to connect to an agent */
+export type RefEntry = {
       /** Agent definition path (resolved from registries) */
       ref: string;
 
@@ -77,9 +75,6 @@ export type RefEntry =
 
       /** Per-instance config (secrets as URIs, literals as values) */
       config?: RefConfig;
-
-      /** Override the registry to resolve from */
-      registry?: string;
 
       /** The registry where this ref was discovered */
       sourceRegistry?: { url: string; agentPath: string };
@@ -120,31 +115,13 @@ export interface ResolvedRegistry {
 }
 
 /** A normalized ref entry (after resolution) */
-export interface ResolvedRef {
-  /** Original ref name from the definition */
-  ref: string;
-
+/** A resolved ref — RefEntry with computed fields filled in */
+export type ResolvedRef = RefEntry & {
   /** Local name (alias or ref name) */
   name: string;
-
-  /** Connection scheme */
-  scheme?: 'mcp' | 'https' | 'registry';
-
-  /** Direct URL to the agent */
-  url?: string;
-
-  /** Headers to inject on every request */
-  headers?: Record<string, string>;
-
-  /** Which registry this was resolved from */
-  registry: string;
-
-  /** The registry where this ref was discovered */
-  sourceRegistry?: { url: string; agentPath: string };
-
-  /** Resolved config (secret URLs NOT resolved — kept as URLs) */
+  /** Resolved config (always present) */
   config: RefConfig;
-}
+};
 
 /** The serialized/indexed output stored in VCS */
 export interface ResolvedConfig {
@@ -169,20 +146,11 @@ export interface ResolvedConfig {
 // ============================================
 
 /** Normalize a ref entry to its full form */
-export function normalizeRef(entry: RefEntry): {
-  ref: string;
-  name: string;
-  config: RefConfig;
-  registry?: string;
-} {
-  if (typeof entry === "string") {
-    return { ref: entry, name: entry, config: {} };
-  }
+export function normalizeRef(entry: RefEntry): ResolvedRef {
   return {
-    ref: entry.ref,
+    ...entry,
     name: entry.as ?? entry.ref,
     config: entry.config ?? {},
-    registry: entry.registry,
   };
 }
 
