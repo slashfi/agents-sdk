@@ -537,17 +537,13 @@ export async function createRegistryConsumer(
     }));
   }
 
-  // Call a tool via a registry
+  // Call a tool via a registry using MCP tools/call with call_agent
   async function callTool(
     registry: ResolvedRegistry,
     agentPath: string,
     tool: string,
     params: Record<string, unknown>,
   ): Promise<unknown> {
-    const configuration = await discover(registry.url);
-    const callUrl =
-      configuration.call_endpoint ?? `${registry.url.replace(/\/$/, "")}/call`;
-
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
@@ -557,10 +553,25 @@ export async function createRegistryConsumer(
       headers.Authorization = `Bearer ${options.token}`;
     }
 
-    const res = await fetchFn(callUrl, {
+    const res = await fetchFn(registry.url, {
       method: "POST",
       headers,
-      body: JSON.stringify({ path: agentPath, tool, params }),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "call_agent",
+          arguments: {
+            request: JSON.stringify({
+              action: "execute_tool",
+              path: agentPath,
+              tool,
+              params,
+            }),
+          },
+        },
+      }),
     });
 
     if (!res.ok) {
@@ -570,7 +581,27 @@ export async function createRegistryConsumer(
       );
     }
 
-    return res.json();
+    const json = (await res.json()) as {
+      result?: { content?: Array<{ text?: string }> };
+      error?: { message: string };
+    };
+
+    if (json.error) {
+      throw new Error(
+        `Tool call failed (${agentPath}/${tool}): ${json.error.message}`,
+      );
+    }
+
+    // Parse the tool result text content
+    const text = json.result?.content?.[0]?.text;
+    if (text) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
+    }
+    return json.result;
   }
 
   // Build the consumer

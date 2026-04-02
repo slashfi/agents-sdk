@@ -42,7 +42,6 @@ import {
   verifyJwtFromIssuer,
   verifyJwtLocal,
 } from "./jwt.js";
-import { type OIDCProviderConfig, createOIDCSignIn } from "./oidc-signin.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 
@@ -119,7 +118,6 @@ export interface AgentServerOptions {
   /** Key store for managed key rotation (if provided, uses createKeyManager instead of simple key gen) */
   keyStore?: import("./key-manager.js").KeyStore;
   /** OIDC provider for user sign-in (authorization code flow) */
-  oidcProvider?: OIDCProviderConfig;
   /**
    * Registry capabilities — advertised in MCP initialize response.
    * When set, this server identifies as an agent registry (superset of MCP).
@@ -525,10 +523,6 @@ export function createAgentServer(
     oauthIdentityProvider,
   } = options;
 
-  // OIDC sign-in handler (if configured)
-  const oidcSignIn = options.oidcProvider
-    ? createOIDCSignIn(options.oidcProvider)
-    : null;
 
   // Signing keys for JWKS-based auth
   const serverSigningKeys: SigningKey[] = [];
@@ -1076,19 +1070,6 @@ export function createAgentServer(
         return cors ? addCors(res) : res;
       }
 
-      // ── OIDC Sign-In (authorize + callback) ──
-      if (
-        oidcSignIn &&
-        (path === "/signin/authorize" || path === "/signin/callback")
-      ) {
-        const baseUrl = resolveBaseUrl(req);
-        const res = await oidcSignIn.handleRequest(req, {
-          baseUrl: baseUrl + basePath,
-          signingKey: serverSigningKeys[0],
-          issuerUrl: baseUrl,
-        });
-        if (res) return cors ? addCors(res) : res;
-      }
 
       // ── GET /oauth/authorize → Identity linking redirect (browser flow) ──
       if (path === "/oauth/authorize" && req.method === "GET") {
@@ -1230,12 +1211,8 @@ export function createAgentServer(
           jwks_uri: `${baseUrl}/.well-known/jwks.json`,
           token_endpoint: `${baseUrl}/oauth/token`,
           agents_endpoint: `${baseUrl}/list`,
-          call_endpoint: `${baseUrl}/call`,
           supported_grant_types: ["client_credentials", "jwt_exchange"],
           authorization_endpoint: `${baseUrl}/oauth/authorize`,
-          ...(oidcSignIn
-            ? { signin_endpoint: `${baseUrl}/signin/authorize` }
-            : {}),
         });
         return cors ? addCors(res) : res;
       }
@@ -1345,60 +1322,6 @@ export function createAgentServer(
           })),
         });
         return cors ? addCors(res) : res;
-      }
-
-      // ── POST /call → Execute a tool on an agent (REST endpoint) ──
-      // Used by createRegistryConsumer.call() — accepts { path, tool, params }
-      // and routes to the agent's tool handler.
-      if (path === "/call" && req.method === "POST") {
-        const body = (await req.json()) as {
-          path: string;
-          tool: string;
-          params?: Record<string, unknown>;
-        };
-        const agent = resolveAgent(registry, body.path);
-        if (!agent || !canSeeAgent(agent, effectiveAuth)) {
-          const res = jsonResponse(
-            { error: "not_found", message: `Agent not found: ${body.path}` },
-            404,
-          );
-          return cors ? addCors(res) : res;
-        }
-
-        const visibleTools = getVisibleTools(agent, effectiveAuth);
-        if (!visibleTools.find((t) => t.name === body.tool)) {
-          const res = jsonResponse(
-            { error: "not_found", message: `Tool not found: ${body.tool}` },
-            404,
-          );
-          return cors ? addCors(res) : res;
-        }
-
-        try {
-          const result = await registry.call({
-            action: "execute_tool",
-            path: agent.path,
-            tool: body.tool,
-            params: body.params ?? {},
-            callerId: effectiveAuth?.callerId,
-            callerType: effectiveAuth?.callerType ?? "system",
-            metadata: effectiveAuth
-              ? { scopes: effectiveAuth.scopes, isRoot: effectiveAuth.isRoot }
-              : undefined,
-          });
-          const res = jsonResponse({ success: true, result });
-          return cors ? addCors(res) : res;
-        } catch (err) {
-          const res = jsonResponse(
-            {
-              success: false,
-              error:
-                err instanceof Error ? err.message : "Tool execution failed",
-            },
-            500,
-          );
-          return cors ? addCors(res) : res;
-        }
       }
 
       // ── POST /agents/{name} → Scoped MCP call to single agent ──

@@ -21,10 +21,6 @@ import {
   isSecretUri,
 } from "./index";
 import type { AgentServer, ConsumerConfig } from "./index";
-import {
-  type MockOIDCServer,
-  startMockOIDC,
-} from "./test-utils/mock-oidc-server";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // registry.slash.com — the public agent registry
@@ -122,8 +118,6 @@ describe("atlas ↔ registry E2E", () => {
   let secretsDir: string;
   let authToken: string;
 
-  // --- OIDC provider ---
-  let oidc: MockOIDCServer;
 
   beforeAll(async () => {
     // 1. Write secrets to disk (simulating atlas.slash.com's secret store)
@@ -132,8 +126,6 @@ describe("atlas ↔ registry E2E", () => {
     await writeFile(join(secretsDir, "notion-client-secret"), "notion_cs_prod");
     process.env.LINEAR_API_KEY = "lin_key_prod";
 
-    // 2. Start mock OIDC provider
-    oidc = await startMockOIDC({ port: 19891 });
 
     // 3. Start registry.slash.com
     const reg = createAgentRegistry();
@@ -143,11 +135,6 @@ describe("atlas ↔ registry E2E", () => {
 
     registry = createAgentServer(reg, {
       port: REGISTRY_PORT,
-      oidcProvider: {
-        issuer: oidc.issuer,
-        clientId: oidc.clientId,
-        clientSecret: oidc.clientSecret,
-      },
     });
     await registry.initKeys();
     await registry.start();
@@ -161,7 +148,6 @@ describe("atlas ↔ registry E2E", () => {
 
   afterAll(async () => {
     await registry?.stop?.();
-    await oidc?.stop();
     await rm(secretsDir, { recursive: true, force: true });
     process.env.LINEAR_API_KEY = undefined;
   });
@@ -281,36 +267,6 @@ describe("atlas ↔ registry E2E", () => {
     expect(result).toBeDefined();
   });
 
-  // ── OIDC sign-in flow ──────────────────────────────────────────
-
-  test("OIDC sign-in returns JWT usable by consumer", async () => {
-    // Step 1: authorize
-    const r1 = await fetch(
-      `${REGISTRY_URL}/signin/authorize?redirect_uri=http://localhost:9999/done`,
-      { redirect: "manual" },
-    );
-    expect(r1.status).toBe(302);
-
-    // Step 2: OIDC provider
-    const r2 = await fetch(r1.headers.get("location")!, { redirect: "manual" });
-    expect(r2.status).toBe(302);
-
-    // Step 3: callback → JWT
-    const r3 = await fetch(r2.headers.get("location")!, { redirect: "manual" });
-    expect(r3.status).toBe(302);
-    const jwt = new URL(r3.headers.get("location")!).searchParams.get("token")!;
-    expect(jwt.split(".")).toHaveLength(3);
-
-    // Step 4: JWT works with consumer
-    const consumer = await createRegistryConsumer(
-      { registries: [REGISTRY_URL] },
-      { token: jwt },
-    );
-    const agents = await consumer.list();
-    expect(agents.map((a) => a.path)).toContain("notion");
-  });
-
-  // ── Auth guards ────────────────────────────────────────────────
 
   test("tools/call without auth returns 401", async () => {
     const res = await fetch(`${REGISTRY_URL}/agents/notion`, {
