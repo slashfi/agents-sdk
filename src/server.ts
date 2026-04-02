@@ -150,6 +150,8 @@ export interface AgentServer {
   registry: AgentRegistry;
   /** Sign a JWT with the server's signing key (for outbound calls) */
   signJwt(claims: Record<string, unknown>): Promise<string>;
+  /** Resolve auth from a request using this server's auth config + signing keys */
+  resolveAuth(req: Request): Promise<ResolvedAuth | null>;
   /** Dynamically add a trusted JWT issuer at runtime */
   addTrustedIssuer(issuerUrl: string, scopes?: string[]): void;
 }
@@ -1587,6 +1589,13 @@ export function createAgentServer(
         options.serverName ?? "agents-sdk",
         "1h",
       );
+    },
+
+    async resolveAuth(req: Request): Promise<ResolvedAuth | null> {
+      return resolveAuth(req, authConfig, {
+        signingKeys: serverSigningKeys,
+        trustedIssuers: configTrustedIssuers,
+      });
     },
 
     addTrustedIssuer(issuerUrl: string, scopes?: string[]): void {
