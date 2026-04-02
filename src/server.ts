@@ -1309,6 +1309,8 @@ export function createAgentServer(
             name: agent.config?.name,
             description:
               agent.config?.description ?? agent.entrypoint?.slice(0, 200),
+            mode: agent.mode ?? 'direct',
+            ...(agent.upstream && { upstream: agent.upstream }),
             tools: getVisibleTools(agent, effectiveAuth).map((t) => ({
               name: t.name,
               description: t.description,
@@ -1334,6 +1336,8 @@ export function createAgentServer(
           name: agent.config?.name,
           description:
             agent.config?.description ?? agent.entrypoint?.slice(0, 200),
+          mode: agent.mode ?? 'direct',
+          ...(agent.upstream && { upstream: agent.upstream }),
           tools: getVisibleTools(agent, effectiveAuth).map((t) => ({
             name: t.name,
             description: t.description,

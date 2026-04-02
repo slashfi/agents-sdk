@@ -85,7 +85,7 @@ describe("Registry Consumer E2E", () => {
   test("list agents from registry", async () => {
     const config = {
       registries: [`http://localhost:${PORT}`],
-      refs: ["@math", "@echo"],
+      refs: [{ ref: "@math" }, { ref: "@echo" }],
     };
 
     const consumer = await createRegistryConsumer(config);
@@ -107,7 +107,7 @@ describe("Registry Consumer E2E", () => {
     const config = {
       registries: [`http://localhost:${PORT}`],
       refs: [
-        "@math",
+        { ref: "@math" },
         { ref: "@echo", as: "my-echo", config: { greeting: "hello" } },
       ],
     };
@@ -126,7 +126,7 @@ describe("Registry Consumer E2E", () => {
   test("call a tool on a ref", async () => {
     const config = {
       registries: [`http://localhost:${PORT}`],
-      refs: ["@math"],
+      refs: [{ ref: "@math" }],
     };
 
     const consumer = await createRegistryConsumer(config);
@@ -138,7 +138,7 @@ describe("Registry Consumer E2E", () => {
   test("call throws on unknown ref", async () => {
     const config = {
       registries: [`http://localhost:${PORT}`],
-      refs: ["@math"],
+      refs: [{ ref: "@math" }],
     };
 
     const consumer = await createRegistryConsumer(config);
@@ -170,7 +170,7 @@ describe("Registry Consumer E2E", () => {
   test("index produces serialized config", async () => {
     const config = {
       registries: [`http://localhost:${PORT}`],
-      refs: ["@math", "@echo"],
+      refs: [{ ref: "@math" }, { ref: "@echo" }],
       meta: { owner: "test", description: "test config" },
     };
 
@@ -192,7 +192,7 @@ describe("Registry Consumer E2E", () => {
   test("available returns agents not in config", async () => {
     const config = {
       registries: [`http://localhost:${PORT}`],
-      refs: ["@math"],
+      refs: [{ ref: "@math" }],
     };
 
     const consumer = await createRegistryConsumer(config);
@@ -228,8 +228,8 @@ describe("Registry Consumer E2E", () => {
 import { isSecretUrl, normalizeRef, normalizeRegistry } from "./define-config";
 
 describe("normalizeRef", () => {
-  test("string ref", () => {
-    const result = normalizeRef("notion");
+  test("simple ref", () => {
+    const result = normalizeRef({ ref: "notion" });
     expect(result).toEqual({
       ref: "notion",
       name: "notion",

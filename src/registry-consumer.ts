@@ -38,7 +38,7 @@ import type {
   ResolvedRegistry,
 } from "./define-config.js";
 import {
-  isSecretUrl,
+  isSecretUri,
   normalizeRef,
   normalizeRegistry,
 } from "./define-config.js";
@@ -54,6 +54,72 @@ export const REGISTRY_TYPE_MCP = "mcp";
 export const REGISTRY_TYPE_HTTPS = "https";
 /** Built-in registry types that bypass normal registry resolution */
 const DIRECT_REGISTRY_TYPES = new Set([REGISTRY_TYPE_MCP, REGISTRY_TYPE_HTTPS]);
+
+/** Regex for {{secret-uri}} template syntax */
+const TEMPLATE_REGEX = /\{\{(.+?)\}\}/g;
+
+/** Check if a string contains {{...}} template expressions */
+function hasTemplates(value: string): boolean {
+  return TEMPLATE_REGEX.test(value);
+}
+
+/**
+ * Resolve {{secret-uri}} templates in a string.
+ * E.g. "Bearer {{file:///.secrets/key}}" → "Bearer actual-key-value"
+ */
+async function resolveTemplateString(
+  value: string,
+  resolver: SecretResolver,
+  auth?: { token?: string },
+): Promise<string> {
+  // Reset regex state
+  TEMPLATE_REGEX.lastIndex = 0;
+  const matches = [...value.matchAll(/\{\{(.+?)\}\}/g)];
+  if (matches.length === 0) return value;
+
+  let result = value;
+  for (const match of matches) {
+    const uri = match[1]!.trim();
+    const resolved = await resolver(uri, auth);
+    result = result.replace(match[0], resolved);
+  }
+  return result;
+}
+
+/**
+ * Recursively resolve {{secret-uri}} templates in an object.
+ * Walks all string values at any depth.
+ */
+async function resolveTemplates<T>(
+  obj: T,
+  resolver: SecretResolver,
+  auth?: { token?: string },
+): Promise<T> {
+  if (typeof obj === 'string') {
+    // Handle {{secret-uri}} templates
+    if (hasTemplates(obj)) {
+      return (await resolveTemplateString(obj, resolver, auth)) as T;
+    }
+    // Handle raw secret URIs (backward compat)
+    if (isSecretUri(obj)) {
+      return (await resolver(obj, auth)) as T;
+    }
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return (await Promise.all(
+      obj.map((item) => resolveTemplates(item, resolver, auth)),
+    )) as T;
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = await resolveTemplates(value, resolver, auth);
+    }
+    return result as T;
+  }
+  return obj;
+}
 
 // ============================================
 // Registry Discovery Types
@@ -378,10 +444,10 @@ export interface RegistryConsumer {
   /** Resolve a secret URL to its value */
   resolveSecret(url: string): Promise<string>;
 
-  /** Resolve all secret URLs in a config object, returning resolved values */
+  /** Resolve {{secret-uri}} templates in a config object (recursive) */
   resolveConfig(
     config: RefConfig,
-  ): Promise<Record<string, string | number | boolean>>;
+  ): Promise<RefConfig>;
 
   /** Produce the indexed/serialized config output */
   index(): ResolvedConfig;
@@ -408,13 +474,7 @@ export async function createRegistryConsumer(
 
   // Normalize refs
   const resolvedRefs: ResolvedRef[] = (config.refs ?? []).map((entry) => {
-    const normalized = normalizeRef(entry);
-    return {
-      ref: normalized.ref,
-      name: normalized.name,
-      registry: normalized.registry ?? resolvedRegistries[0]?.url ?? "unknown",
-      config: normalized.config,
-    };
+    return normalizeRef(entry);
   });
 
   // Cache for registry configurations
@@ -526,25 +586,19 @@ export async function createRegistryConsumer(
 
       // Also collect from direct MCP/HTTPS refs
       for (const ref of resolvedRefs) {
-        if (!DIRECT_REGISTRY_TYPES.has(ref.registry)) continue;
-        const refEntry = (config.refs ?? []).find((r) => {
-          const n = normalizeRef(r);
-          return n.name === ref.name;
-        });
-        const url =
-          typeof refEntry === "object" ? refEntry?.url : undefined;
-        if (!url) continue;
+        if (!ref.scheme || !DIRECT_REGISTRY_TYPES.has(ref.scheme)) continue;
+        if (!ref.url) continue;
 
         try {
-          if (ref.registry === REGISTRY_TYPE_MCP) {
+          if (ref.scheme === REGISTRY_TYPE_MCP) {
             const mcpListings = await listFromMcpServer(
-              url,
+              ref.url,
               { token: options.token },
               fetchFn,
             );
             listings.push(...mcpListings);
-          } else if (ref.registry === REGISTRY_TYPE_HTTPS) {
-            listings.push(...listFromHttpsApi(url));
+          } else if (ref.scheme === REGISTRY_TYPE_HTTPS) {
+            listings.push(...listFromHttpsApi(ref.url));
           }
         } catch {
           // Skip unreachable direct refs during list
@@ -574,39 +628,43 @@ export async function createRegistryConsumer(
         );
       }
 
+      // Resolve config headers ({{secret-uri}} templates)
+      const configHeaders = ref.config?.headers as
+        | Record<string, string>
+        | undefined;
+      const resolvedHeaders = configHeaders
+        ? await resolveTemplates(configHeaders, resolveSecretFn, {
+            token: options.token,
+          })
+        : undefined;
+      const auth = { token: options.token, headers: resolvedHeaders };
+
       // Direct MCP ref — bypass registry, call MCP server directly
-      if (ref.registry === REGISTRY_TYPE_MCP) {
-        const refEntry = (config.refs ?? []).find((r) => {
-          const n = normalizeRef(r);
-          return n.name === ref.name;
-        });
-        const url = typeof refEntry === "object" ? refEntry?.url : undefined;
-        if (!url) {
+      if (ref.scheme === REGISTRY_TYPE_MCP) {
+        if (!ref.url) {
           throw new Error(`MCP ref "${refName}" has no url`);
         }
-        return callMcpTool(url, tool, params, { token: options.token }, fetchFn);
+        return callMcpTool(ref.url, tool, params, auth, fetchFn);
       }
 
       // Direct HTTPS ref — bypass registry, call REST API directly
-      if (ref.registry === REGISTRY_TYPE_HTTPS) {
-        const refEntry = (config.refs ?? []).find((r) => {
-          const n = normalizeRef(r);
-          return n.name === ref.name;
-        });
-        const url = typeof refEntry === "object" ? refEntry?.url : undefined;
-        if (!url) {
+      if (ref.scheme === REGISTRY_TYPE_HTTPS) {
+        if (!ref.url) {
           throw new Error(`HTTPS ref "${refName}" has no url`);
         }
-        return callHttpsTool(url, tool, params, { token: options.token }, fetchFn);
+        return callHttpsTool(ref.url, tool, params, auth, fetchFn);
       }
 
       // Standard registry ref
-      const registry = resolvedRegistries.find(
-        (r) => r.url === ref.registry || r.name === ref.registry,
-      );
+      const registryUrl = ref.sourceRegistry?.url;
+      const registry = registryUrl
+        ? resolvedRegistries.find(
+            (r) => r.url === registryUrl || r.name === registryUrl,
+          )
+        : resolvedRegistries[0]; // Default to first registry if no source specified
       if (!registry) {
         throw new Error(
-          `Registry "${ref.registry}" not found for ref "${refName}"`,
+          `Registry not found for ref "${refName}"${registryUrl ? ` (source: ${registryUrl})` : ''}`,
         );
       }
 
@@ -619,20 +677,10 @@ export async function createRegistryConsumer(
       return resolveSecretFn(url, { token: options.token });
     },
 
-    async resolveConfig(
-      config: RefConfig,
-    ): Promise<Record<string, string | number | boolean>> {
-      const resolved: Record<string, string | number | boolean> = {};
-      for (const [key, value] of Object.entries(config)) {
-        if (isSecretUrl(value)) {
-          resolved[key] = await resolveSecretFn(value as string, {
-            token: options.token,
-          });
-        } else {
-          resolved[key] = value;
-        }
-      }
-      return resolved;
+    async resolveConfig(config: RefConfig): Promise<RefConfig> {
+      return resolveTemplates(config, resolveSecretFn, {
+        token: options.token,
+      });
     },
 
     index(): ResolvedConfig {

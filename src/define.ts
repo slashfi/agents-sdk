@@ -134,6 +134,19 @@ export interface DefineAgentOptions<
   /** Agent configuration */
   config?: AgentConfig;
 
+  /**
+   * Registry hosting mode:
+   * - 'direct': registry hosts and serves this agent's tools (default)
+   * - 'redirect': registry catalogs this agent but clients connect to `upstream` directly
+   */
+  mode?: 'direct' | 'redirect';
+
+  /**
+   * Upstream URL for redirect-mode agents.
+   * When mode is 'redirect', clients should connect to this URL instead of the registry.
+   */
+  upstream?: string;
+
   /** Tools provided by this agent */
   tools?: ToolDefinition<TContext, unknown, unknown>[];
 
@@ -322,6 +335,8 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
     path: options.path,
     entrypoint: options.entrypoint,
     config,
+    mode: options.mode,
+    upstream: options.upstream,
     tools,
     runtime: options.runtime,
     visibility: options.visibility,

@@ -241,7 +241,7 @@ describe("atlas ↔ registry E2E", () => {
     const consumer = await createRegistryConsumer(
       {
         registries: [REGISTRY_URL],
-        refs: ["notion"],
+        refs: [{ ref: "notion" }],
       },
       { token: authToken },
     );
@@ -256,7 +256,7 @@ describe("atlas ↔ registry E2E", () => {
     const consumer = await createRegistryConsumer(
       {
         registries: [REGISTRY_URL],
-        refs: ["linear"],
+        refs: [{ ref: "linear" }],
       },
       { token: authToken },
     );
@@ -269,7 +269,7 @@ describe("atlas ↔ registry E2E", () => {
     const consumer = await createRegistryConsumer(
       {
         registries: [REGISTRY_URL],
-        refs: ["notion"],
+        refs: [{ ref: "notion" }],
       },
       { token: authToken },
     );
