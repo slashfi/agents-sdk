@@ -27,7 +27,6 @@ export interface PendingCollection {
     callerId: string;
     callerType: string;
     scopes?: string[];
-    isRoot?: boolean;
   };
   createdAt: number;
 }

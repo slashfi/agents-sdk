@@ -37,7 +37,7 @@
  *
  * // Create registry with auth
  * const registry = createAgentRegistry();
- * registry.register(createAuthAgent({ rootKey: process.env.ROOT_KEY! }));
+ * registry.register(createAuthAgent({}));
  * registry.register(agent);
  *
  * // Start server - auth auto-detected
@@ -132,6 +132,7 @@ export {
   detectAuth,
   resolveAuth,
   canSeeAgent,
+  hasAdminScope,
 } from "./server.js";
 export type {
   AgentServer,

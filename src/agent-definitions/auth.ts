@@ -16,7 +16,7 @@
  * import { createAgentRegistry, createAgentServer, createAuthAgent } from '@slashfi/agents-sdk';
  *
  * const registry = createAgentRegistry();
- * registry.register(createAuthAgent({ rootKey: process.env.ROOT_KEY }));
+ * registry.register(createAuthAgent({}));
  * registry.register(myAgent);
  *
  * const server = createAgentServer(registry, { port: 3000 });
@@ -59,12 +59,11 @@ export interface AuthToken {
   issuedAt: number;
 }
 
-/** Resolved identity from a token or root key */
+/** Resolved identity from a token */
 export interface AuthIdentity {
   clientId: string;
   name: string;
   scopes: string[];
-  isRoot: boolean;
 }
 
 // ============================================
@@ -447,9 +446,6 @@ export function createMemoryAuthStore(): AuthStore {
 // ============================================
 
 export interface CreateAuthAgentOptions {
-  /** Root key for admin operations. Required. */
-  rootKey: string;
-
   /** Allow self-registration via public `register` tool. Default: false */
   allowRegistration?: boolean;
 
@@ -477,11 +473,9 @@ export function createAuthAgent(
   options: CreateAuthAgentOptions,
 ): AgentDefinition & {
   __authStore: AuthStore;
-  __rootKey: string;
   __tokenTtl: number;
 } {
   const {
-    rootKey,
     allowRegistration = false,
     registrationScopes,
     tokenTtl = 3600,
@@ -623,11 +617,12 @@ export function createAuthAgent(
     visibility: "public",
     inputSchema: { type: "object", properties: {} },
     execute: async (_input: unknown, ctx: ToolContext) => {
+      const scopes = (ctx as ToolContext & { scopes?: string[] }).scopes ?? [];
       return {
         callerId: ctx.callerId,
         callerType: ctx.callerType,
-        scopes: (ctx as ToolContext & { scopes?: string[] }).scopes ?? [],
-        isRoot: ctx.callerId === "root",
+        scopes,
+        hasAdminScope: scopes.includes("*") || scopes.includes("admin"),
       };
     },
   });
@@ -1018,7 +1013,6 @@ export function createAuthAgent(
   // Attach store and config for server integration
   return Object.assign(agent, {
     __authStore: store,
-    __rootKey: rootKey,
     __tokenTtl: tokenTtl,
   });
 }

@@ -1469,7 +1469,6 @@ export function createIntegrationsAgent(
           callerId: ctx.callerId,
           callerType: ctx.callerType as "agent" | "user" | "system",
           scopes: [],
-          isRoot: false,
         },
         fields: fields.map((f) => ({
           name: f.name,

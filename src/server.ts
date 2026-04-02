@@ -180,7 +180,7 @@ interface JsonRpcResponse {
 
 export interface AuthConfig {
   store?: AuthStore;
-  rootKey?: string;
+  /** @deprecated Use JWT scopes instead. Will be removed in a future version. */
   tokenTtl?: number;
 }
 
@@ -189,9 +189,14 @@ export interface ResolvedAuth {
   callerId: string;
   callerType: "agent" | "user" | "system";
   scopes: string[];
-  isRoot: boolean;
   /** All JWT claims from the verified token (passthrough) */
   claims: Record<string, unknown>;
+}
+
+/** Check if auth has admin-level access (wildcard or admin scope) */
+export function hasAdminScope(auth: ResolvedAuth | null): boolean {
+  if (!auth) return false;
+  return auth.scopes.includes("*") || auth.scopes.includes("admin");
 }
 
 // ============================================
@@ -265,16 +270,14 @@ export function detectAuth(registry: AgentRegistry): AuthConfig {
   const authAgent = registry.get("@auth") as
     | (AgentDefinition & {
         __authStore?: AuthStore;
-        __rootKey?: string;
         __tokenTtl?: number;
       })
     | undefined;
 
-  if (!authAgent?.__authStore || !authAgent.__rootKey) return {};
+  if (!authAgent?.__authStore) return {};
 
   return {
     store: authAgent.__authStore,
-    rootKey: authAgent.__rootKey,
     tokenTtl: authAgent.__tokenTtl ?? 3600,
   };
 }
@@ -293,17 +296,6 @@ export async function resolveAuth(
   const [scheme, credential] = authHeader.split(" ", 2);
   if (scheme?.toLowerCase() !== "bearer" || !credential) return null;
 
-  // Root key check
-  if (authConfig.rootKey && credential === authConfig.rootKey) {
-    return {
-      callerId: "root",
-      callerType: "system",
-      scopes: ["*"],
-      isRoot: true,
-      claims: {},
-    };
-  }
-
   // Try ES256 verification against own signing keys
   const parts = credential.split(".");
   if (parts.length === 3 && jwksOptions?.signingKeys?.length) {
@@ -315,7 +307,6 @@ export async function resolveAuth(
             callerId: verified.sub ?? verified.name ?? "unknown",
             callerType: "agent",
             scopes: verified.scopes ?? ["*"],
-            isRoot: false,
             claims: verified as unknown as Record<string, unknown>,
           };
         }
@@ -347,7 +338,6 @@ export async function resolveAuth(
               callerId: verified.sub ?? verified.name ?? "unknown",
               callerType: isSystem ? "system" : "agent",
               scopes,
-              isRoot: isSystem,
               claims: verified as unknown as Record<string, unknown>,
             };
           }
@@ -379,7 +369,6 @@ export async function resolveAuth(
               callerId: verified.name || client.name,
               callerType: "agent",
               scopes: verified.scopes,
-              isRoot: false,
               claims: verified as unknown as Record<string, unknown>,
             };
           }
@@ -400,7 +389,6 @@ export async function resolveAuth(
     callerId: client?.name ?? token.clientId,
     callerType: "agent",
     scopes: token.scopes,
-    isRoot: false,
     claims: {},
   };
 }
@@ -412,7 +400,7 @@ export function canSeeAgent(
   const visibility = ((agent as any).visibility ??
     agent.config?.visibility ??
     "internal") as Visibility;
-  if (auth?.isRoot) return true;
+  if (hasAdminScope(auth)) return true;
   if (visibility === "public") return true;
   if (visibility === "internal" && auth) return true;
   return false;
@@ -445,10 +433,10 @@ function getVisibleTools(
     "internal") as Visibility;
   return agent.tools.filter((t) => {
     const tv = t.visibility;
-    if (auth?.isRoot) return true;
+    if (hasAdminScope(auth)) return true;
     // Tool has explicit visibility — respect it
     if (tv === "public") return true;
-    if (tv === "private") return auth?.isRoot ?? false;
+    if (tv === "private") return hasAdminScope(auth) ?? false;
     if (tv === "internal" && auth) return true;
     // No explicit tool visibility — inherit from agent
     if (!tv && agentVisibility === "public") return true;
@@ -622,10 +610,9 @@ export function createAgentServer(
           req.callerType = auth.callerType;
           if (!req.metadata) req.metadata = {};
           req.metadata.scopes = auth.scopes;
-          req.metadata.isRoot = auth.isRoot;
           if (auth.issuer) req.metadata.issuer = auth.issuer;
         }
-        if (auth?.isRoot) {
+        if (hasAdminScope(auth)) {
           req.callerType = "system";
         }
 
@@ -663,7 +650,7 @@ export function createAgentServer(
             tools: agent.tools
               .filter((t) => {
                 const tv = t.visibility ?? "internal";
-                if (auth?.isRoot) return true;
+                if (hasAdminScope(auth)) return true;
                 if (tv === "public") return true;
                 if (
                   tv === "authenticated" &&
@@ -707,7 +694,7 @@ export function createAgentServer(
         for (const agent of visible) {
           const visibleTools = agent.tools.filter((t) => {
             const tv = t.visibility ?? "internal";
-            if (auth?.isRoot) return true;
+            if (hasAdminScope(auth)) return true;
             if (tv === "public") return true;
             if (
               tv === "authenticated" &&
@@ -1053,7 +1040,6 @@ export function createAgentServer(
                 callerId: actorId,
                 callerType: (actorType as any) ?? "agent",
                 scopes: ["*"],
-                isRoot: false,
                 claims: {},
               };
             }
@@ -1281,7 +1267,7 @@ export function createAgentServer(
             tools: agent.tools
               .filter((t) => {
                 const tv = t.visibility ?? "internal";
-                if (effectiveAuth?.isRoot) return true;
+                if (hasAdminScope(effectiveAuth)) return true;
                 if (tv === "public") return true;
                 if (tv === "internal" && effectiveAuth) return true;
                 return false;
@@ -1383,7 +1369,7 @@ export function createAgentServer(
             callerId: effectiveAuth?.callerId,
             callerType: effectiveAuth?.callerType ?? "system",
             metadata: effectiveAuth
-              ? { scopes: effectiveAuth.scopes, isRoot: effectiveAuth.isRoot }
+              ? { scopes: effectiveAuth.scopes }
               : undefined,
           });
           const res = jsonResponse({ success: true, result });
@@ -1468,7 +1454,6 @@ export function createAgentServer(
               metadata: effectiveAuth
                 ? {
                     scopes: effectiveAuth.scopes,
-                    isRoot: effectiveAuth.isRoot,
                     ...(effectiveAuth.issuer
                       ? { issuer: effectiveAuth.issuer }
                       : {}),
