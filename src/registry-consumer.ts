@@ -587,24 +587,18 @@ export async function createRegistryConsumer(
       // Also collect from direct MCP/HTTPS refs
       for (const ref of resolvedRefs) {
         if (!ref.scheme || !DIRECT_REGISTRY_TYPES.has(ref.scheme)) continue;
-        const refEntry = (config.refs ?? []).find((r) => {
-          const n = normalizeRef(r);
-          return n.name === ref.name;
-        });
-        const url =
-          refEntry?.url;
-        if (!url) continue;
+        if (!ref.url) continue;
 
         try {
           if (ref.scheme === REGISTRY_TYPE_MCP) {
             const mcpListings = await listFromMcpServer(
-              url,
+              ref.url,
               { token: options.token },
               fetchFn,
             );
             listings.push(...mcpListings);
           } else if (ref.scheme === REGISTRY_TYPE_HTTPS) {
-            listings.push(...listFromHttpsApi(url));
+            listings.push(...listFromHttpsApi(ref.url));
           }
         } catch {
           // Skip unreachable direct refs during list
@@ -634,30 +628,28 @@ export async function createRegistryConsumer(
         );
       }
 
+      // Resolve ref headers ({{secret-uri}} templates)
+      const resolvedHeaders = ref.headers
+        ? await resolveTemplates(ref.headers, resolveSecretFn, {
+            token: options.token,
+          })
+        : undefined;
+      const auth = { token: options.token, headers: resolvedHeaders };
+
       // Direct MCP ref — bypass registry, call MCP server directly
       if (ref.scheme === REGISTRY_TYPE_MCP) {
-        const refEntry = (config.refs ?? []).find((r) => {
-          const n = normalizeRef(r);
-          return n.name === ref.name;
-        });
-        const url = refEntry?.url;
-        if (!url) {
+        if (!ref.url) {
           throw new Error(`MCP ref "${refName}" has no url`);
         }
-        return callMcpTool(url, tool, params, { token: options.token }, fetchFn);
+        return callMcpTool(ref.url, tool, params, auth, fetchFn);
       }
 
       // Direct HTTPS ref — bypass registry, call REST API directly
       if (ref.scheme === REGISTRY_TYPE_HTTPS) {
-        const refEntry = (config.refs ?? []).find((r) => {
-          const n = normalizeRef(r);
-          return n.name === ref.name;
-        });
-        const url = refEntry?.url;
-        if (!url) {
+        if (!ref.url) {
           throw new Error(`HTTPS ref "${refName}" has no url`);
         }
-        return callHttpsTool(url, tool, params, { token: options.token }, fetchFn);
+        return callHttpsTool(ref.url, tool, params, auth, fetchFn);
       }
 
       // Standard registry ref
