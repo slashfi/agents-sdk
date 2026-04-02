@@ -417,6 +417,18 @@ export function canSeeAgent(
 }
 
 /**
+ * Resolve an agent by path, handling @ prefix normalization.
+ * Tries the path as-is first, then with @ prefix.
+ */
+function resolveAgent(
+  registry: AgentRegistry,
+  path: string,
+): AgentDefinition | undefined {
+  const normalized = path.replace(/^@/, "");
+  return registry.get(normalized) ?? registry.get(`@${normalized}`);
+}
+
+/**
  * Filter tools visible on a public agent endpoint.
  * For /agents/ routes, tools inherit the agent's visibility:
  * - If agent is public, tools without explicit visibility are shown
@@ -1216,7 +1228,7 @@ export function createAgentServer(
           jwks_uri: `${baseUrl}/.well-known/jwks.json`,
           token_endpoint: `${baseUrl}/oauth/token`,
           agents_endpoint: `${baseUrl}/list`,
-          call_endpoint: baseUrl,
+          call_endpoint: `${baseUrl}/call`,
           supported_grant_types: ["client_credentials", "jwt_exchange"],
           authorization_endpoint: `${baseUrl}/oauth/authorize`,
           ...(oidcSignIn
@@ -1307,7 +1319,7 @@ export function createAgentServer(
       // ── GET /agents/{name} → Agent info (single agent discovery) ──
       if (path.startsWith("/agents/") && req.method === "GET") {
         const agentPath = path.slice("/agents/".length); // e.g. "notion"
-        const agent = registry.get(agentPath) ?? registry.get(`@${agentPath}`);
+        const agent = resolveAgent(registry, agentPath);
         if (!agent || !canSeeAgent(agent, effectiveAuth)) {
           const res = jsonResponse(
             { error: "not_found", message: `Agent not found: ${agentPath}` },
@@ -1329,10 +1341,64 @@ export function createAgentServer(
         return cors ? addCors(res) : res;
       }
 
+      // ── POST /call → Execute a tool on an agent (REST endpoint) ──
+      // Used by createRegistryConsumer.call() — accepts { path, tool, params }
+      // and routes to the agent's tool handler.
+      if (path === "/call" && req.method === "POST") {
+        const body = (await req.json()) as {
+          path: string;
+          tool: string;
+          params?: Record<string, unknown>;
+        };
+        const agent = resolveAgent(registry, body.path);
+        if (!agent || !canSeeAgent(agent, effectiveAuth)) {
+          const res = jsonResponse(
+            { error: "not_found", message: `Agent not found: ${body.path}` },
+            404,
+          );
+          return cors ? addCors(res) : res;
+        }
+
+        const visibleTools = getVisibleTools(agent, effectiveAuth);
+        if (!visibleTools.find((t) => t.name === body.tool)) {
+          const res = jsonResponse(
+            { error: "not_found", message: `Tool not found: ${body.tool}` },
+            404,
+          );
+          return cors ? addCors(res) : res;
+        }
+
+        try {
+          const result = await registry.call({
+            action: "execute_tool",
+            path: agent.path,
+            tool: body.tool,
+            params: body.params ?? {},
+            callerId: effectiveAuth?.callerId,
+            callerType: effectiveAuth?.callerType ?? "external",
+            metadata: effectiveAuth
+              ? { scopes: effectiveAuth.scopes, isRoot: effectiveAuth.isRoot }
+              : undefined,
+          });
+          const res = jsonResponse({ success: true, result });
+          return cors ? addCors(res) : res;
+        } catch (err) {
+          const res = jsonResponse(
+            {
+              success: false,
+              error:
+                err instanceof Error ? err.message : "Tool execution failed",
+            },
+            500,
+          );
+          return cors ? addCors(res) : res;
+        }
+      }
+
       // ── POST /agents/{name} → Scoped MCP call to single agent ──
       if (path.startsWith("/agents/") && req.method === "POST") {
         const agentPath = path.slice("/agents/".length);
-        const agent = registry.get(agentPath) ?? registry.get(`@${agentPath}`);
+        const agent = resolveAgent(registry, agentPath);
         if (!agent || !canSeeAgent(agent, effectiveAuth)) {
           const res = jsonResponse(
             { error: "not_found", message: `Agent not found: ${agentPath}` },
