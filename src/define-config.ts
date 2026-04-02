@@ -53,8 +53,8 @@ export interface RegistryEntry {
 // Ref Config
 // ============================================
 
-/** Inline config for a ref — values can be literals or secret URLs */
-export type RefConfig = Record<string, string | number | boolean>;
+/** Inline config for a ref — any JSON-serializable object */
+export type RefConfig = Record<string, unknown>;
 
 /** A ref entry — describes how to connect to an agent */
 export type RefEntry = {
@@ -67,13 +67,10 @@ export type RefEntry = {
       /** Direct URL to the agent (e.g. https://mcp.notion.com/mcp) */
       url?: string;
 
-      /** Headers to inject on every request (values support {{secret-uri}} templates) */
-      headers?: Record<string, string>;
-
       /** Local alias for this instance (required for multi-instance) */
       as?: string;
 
-      /** Per-instance config (secrets as URIs, literals as values) */
+      /** Per-instance config (headers, secrets, etc. — values support {{secret-uri}} templates) */
       config?: RefConfig;
 
       /** The registry where this ref was discovered */

@@ -38,7 +38,7 @@ import type {
   ResolvedRegistry,
 } from "./define-config.js";
 import {
-  isSecretUrl,
+  isSecretUri,
   normalizeRef,
   normalizeRegistry,
 } from "./define-config.js";
@@ -96,8 +96,13 @@ async function resolveTemplates<T>(
   auth?: { token?: string },
 ): Promise<T> {
   if (typeof obj === 'string') {
+    // Handle {{secret-uri}} templates
     if (hasTemplates(obj)) {
       return (await resolveTemplateString(obj, resolver, auth)) as T;
+    }
+    // Handle raw secret URIs (backward compat)
+    if (isSecretUri(obj)) {
+      return (await resolver(obj, auth)) as T;
     }
     return obj;
   }
@@ -439,15 +444,10 @@ export interface RegistryConsumer {
   /** Resolve a secret URL to its value */
   resolveSecret(url: string): Promise<string>;
 
-  /** Resolve all secret URLs in a config object, returning resolved values */
+  /** Resolve {{secret-uri}} templates in a config object (recursive) */
   resolveConfig(
     config: RefConfig,
-  ): Promise<Record<string, string | number | boolean>>;
-
-  /** Resolve {{secret-uri}} templates in a headers object */
-  resolveHeaders(
-    headers: Record<string, string>,
-  ): Promise<Record<string, string>>;
+  ): Promise<RefConfig>;
 
   /** Produce the indexed/serialized config output */
   index(): ResolvedConfig;
@@ -628,9 +628,12 @@ export async function createRegistryConsumer(
         );
       }
 
-      // Resolve ref headers ({{secret-uri}} templates)
-      const resolvedHeaders = ref.headers
-        ? await resolveTemplates(ref.headers, resolveSecretFn, {
+      // Resolve config headers ({{secret-uri}} templates)
+      const configHeaders = ref.config?.headers as
+        | Record<string, string>
+        | undefined;
+      const resolvedHeaders = configHeaders
+        ? await resolveTemplates(configHeaders, resolveSecretFn, {
             token: options.token,
           })
         : undefined;
@@ -674,26 +677,8 @@ export async function createRegistryConsumer(
       return resolveSecretFn(url, { token: options.token });
     },
 
-    async resolveConfig(
-      config: RefConfig,
-    ): Promise<Record<string, string | number | boolean>> {
-      const resolved: Record<string, string | number | boolean> = {};
-      for (const [key, value] of Object.entries(config)) {
-        if (isSecretUrl(value)) {
-          resolved[key] = await resolveSecretFn(value as string, {
-            token: options.token,
-          });
-        } else {
-          resolved[key] = value;
-        }
-      }
-      return resolved;
-    },
-
-    async resolveHeaders(
-      headers: Record<string, string>,
-    ): Promise<Record<string, string>> {
-      return resolveTemplates(headers, resolveSecretFn, {
+    async resolveConfig(config: RefConfig): Promise<RefConfig> {
+      return resolveTemplates(config, resolveSecretFn, {
         token: options.token,
       });
     },
