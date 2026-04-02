@@ -55,6 +55,67 @@ export const REGISTRY_TYPE_HTTPS = "https";
 /** Built-in registry types that bypass normal registry resolution */
 const DIRECT_REGISTRY_TYPES = new Set([REGISTRY_TYPE_MCP, REGISTRY_TYPE_HTTPS]);
 
+/** Regex for {{secret-uri}} template syntax */
+const TEMPLATE_REGEX = /\{\{(.+?)\}\}/g;
+
+/** Check if a string contains {{...}} template expressions */
+function hasTemplates(value: string): boolean {
+  return TEMPLATE_REGEX.test(value);
+}
+
+/**
+ * Resolve {{secret-uri}} templates in a string.
+ * E.g. "Bearer {{file:///.secrets/key}}" → "Bearer actual-key-value"
+ */
+async function resolveTemplateString(
+  value: string,
+  resolver: SecretResolver,
+  auth?: { token?: string },
+): Promise<string> {
+  // Reset regex state
+  TEMPLATE_REGEX.lastIndex = 0;
+  const matches = [...value.matchAll(/\{\{(.+?)\}\}/g)];
+  if (matches.length === 0) return value;
+
+  let result = value;
+  for (const match of matches) {
+    const uri = match[1]!.trim();
+    const resolved = await resolver(uri, auth);
+    result = result.replace(match[0], resolved);
+  }
+  return result;
+}
+
+/**
+ * Recursively resolve {{secret-uri}} templates in an object.
+ * Walks all string values at any depth.
+ */
+async function resolveTemplates<T>(
+  obj: T,
+  resolver: SecretResolver,
+  auth?: { token?: string },
+): Promise<T> {
+  if (typeof obj === 'string') {
+    if (hasTemplates(obj)) {
+      return (await resolveTemplateString(obj, resolver, auth)) as T;
+    }
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return (await Promise.all(
+      obj.map((item) => resolveTemplates(item, resolver, auth)),
+    )) as T;
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = await resolveTemplates(value, resolver, auth);
+    }
+    return result as T;
+  }
+  return obj;
+}
+
 // ============================================
 // Registry Discovery Types
 // ============================================
@@ -383,6 +444,11 @@ export interface RegistryConsumer {
     config: RefConfig,
   ): Promise<Record<string, string | number | boolean>>;
 
+  /** Resolve {{secret-uri}} templates in a headers object */
+  resolveHeaders(
+    headers: Record<string, string>,
+  ): Promise<Record<string, string>>;
+
   /** Produce the indexed/serialized config output */
   index(): ResolvedConfig;
 
@@ -633,6 +699,14 @@ export async function createRegistryConsumer(
         }
       }
       return resolved;
+    },
+
+    async resolveHeaders(
+      headers: Record<string, string>,
+    ): Promise<Record<string, string>> {
+      return resolveTemplates(headers, resolveSecretFn, {
+        token: options.token,
+      });
     },
 
     index(): ResolvedConfig {

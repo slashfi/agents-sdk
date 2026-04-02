@@ -63,8 +63,14 @@ export type RefEntry =
       /** Agent definition path (resolved from registries) */
       ref: string;
 
-      /** Direct URL to the agent (e.g. http://localhost:3000/agents/notion) */
+      /** Connection scheme */
+      scheme?: 'mcp' | 'https' | 'registry';
+
+      /** Direct URL to the agent (e.g. https://mcp.notion.com/mcp) */
       url?: string;
+
+      /** Headers to inject on every request (values support {{secret-uri}} templates) */
+      headers?: Record<string, string>;
 
       /** Local alias for this instance (required for multi-instance) */
       as?: string;
@@ -74,6 +80,9 @@ export type RefEntry =
 
       /** Override the registry to resolve from */
       registry?: string;
+
+      /** The registry where this ref was discovered */
+      sourceRegistry?: { url: string; agentPath: string };
     };
 
 // ============================================
@@ -118,8 +127,20 @@ export interface ResolvedRef {
   /** Local name (alias or ref name) */
   name: string;
 
+  /** Connection scheme */
+  scheme?: 'mcp' | 'https' | 'registry';
+
+  /** Direct URL to the agent */
+  url?: string;
+
+  /** Headers to inject on every request */
+  headers?: Record<string, string>;
+
   /** Which registry this was resolved from */
   registry: string;
+
+  /** The registry where this ref was discovered */
+  sourceRegistry?: { url: string; agentPath: string };
 
   /** Resolved config (secret URLs NOT resolved — kept as URLs) */
   config: RefConfig;
