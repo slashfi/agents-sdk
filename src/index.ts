@@ -141,8 +141,6 @@ export type {
   ResolvedAuth,
   TrustedIssuer,
 } from "./server.js";
-export { createOIDCSignIn } from "./oidc-signin.js";
-export type { OIDCProviderConfig, OIDCSignInHandler } from "./oidc-signin.js";
 
 // Secret Collection
 export {
