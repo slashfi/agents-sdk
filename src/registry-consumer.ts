@@ -537,7 +537,7 @@ export async function createRegistryConsumer(
     }));
   }
 
-  // Call a tool via a registry
+  // Call a tool via a registry using MCP JSON-RPC (tools/call)
   async function callTool(
     registry: ResolvedRegistry,
     agentPath: string,
@@ -545,8 +545,9 @@ export async function createRegistryConsumer(
     params: Record<string, unknown>,
   ): Promise<unknown> {
     const configuration = await discover(registry.url);
-    const callUrl =
-      configuration.call_endpoint ?? `${registry.url.replace(/\/$/, "")}/call`;
+    // MCP endpoint is the base URL (POST /), not /call
+    const mcpUrl =
+      configuration.call_endpoint ?? registry.url.replace(/\/$/, "");
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -557,10 +558,26 @@ export async function createRegistryConsumer(
       headers.Authorization = `Bearer ${options.token}`;
     }
 
-    const res = await fetchFn(callUrl, {
+    const requestId = `call-${Date.now()}`;
+    const res = await fetchFn(mcpUrl, {
       method: "POST",
       headers,
-      body: JSON.stringify({ path: agentPath, tool, params }),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: requestId,
+        method: "tools/call",
+        params: {
+          name: "call_agent",
+          arguments: {
+            request: {
+              action: "execute_tool",
+              path: agentPath,
+              tool,
+              params,
+            },
+          },
+        },
+      }),
     });
 
     if (!res.ok) {
@@ -570,7 +587,40 @@ export async function createRegistryConsumer(
       );
     }
 
-    return res.json();
+    const rpcResponse = (await res.json()) as {
+      jsonrpc: string;
+      id: string;
+      result?: {
+        content?: Array<{ type: string; text: string }>;
+        isError?: boolean;
+      };
+      error?: { code: number; message: string };
+    };
+
+    if (rpcResponse.error) {
+      throw new Error(
+        `Tool call RPC error (${agentPath}/${tool}): ${rpcResponse.error.message}`,
+      );
+    }
+
+    const mcpResult = rpcResponse.result;
+    if (mcpResult?.isError) {
+      const errorText =
+        mcpResult.content?.map((c) => c.text).join("\n") ?? "Unknown error";
+      throw new Error(`Tool call error (${agentPath}/${tool}): ${errorText}`);
+    }
+
+    // Parse text content - call_agent returns JSON-stringified results
+    const textContent = mcpResult?.content?.find((c) => c.type === "text");
+    if (textContent?.text) {
+      try {
+        return JSON.parse(textContent.text);
+      } catch {
+        return textContent.text;
+      }
+    }
+
+    return mcpResult;
   }
 
   // Build the consumer
