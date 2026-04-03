@@ -497,39 +497,71 @@ export async function createRegistryConsumer(
     return configuration;
   }
 
-  // List agents from a single registry
+  // List agents from a single registry via MCP tools/call → list_agents
   async function listFromRegistry(
     registry: ResolvedRegistry,
   ): Promise<AgentListing[]> {
-    const configuration = await discover(registry.url);
-    const listUrl =
-      configuration.agents_endpoint ??
-      `${registry.url.replace(/\/$/, "")}/list`;
+    const mcpUrl = registry.url.replace(/\/$/, "");
 
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
     if (registry.auth.type === "bearer" && "token" in registry.auth) {
       headers.Authorization = `Bearer ${registry.auth.token}`;
     } else if (options.token) {
       headers.Authorization = `Bearer ${options.token}`;
     }
 
-    const res = await fetchFn(listUrl, { headers });
+    const res = await fetchFn(mcpUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "list_agents", arguments: {} },
+      }),
+    });
+
     if (!res.ok) {
       throw new Error(
         `Failed to list agents from ${registry.url}: ${res.status}`,
       );
     }
 
-    const agents = (await res.json()) as Array<{
+    const rpcResponse = (await res.json()) as {
+      result?: { content?: Array<{ type: string; text?: string }> };
+      error?: { message: string };
+    };
+
+    if (rpcResponse.error) {
+      throw new Error(
+        `Failed to list agents from ${registry.url}: ${rpcResponse.error.message}`,
+      );
+    }
+
+    const content = rpcResponse.result?.content;
+    let agents: Array<{
       path: string;
+      name?: string;
       description?: string;
+      supportedActions?: string[];
       tools?: Array<{ name: string; description?: string }>;
       integration?: {
         provider: string;
         displayName: string;
         category?: string;
       };
-    }>;
+    }> = [];
+
+    if (content?.[0]?.type === "text" && content[0].text) {
+      try {
+        const parsed = JSON.parse(content[0].text);
+        agents = parsed.agents ?? parsed;
+      } catch {
+        agents = [];
+      }
+    }
 
     return agents.map((agent) => ({
       ...agent,
