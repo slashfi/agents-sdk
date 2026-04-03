@@ -489,15 +489,31 @@ describe("Secret URI resolution", () => {
     expect(resolved.clientId).toBe("notion_cid_abc123");
     expect(resolved.clientSecret).toBe("notion_cs_secret456");
 
-    // Agent is discoverable at its URL
+    // Agent is discoverable via MCP list_agents
     const agentUrl = typeof ref === "string" ? ref : ref.url!;
-    const infoRes = await fetch(agentUrl);
-    expect(infoRes.status).toBe(200);
-    const info = (await infoRes.json()) as { path: string; name: string };
-    expect(info.name).toBe("Notion");
+    const mcpUrl = agentUrl.replace("/agents/notion", "");
+    const listRes = await fetch(mcpUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "list_agents", arguments: {} },
+      }),
+    });
+    expect(listRes.status).toBe(200);
+    const listRpc = (await listRes.json()) as any;
+    const parsed = JSON.parse(listRpc.result.content[0].text);
+    const notionAgent = parsed.agents.find((a: any) => a.path === "notion");
+    expect(notionAgent).toBeDefined();
+    expect(notionAgent.name).toBe("Notion");
 
-    // Call the agent with resolved secrets
-    const callRes = await fetch(agentUrl, {
+    // Call the agent with resolved secrets via MCP
+    const callRes = await fetch(mcpUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -508,10 +524,15 @@ describe("Secret URI resolution", () => {
         id: 1,
         method: "tools/call",
         params: {
-          name: "search_pages",
+          name: "call_agent",
           arguments: {
-            query: "meeting notes",
-            clientId: resolved.clientId,
+            action: "execute_tool",
+            path: "notion",
+            tool: "search_pages",
+            params: {
+              query: "meeting notes",
+              clientId: resolved.clientId,
+            },
           },
         },
       }),

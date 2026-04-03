@@ -312,30 +312,55 @@ describe("atlas ↔ registry E2E", () => {
 
   // ── Auth guards ────────────────────────────────────────────────
 
-  test("tools/call without auth returns 401", async () => {
-    const res = await fetch(`${REGISTRY_URL}/agents/notion`, {
+  test("tools/call without auth succeeds (MCP endpoint is open, visibility is per-agent)", async () => {
+    const res = await fetch(REGISTRY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
-        params: { name: "search_pages", arguments: { query: "test" } },
+        params: { name: "call_agent", arguments: { action: "execute_tool", path: "notion", tool: "search_pages", params: { query: "test" } } },
       }),
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
   });
 
   test("internal agent not visible without auth", async () => {
-    const res = await fetch(`${REGISTRY_URL}/agents/@secrets`);
-    expect(res.status).toBe(404);
+    const res = await fetch(REGISTRY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "list_agents", arguments: {} },
+      }),
+    });
+    const rpc = (await res.json()) as any;
+    const parsed = JSON.parse(rpc.result.content[0].text);
+    const paths = parsed.agents.map((a: any) => a.path);
+    expect(paths).not.toContain("@secrets");
   });
 
   test("internal agent visible with auth", async () => {
-    const res = await fetch(`${REGISTRY_URL}/agents/@secrets`, {
-      headers: { Authorization: `Bearer ${authToken}` },
+    const res = await fetch(REGISTRY_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "list_agents", arguments: {} },
+      }),
     });
-    expect(res.status).toBe(200);
+    const rpc = (await res.json()) as any;
+    const parsed = JSON.parse(rpc.result.content[0].text);
+    const paths = parsed.agents.map((a: any) => a.path);
+    expect(paths).toContain("@secrets");
   });
 
   // ── Secret URI helpers ─────────────────────────────────────────
