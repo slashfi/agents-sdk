@@ -121,6 +121,28 @@ export interface AgentServerOptions {
   /** OIDC provider for user sign-in (authorization code flow) */
   oidcProvider?: OIDCProviderConfig;
   /**
+   * Custom auth resolver — called before the built-in JWT/header auth.
+   * Return a ResolvedAuth to authenticate the request, or null to fall
+   * through to the default auth chain.
+   *
+   * Use this when the server is mounted behind a proxy or middleware
+   * that handles its own auth (e.g., API key validation).
+   *
+   * @example
+   * ```typescript
+   * createAgentServer(registry, {
+   *   resolveAuth: async (req) => {
+   *     const apiKey = req.headers.get('x-api-key');
+   *     if (apiKey === process.env.API_KEY) {
+   *       return { callerId: 'api-client', callerType: 'system', scopes: ['*'], claims: {} };
+   *     }
+   *     return null;
+   *   },
+   * });
+   * ```
+   */
+  resolveAuth?: (req: Request) => Promise<ResolvedAuth | null>;
+  /**
    * Registry capabilities — advertised in MCP initialize response.
    * When set, this server identifies as an agent registry (superset of MCP).
    * Consumers use this to differentiate `registry` type from plain `mcp`.
@@ -1024,11 +1046,16 @@ export function createAgentServer(
         return new Response(null, { status: 204, headers: corsHeaders() });
       }
 
-      // Resolve auth for all requests
-      const auth = await resolveAuth(req, authConfig, {
-        signingKeys: serverSigningKeys,
-        trustedIssuers: configTrustedIssuers,
-      });
+      // Resolve auth: custom resolver first, then built-in JWT/header chain
+      const customAuth = options.resolveAuth
+        ? await options.resolveAuth(req)
+        : null;
+      const auth =
+        customAuth ??
+        (await resolveAuth(req, authConfig, {
+          signingKeys: serverSigningKeys,
+          trustedIssuers: configTrustedIssuers,
+        }));
 
       // Also check header-based identity (for proxied requests)
       const headerAuth: ResolvedAuth | null = !auth
@@ -1581,10 +1608,16 @@ export function createAgentServer(
     },
 
     async resolveAuth(req: Request): Promise<ResolvedAuth | null> {
-      return resolveAuth(req, authConfig, {
-        signingKeys: serverSigningKeys,
-        trustedIssuers: configTrustedIssuers,
-      });
+      const customAuth = options.resolveAuth
+        ? await options.resolveAuth(req)
+        : null;
+      return (
+        customAuth ??
+        resolveAuth(req, authConfig, {
+          signingKeys: serverSigningKeys,
+          trustedIssuers: configTrustedIssuers,
+        })
+      );
     },
 
     addTrustedIssuer(issuerUrl: string, scopes?: string[]): void {
