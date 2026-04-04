@@ -476,7 +476,7 @@ function getToolDefinitions() {
     {
       name: "call_agent",
       description:
-        "Execute a tool on a registered agent. Provide the agent path and tool name.",
+        "Execute a tool on a registered agent. Provide the agent path and tool name.\n\nSupported actions:\n- invoke: Fire-and-forget agent invocation\n- ask: Invoke and wait for response\n- execute_tool: Call a specific tool on an agent\n- describe_tools: Get tool schemas for an agent\n- load: Get agent definition/system prompt\n- list_resources: Discover available resources (e.g., AUTH.md)\n- read_resources: Fetch one or more resources by URI",
       inputSchema: callAgentInputSchema,
     },
     {

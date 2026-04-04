@@ -85,12 +85,12 @@ export const loadActionSchema = callAgentBaseSchema.extend({
 
 /** List resources: discover available resources on an agent */
 export const listResourcesActionSchema = callAgentBaseSchema.extend({
-  action: z.literal("list_resources"),
+  action: z.literal("list_resources").describe("Discover available resources on an agent (e.g., AUTH.md for auth setup instructions)"),
 });
 
 /** Read resources: fetch one or more resources by URI */
 export const readResourcesActionSchema = callAgentBaseSchema.extend({
-  action: z.literal("read_resources"),
+  action: z.literal("read_resources").describe("Fetch one or more resources by URI. Use list_resources first to discover available URIs."),
   uris: z
     .array(z.string())
     .describe("Resource URIs to read (e.g., ['AUTH.md'])"),
