@@ -17,6 +17,8 @@ import type {
   CallAgentExecuteToolResponse,
   CallAgentLoadRequest,
   CallAgentLoadResponse,
+  CallAgentListResourcesResponse,
+  CallAgentReadResourcesResponse,
   CallAgentRequest,
   CallAgentResponse,
   ToolContext,
@@ -31,6 +33,8 @@ const DEFAULT_SUPPORTED_ACTIONS: AgentAction[] = [
   "execute_tool",
   "describe_tools",
   "load",
+  "list_resources",
+  "read_resources",
 ];
 
 // ============================================
@@ -727,6 +731,41 @@ export function createAgentRegistry(
             });
           }
           return defaultLoad(agent, request);
+        }
+
+        case "list_resources": {
+          const resources = (agent.config?.resources ?? []).map((r) => ({
+            uri: r.uri,
+            name: r.name,
+            mimeType: r.mimeType,
+          }));
+          return {
+            success: true,
+            agentPath: agent.path,
+            resources,
+          } as CallAgentListResourcesResponse;
+        }
+
+        case "read_resources": {
+          const uris = request.uris;
+          const agentResources = agent.config?.resources ?? [];
+          const results = uris.map((uri) => {
+            const resource = agentResources.find((r) => r.uri === uri);
+            if (!resource) {
+              return { uri, error: `Resource not found: ${uri}` };
+            }
+            return {
+              uri: resource.uri,
+              name: resource.name,
+              mimeType: resource.mimeType,
+              content: resource.content,
+            };
+          });
+          return {
+            success: true,
+            agentPath: agent.path,
+            resources: results,
+          } as CallAgentReadResourcesResponse;
         }
 
         default: {

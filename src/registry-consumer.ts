@@ -152,6 +152,17 @@ export interface AgentListing {
   }>;
   /** Whether it requires auth */
   requiresAuth?: boolean;
+  /** Security scheme (machine-readable auth type) */
+  security?: {
+    type: 'oauth2' | 'apiKey' | 'http' | 'none';
+    [key: string]: unknown;
+  };
+  /** Available resources (e.g., AUTH.md) */
+  resources?: Array<{
+    uri: string;
+    name?: string;
+    mimeType?: string;
+  }>;
   /** Integration config if applicable */
   integration?: {
     provider: string;

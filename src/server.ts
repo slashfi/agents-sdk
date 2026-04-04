@@ -669,6 +669,14 @@ export function createAgentServer(
             description: agent.config?.description,
             supportedActions: agent.config?.supportedActions,
             integration: agent.config?.integration || null,
+            security: agent.config?.security
+              ? { type: agent.config.security.type }
+              : undefined,
+            resources: agent.config?.resources?.map((r) => ({
+              uri: r.uri,
+              name: r.name,
+              mimeType: r.mimeType,
+            })),
             tools: agent.tools
               .filter((t) => {
                 const tv = t.visibility ?? "internal";

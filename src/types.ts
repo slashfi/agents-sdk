@@ -259,6 +259,22 @@ export type SecurityScheme =
   | HttpSecurityScheme
   | NoneSecurityScheme;
 
+/**
+ * A static resource exposed by an agent.
+ * Well-known resources:
+ * - `AUTH.md` — LLM-readable auth/connection setup instructions
+ */
+export interface AgentResource {
+  /** Resource URI (e.g., 'AUTH.md') */
+  uri: string;
+  /** Human-readable name */
+  name?: string;
+  /** MIME type (defaults to text/markdown for .md) */
+  mimeType?: string;
+  /** The resource content (populated on read_resources, omitted on list) */
+  content?: string;
+}
+
 // ============================================
 // Agent Configuration
 // ============================================
@@ -312,6 +328,13 @@ export interface AgentConfig {
    * @see SecurityScheme
    */
   security?: SecurityScheme;
+
+  /**
+   * Agent resources — static files/documents the agent exposes.
+   * Well-known resources:
+   * - `AUTH.md` — LLM-readable auth setup instructions
+   */
+  resources?: AgentResource[];
 
   /** Additional configuration */
   /** Agent refs (paths to other agents this agent can call) */
@@ -747,6 +770,30 @@ export interface CallAgentCallbackResponse {
   callbackId: string;
 }
 
+/** List resources response */
+export interface CallAgentListResourcesResponse {
+  success: true;
+  agentPath: string;
+  resources: Array<{
+    uri: string;
+    name?: string;
+    mimeType?: string;
+  }>;
+}
+
+/** Read resources response */
+export interface CallAgentReadResourcesResponse {
+  success: true;
+  agentPath: string;
+  resources: Array<{
+    uri: string;
+    name?: string;
+    mimeType?: string;
+    content?: string;
+    error?: string;
+  }>;
+}
+
 /** Error response */
 export interface CallAgentErrorResponse {
   success: false;
@@ -762,4 +809,6 @@ export type CallAgentResponse =
   | CallAgentDescribeToolsResponse
   | CallAgentLoadResponse
   | CallAgentCallbackResponse
+  | CallAgentListResourcesResponse
+  | CallAgentReadResourcesResponse
   | CallAgentErrorResponse;
