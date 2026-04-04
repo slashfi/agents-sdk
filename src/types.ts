@@ -260,6 +260,16 @@ export type SecurityScheme =
   | NoneSecurityScheme;
 
 /**
+ * Lightweight security summary for agent listings.
+ * The full SecurityScheme has all the details; this is the
+ * directory-level overview (e.g., in list_agents responses).
+ */
+export interface SecuritySchemeSummary {
+  type: SecurityScheme['type'];
+  [key: string]: unknown;
+}
+
+/**
  * A static resource exposed by an agent.
  * Well-known resources:
  * - `AUTH.md` — LLM-readable auth/connection setup instructions

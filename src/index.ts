@@ -89,6 +89,7 @@ export type {
   OAuth2SecurityScheme,
   SecurityScheme,
   AgentResource,
+  SecuritySchemeSummary,
   IntegrationMethods,
   IntegrationMethodResult,
   IntegrationMethodContext,

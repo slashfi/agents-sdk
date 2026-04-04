@@ -37,6 +37,7 @@ import type {
   ResolvedRef,
   ResolvedRegistry,
 } from "./define-config.js";
+import type { SecuritySchemeSummary } from "./types.js";
 import {
   isSecretUri,
   normalizeRef,
@@ -152,11 +153,8 @@ export interface AgentListing {
   }>;
   /** Whether it requires auth */
   requiresAuth?: boolean;
-  /** Security scheme (machine-readable auth type) */
-  security?: {
-    type: 'oauth2' | 'apiKey' | 'http' | 'none';
-    [key: string]: unknown;
-  };
+  /** Security scheme summary (machine-readable auth type) */
+  security?: SecuritySchemeSummary;
   /** Available resources (e.g., AUTH.md) */
   resources?: Array<{
     uri: string;
