@@ -85,7 +85,7 @@ export const loadActionSchema = callAgentBaseSchema.extend({
 
 /** List resources: discover available resources on an agent */
 export const listResourcesActionSchema = callAgentBaseSchema.extend({
-  action: z.literal("list_resources").describe("Discover available resources on an agent (e.g., AUTH.md for auth setup instructions)"),
+  action: z.literal("list_resources").describe("List all resources available on an agent — docs, auth instructions, config schemas, etc."),
 });
 
 /** Read resources: fetch one or more resources by URI */
