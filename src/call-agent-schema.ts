@@ -83,6 +83,19 @@ export const loadActionSchema = callAgentBaseSchema.extend({
   action: z.literal("load"),
 });
 
+/** List resources: discover available resources on an agent */
+export const listResourcesActionSchema = callAgentBaseSchema.extend({
+  action: z.literal("list_resources").describe("List all resources available on an agent — docs, auth instructions, config schemas, etc."),
+});
+
+/** Read resources: fetch one or more resources by URI */
+export const readResourcesActionSchema = callAgentBaseSchema.extend({
+  action: z.literal("read_resources").describe("Fetch one or more resources by URI. Use list_resources first to discover available URIs."),
+  uris: z
+    .array(z.string())
+    .describe("Resource URIs to read (e.g., ['AUTH.md'])"),
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Discriminated union (source of truth)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -93,6 +106,8 @@ export const callAgentRequestSchema = z.discriminatedUnion("action", [
   executeToolActionSchema,
   describeToolsActionSchema,
   loadActionSchema,
+  listResourcesActionSchema,
+  readResourcesActionSchema,
 ]);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -109,6 +124,12 @@ export type CallAgentDescribeToolsRequest = z.infer<
   typeof describeToolsActionSchema
 >;
 export type CallAgentLoadRequest = z.infer<typeof loadActionSchema>;
+export type CallAgentListResourcesRequest = z.infer<
+  typeof listResourcesActionSchema
+>;
+export type CallAgentReadResourcesRequest = z.infer<
+  typeof readResourcesActionSchema
+>;
 
 /** All supported agent actions — derived from the schema. */
 export type AgentAction = CallAgentRequest["action"];
