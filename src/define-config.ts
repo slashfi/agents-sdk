@@ -42,6 +42,9 @@ export interface RegistryEntry {
   /** How to authenticate with this registry */
   auth?: RegistryAuth;
 
+  /** Arbitrary headers to send with every request to this registry (values can be secret URIs) */
+  headers?: Record<string, string>;
+
   /** Human-readable name / alias for this registry */
   name?: string;
 
@@ -109,6 +112,8 @@ export interface ResolvedRegistry {
   name: string;
   publisher: string;
   auth: RegistryAuth;
+  /** Resolved headers (secret URIs replaced with values at resolution time) */
+  headers?: Record<string, string>;
 }
 
 /** A normalized ref entry (after resolution) */
@@ -170,6 +175,7 @@ export function normalizeRegistry(
     name: entry.name ?? url.hostname,
     publisher: entry.publisher ?? url.hostname.split(".")[0],
     auth: entry.auth ?? { type: "none" },
+    ...(entry.headers && { headers: entry.headers }),
   };
 }
 

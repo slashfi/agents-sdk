@@ -123,6 +123,60 @@ async function resolveTemplates<T>(
 }
 
 // ============================================
+// Registry Auth Headers
+// ============================================
+
+/**
+ * Build auth headers for a registry based on its auth config and custom headers.
+ * Merges typed auth (bearer, api-key) with arbitrary custom headers.
+ */
+function buildRegistryAuthHeaders(
+  registry: ResolvedRegistry,
+  fallbackToken?: string,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+
+  // Apply typed auth
+  switch (registry.auth.type) {
+    case "bearer": {
+      const token = ("token" in registry.auth ? registry.auth.token : undefined) ?? fallbackToken;
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      break;
+    }
+    case "api-key": {
+      if ("key" in registry.auth && registry.auth.key) {
+        const headerName = ("header" in registry.auth ? registry.auth.header : undefined) ?? "x-api-key";
+        headers[headerName] = registry.auth.key;
+      }
+      break;
+    }
+    case "jwt": {
+      // JWT auth would require token exchange — not yet implemented
+      if (fallbackToken) {
+        headers.Authorization = `Bearer ${fallbackToken}`;
+      }
+      break;
+    }
+    case "none":
+    default: {
+      if (fallbackToken) {
+        headers.Authorization = `Bearer ${fallbackToken}`;
+      }
+      break;
+    }
+  }
+
+  // Merge custom headers (these override auth-generated headers)
+  if (registry.headers) {
+    Object.assign(headers, registry.headers);
+  }
+
+  return headers;
+}
+
+// ============================================
 // Registry Discovery Types
 // ============================================
 
@@ -450,6 +504,12 @@ export interface RegistryConsumer {
   /** Discover a registry's configuration */
   discover(registryUrl: string): Promise<RegistryConfiguration>;
 
+  /** Inspect a specific agent — returns tools, auth requirements, resources */
+  inspect(
+    agentPath: string,
+    registryUrl?: string,
+  ): Promise<AgentListing | null>;
+
   /** Resolve a secret URL to its value */
   resolveSecret(url: string): Promise<string>;
 
@@ -490,12 +550,15 @@ export async function createRegistryConsumer(
   const discoveryCache = new Map<string, RegistryConfiguration>();
 
   // Discover a registry
-  async function discover(registryUrl: string): Promise<RegistryConfiguration> {
+  async function discover(registryUrl: string, registry?: ResolvedRegistry): Promise<RegistryConfiguration> {
     const cached = discoveryCache.get(registryUrl);
     if (cached) return cached;
 
     const url = `${registryUrl.replace(/\/$/, "")}/.well-known/configuration`;
-    const res = await fetchFn(url);
+    const headers: Record<string, string> = registry
+      ? buildRegistryAuthHeaders(registry, options.token)
+      : (options.token ? { Authorization: `Bearer ${options.token}` } : {});
+    const res = await fetchFn(url, { headers });
     if (!res.ok) {
       throw new Error(
         `Failed to discover registry ${registryUrl}: ${res.status}`,
@@ -510,17 +573,12 @@ export async function createRegistryConsumer(
   async function listFromRegistry(
     registry: ResolvedRegistry,
   ): Promise<AgentListing[]> {
-    const configuration = await discover(registry.url);
+    const configuration = await discover(registry.url, registry);
     const listUrl =
       configuration.agents_endpoint ??
       `${registry.url.replace(/\/$/, "")}/list`;
 
-    const headers: Record<string, string> = {};
-    if (registry.auth.type === "bearer" && "token" in registry.auth) {
-      headers.Authorization = `Bearer ${registry.auth.token}`;
-    } else if (options.token) {
-      headers.Authorization = `Bearer ${options.token}`;
-    }
+    const headers = buildRegistryAuthHeaders(registry, options.token);
 
     const res = await fetchFn(listUrl, { headers });
     if (!res.ok) {
@@ -553,19 +611,15 @@ export async function createRegistryConsumer(
     tool: string,
     params: Record<string, unknown>,
   ): Promise<unknown> {
-    const configuration = await discover(registry.url);
+    const configuration = await discover(registry.url, registry);
     // MCP endpoint is the base URL (POST /), not /call
     const mcpUrl =
       configuration.call_endpoint ?? registry.url.replace(/\/$/, "");
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      ...buildRegistryAuthHeaders(registry, options.token),
     };
-    if (registry.auth.type === "bearer" && "token" in registry.auth) {
-      headers.Authorization = `Bearer ${registry.auth.token}`;
-    } else if (options.token) {
-      headers.Authorization = `Bearer ${options.token}`;
-    }
 
     const requestId = `call-${Date.now()}`;
     const res = await fetchFn(mcpUrl, {
@@ -730,7 +784,32 @@ export async function createRegistryConsumer(
       return callTool(registry, ref.ref, tool, params);
     },
 
-    discover,
+    discover(registryUrl: string) {
+      // Find matching resolved registry for auth headers
+      const registry = resolvedRegistries.find((r) => r.url === registryUrl);
+      return discover(registryUrl, registry);
+    },
+
+    async inspect(
+      agentPath: string,
+      registryUrl?: string,
+    ): Promise<AgentListing | null> {
+      // Search across all registries (or a specific one) for the agent
+      const targetRegistries = registryUrl
+        ? resolvedRegistries.filter((r) => r.url === registryUrl || r.name === registryUrl)
+        : resolvedRegistries;
+
+      for (const registry of targetRegistries) {
+        try {
+          const agents = await listFromRegistry(registry);
+          const match = agents.find((a) => a.path === agentPath);
+          if (match) return match;
+        } catch {
+          // Skip unreachable registries
+        }
+      }
+      return null;
+    },
 
     async resolveSecret(url: string): Promise<string> {
       return resolveSecretFn(url, { token: options.token });
