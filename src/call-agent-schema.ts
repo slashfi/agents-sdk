@@ -168,3 +168,30 @@ export const callAgentInputSchema = zodToJsonSchema(
   callAgentToolInputSchema as any,
   { target: "openAi" }
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// list_agents schema
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const listAgentsToolInputSchema = z.object({
+  query: z
+    .string()
+    .optional()
+    .describe(
+      "Search query. When provided, returns agents ranked by BM25 relevance over paths, names, descriptions, and tool names.",
+    ),
+  limit: z
+    .number()
+    .optional()
+    .describe(
+      "Maximum number of results to return (default: all for no query, 20 for query)",
+    ),
+});
+
+export type ListAgentsInput = z.infer<typeof listAgentsToolInputSchema>;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const listAgentsInputSchema = zodToJsonSchema(
+  listAgentsToolInputSchema as any,
+  { target: "openAi" }
+);

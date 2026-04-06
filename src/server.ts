@@ -46,7 +46,11 @@ import { type OIDCProviderConfig, createOIDCSignIn } from "./oidc-signin.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 
-import { callAgentInputSchema } from "./call-agent-schema.js";
+import {
+  callAgentInputSchema,
+  listAgentsInputSchema,
+  listAgentsToolInputSchema,
+} from "./call-agent-schema.js";
 
 // ============================================
 // Server Types
@@ -481,21 +485,9 @@ function getToolDefinitions() {
     },
     {
       name: "list_agents",
-      description: "List all registered agents and their available tools. Optionally search/filter by query using BM25 ranking.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description:
-              "Optional search query. When provided, returns agents ranked by BM25 relevance over paths, names, descriptions, and tool names.",
-          },
-          limit: {
-            type: "number",
-            description: "Maximum number of results to return (default: all for no query, 20 for query)",
-          },
-        },
-      },
+      description:
+        "List all registered agents and their available tools. Optionally search/filter by query using BM25 ranking.",
+      inputSchema: listAgentsInputSchema,
     },
   ];
 }
@@ -642,10 +634,8 @@ export function createAgentServer(
       }
 
       case "list_agents": {
-        const { query: listQuery, limit: listLimit } = args as {
-          query?: string;
-          limit?: number;
-        };
+        const { query: listQuery, limit: listLimit } =
+          listAgentsToolInputSchema.parse(args);
         const agents = registry.list();
         let visible = agents.filter((agent) => canSeeAgent(agent, auth));
 
