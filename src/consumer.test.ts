@@ -649,4 +649,20 @@ describe("Registry Consumer — API Key Auth", () => {
     expect(listing).not.toBeNull();
     expect(listing!.path).toBe("@math");
   });
+
+  test("browse lists agents from a specific registry", async () => {
+    const consumer = await createRegistryConsumer({
+      registries: [
+        {
+          url: `http://localhost:${PORT}`,
+          auth: { type: "api-key", key: API_KEY, header: "x-api-key" },
+        },
+      ],
+      refs: [{ ref: "@math" }],
+    });
+
+    const agents = await consumer.browse(`http://localhost:${PORT}`);
+    expect(agents.length).toBeGreaterThan(0);
+    expect(agents[0].path).toBe("@math");
+  });
 });

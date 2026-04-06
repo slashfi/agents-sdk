@@ -505,6 +505,9 @@ export interface RegistryConsumer {
   /** Discover a registry's configuration */
   discover(registryUrl: string): Promise<RegistryConfiguration>;
 
+  /** Browse agents from a specific registry (or all if url omitted) */
+  browse(registryUrl?: string): Promise<AgentListing[]>;
+
   /** Inspect a specific agent — returns tools, auth requirements, resources */
   inspect(
     agentPath: string,
@@ -794,6 +797,19 @@ export async function createRegistryConsumer(
       // Find matching resolved registry for auth headers
       const registry = resolvedRegistries.find((r) => r.url === registryUrl);
       return discover(registryUrl, registry);
+    },
+
+    async browse(registryUrl?: string): Promise<AgentListing[]> {
+      // List agents from a specific registry, or all registries if not specified
+      const targets = registryUrl
+        ? resolvedRegistries.filter(
+            (r) => r.url === registryUrl || r.name === registryUrl,
+          )
+        : resolvedRegistries;
+      const results = await Promise.allSettled(targets.map(listFromRegistry));
+      return results.flatMap((r) =>
+        r.status === "fulfilled" ? r.value : [],
+      );
     },
 
     async inspect(
