@@ -37,6 +37,7 @@ import type {
   ResolvedRef,
   ResolvedRegistry,
 } from "./define-config.js";
+import type { CallAgentRequest } from "./call-agent-schema.js";
 import type { SecuritySchemeSummary } from "./types.js";
 import {
   isSecretUri,
@@ -607,7 +608,7 @@ export async function createRegistryConsumer(
   // Send any call_agent request through a registry's MCP endpoint
   async function callRegistry(
     registry: ResolvedRegistry,
-    request: Record<string, unknown>,
+    request: CallAgentRequest,
   ): Promise<unknown> {
     const configuration = await discover(registry.url, registry);
     const mcpUrl =
