@@ -50,6 +50,9 @@ export interface RegistryEntry {
 
   /** Publisher name shown in the app store UI */
   publisher?: string;
+
+  /** Connection status — set by validation/test, used to filter active entries */
+  status?: 'active' | 'inactive' | 'error';
 }
 
 // ============================================
@@ -78,6 +81,9 @@ export type RefEntry = {
 
       /** The registry where this ref was discovered */
       sourceRegistry?: { url: string; agentPath: string };
+
+      /** Connection status — set by validation/test, used to filter active entries */
+      status?: 'active' | 'inactive' | 'error';
     };
 
 // ============================================
