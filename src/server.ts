@@ -481,10 +481,20 @@ function getToolDefinitions() {
     },
     {
       name: "list_agents",
-      description: "List all registered agents and their available tools.",
+      description: "List all registered agents and their available tools. Optionally search/filter by query using BM25 ranking.",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Optional search query. When provided, returns agents ranked by BM25 relevance over paths, names, descriptions, and tool names.",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum number of results to return (default: all for no query, 20 for query)",
+          },
+        },
       },
     },
     {
@@ -658,8 +668,44 @@ export function createAgentServer(
       }
 
       case "list_agents": {
+        const { query: listQuery, limit: listLimit } = args as {
+          query?: string;
+          limit?: number;
+        };
         const agents = registry.list();
-        const visible = agents.filter((agent) => canSeeAgent(agent, auth));
+        let visible = agents.filter((agent) => canSeeAgent(agent, auth));
+
+        // BM25 search if query provided
+        if (listQuery) {
+          const docs = visible.map((agent, i) => ({
+            id: String(i),
+            text: [
+              agent.path,
+              agent.config?.name ?? "",
+              agent.config?.description ?? "",
+              ...agent.tools
+                .filter((t) => {
+                  const tv = t.visibility ?? "internal";
+                  if (hasAdminScope(auth)) return true;
+                  if (tv === "public") return true;
+                  if (
+                    tv === "authenticated" &&
+                    auth?.callerId &&
+                    auth.callerId !== "anonymous"
+                  )
+                    return true;
+                  if (tv === "internal" && auth) return true;
+                  return false;
+                })
+                .map((t) => `${t.name} ${t.description}`),
+            ].join(" "),
+          }));
+          const index = createBM25Index(docs);
+          const ranked = index.search(listQuery, listLimit ?? 20);
+          visible = ranked.map((r) => visible[Number(r.id)]);
+        } else if (listLimit) {
+          visible = visible.slice(0, listLimit);
+        }
 
         return mcpResult({
           success: true,
@@ -1292,9 +1338,41 @@ export function createAgentServer(
       // ── GET /list → List agents (legacy endpoint) ──
       if (path === "/list" && req.method === "GET") {
         const agents = registry.list();
-        const visible = agents.filter((agent) =>
+        let visible = agents.filter((agent) =>
           canSeeAgent(agent, effectiveAuth),
         );
+
+        // BM25 search if ?q= provided
+        const searchQuery = url.searchParams.get("q");
+        const searchLimit = url.searchParams.get("limit");
+        if (searchQuery) {
+          const docs = visible.map((agent, i) => ({
+            id: String(i),
+            text: [
+              agent.path,
+              agent.config?.name ?? "",
+              agent.config?.description ?? "",
+              ...agent.tools
+                .filter((t) => {
+                  const tv = t.visibility ?? "internal";
+                  if (hasAdminScope(effectiveAuth)) return true;
+                  if (tv === "public") return true;
+                  if (tv === "internal" && effectiveAuth) return true;
+                  return false;
+                })
+                .map((t) => `${t.name} ${t.description}`),
+            ].join(" "),
+          }));
+          const index = createBM25Index(docs);
+          const ranked = index.search(
+            searchQuery,
+            searchLimit ? Number(searchLimit) : 20,
+          );
+          visible = ranked.map((r) => visible[Number(r.id)]);
+        } else if (searchLimit) {
+          visible = visible.slice(0, Number(searchLimit));
+        }
+
         const res = jsonResponse(
           visible.map((agent) => ({
             path: agent.path,

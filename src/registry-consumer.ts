@@ -573,14 +573,21 @@ export async function createRegistryConsumer(
     return configuration;
   }
 
-  // List agents from a single registry
+  // List agents from a single registry, with optional search query
   async function listFromRegistry(
     registry: ResolvedRegistry,
+    query?: string,
   ): Promise<AgentListing[]> {
     const configuration = await discover(registry.url, registry);
-    const listUrl =
+    let listUrl =
       configuration.agents_endpoint ??
       `${registry.url.replace(/\/$/, "")}/list`;
+
+    // Append search query if provided
+    if (query) {
+      const sep = listUrl.includes("?") ? "&" : "?";
+      listUrl += `${sep}q=${encodeURIComponent(query)}`;
+    }
 
     const headers = buildRegistryAuthHeaders(registry, options.token);
 
@@ -806,30 +813,13 @@ export async function createRegistryConsumer(
             (r) => r.url === registryUrl || r.name === registryUrl,
           )
         : resolvedRegistries;
-      const results = await Promise.allSettled(targets.map(listFromRegistry));
-      let agents = results.flatMap((r) =>
+      // Pass query to server for BM25 search
+      const results = await Promise.allSettled(
+        targets.map((t) => listFromRegistry(t, query)),
+      );
+      return results.flatMap((r) =>
         r.status === "fulfilled" ? r.value : [],
       );
-
-      // Apply BM25 search if query provided
-      if (query && agents.length > 0) {
-        const { createBM25Index } = await import("./bm25.js");
-        const docs = agents.map((a, i) => ({
-          id: String(i),
-          text: [
-            a.path,
-            a.description ?? "",
-            ...(a.tools ?? []).map((t: any) =>
-              typeof t === "string" ? t : `${t.name} ${t.description ?? ""}`
-            ),
-          ].join(" "),
-        }));
-        const index = createBM25Index(docs);
-        const ranked = index.search(query);
-        agents = ranked.map((r) => agents[Number(r.id)]);
-      }
-
-      return agents;
     },
 
     async inspect(
