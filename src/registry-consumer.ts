@@ -794,19 +794,59 @@ export async function createRegistryConsumer(
       agentPath: string,
       registryUrl?: string,
     ): Promise<AgentListing | null> {
-      // Search across all registries (or a specific one) for the agent
       const targetRegistries = registryUrl
         ? resolvedRegistries.filter((r) => r.url === registryUrl || r.name === registryUrl)
         : resolvedRegistries;
 
-      for (const registry of targetRegistries) {
-        try {
-          const agents = await listFromRegistry(registry);
-          const match = agents.find((a) => a.path === agentPath);
-          if (match) return match;
-        } catch {
-          // Skip unreachable registries
-        }
+      // Parallel O(1) lookups via call_agent describe_tools
+      const results = await Promise.allSettled(
+        targetRegistries.map(async (registry) => {
+          const configuration = await discover(registry.url, registry);
+          const mcpUrl = configuration.call_endpoint ?? registry.url.replace(/\/$/, "");
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+            ...buildRegistryAuthHeaders(registry, options.token),
+          };
+          const res = await fetchFn(mcpUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: `inspect-${Date.now()}`,
+              method: "tools/call",
+              params: {
+                name: "call_agent",
+                arguments: {
+                  request: {
+                    action: "describe_tools",
+                    path: agentPath,
+                    tools: [],
+                  },
+                },
+              },
+            }),
+          });
+          if (!res.ok) return null;
+          const rpc = (await res.json()) as { result?: { content?: Array<{ type: string; text: string }> }; error?: { message: string } };
+          if (rpc.error) return null;
+          const text = rpc.result?.content?.find((c) => c.type === "text");
+          if (!text?.text) return null;
+          try {
+            const data = JSON.parse(text.text);
+            return {
+              path: agentPath,
+              publisher: registry.publisher,
+              tools: data.tools ?? data.result?.tools,
+              description: data.description,
+            } as AgentListing;
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value) return r.value;
       }
       return null;
     },
