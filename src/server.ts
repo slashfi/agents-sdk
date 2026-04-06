@@ -4,7 +4,7 @@
  * Minimal JSON-RPC server implementing the MCP protocol for agent interaction.
  * Handles only core SDK concerns:
  * - MCP protocol (initialize, tools/list, tools/call)
- * - Agent registry routing (call_agent, list_agents, search_agent_tools)
+ * - Agent registry routing (call_agent, list_agents)
  * - Auth resolution (Bearer tokens, root key, JWT)
  * - OAuth2 token exchange (client_credentials)
  * - Health check
@@ -30,7 +30,7 @@ import {
   type SecretStore,
   processSecretParams,
 } from "./agent-definitions/secrets.js";
-import { type BM25Document, createBM25Index } from "./bm25.js";
+import { createBM25Index } from "./bm25.js";
 import { verifyJwt } from "./jwt.js";
 import type { SigningKey } from "./jwt.js";
 import {
@@ -497,32 +497,6 @@ function getToolDefinitions() {
         },
       },
     },
-    {
-      name: "search_agent_tools",
-      description:
-        "Search across all registered agent tools using natural language. Returns tools ranked by relevance using BM25 scoring.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description:
-              "Natural language search query (e.g. 'send a message', 'database query')",
-          },
-          agents: {
-            type: "array",
-            items: { type: "string" },
-            description:
-              "Optional list of agent paths to search within (e.g. ['@notifications', '@db']). Searches all agents if omitted.",
-          },
-          limit: {
-            type: "number",
-            description: "Maximum number of results to return (default: 10)",
-          },
-        },
-        required: ["query"],
-      },
-    },
   ];
 }
 
@@ -739,104 +713,6 @@ export function createAgentServer(
               })
               .map((t) => t.name),
           })),
-        });
-      }
-
-      case "search_agent_tools": {
-        const { query, agents: agentFilter, limit: resultLimit } = args as {
-          query: string;
-          agents?: string[];
-          limit?: number;
-        };
-
-        const agents = registry.list();
-        const visible = agents.filter((agent) => {
-          if (!canSeeAgent(agent, auth)) return false;
-          if (agentFilter && agentFilter.length > 0) {
-            return agentFilter.includes(agent.path);
-          }
-          return true;
-        });
-
-        // Build search documents from all visible tools
-        const documents: (BM25Document & {
-          agentPath: string;
-          toolName: string;
-          description: string;
-          agentName?: string;
-          agentDescription?: string;
-        })[] = [];
-
-        for (const agent of visible) {
-          const visibleTools = agent.tools.filter((t) => {
-            const tv = t.visibility ?? "internal";
-            if (hasAdminScope(auth)) return true;
-            if (tv === "public") return true;
-            if (
-              tv === "authenticated" &&
-              auth?.callerId &&
-              auth.callerId !== "anonymous"
-            )
-              return true;
-            if (tv === "internal" && auth) return true;
-            return false;
-          });
-
-          for (const tool of visibleTools) {
-            // Build searchable text from tool name, description, agent context, and schema
-            const parts = [
-              tool.name,
-              tool.description,
-              agent.config?.name ?? "",
-              agent.config?.description ?? "",
-              agent.path,
-            ];
-
-            // Include property names and descriptions from input schema
-            const schema = tool.inputSchema as any;
-            if (schema?.properties) {
-              for (const [key, prop] of Object.entries(schema.properties)) {
-                parts.push(key);
-                if ((prop as any)?.description) {
-                  parts.push((prop as any).description);
-                }
-              }
-            }
-
-            documents.push({
-              id: `${agent.path}/${tool.name}`,
-              text: parts.join(" "),
-              agentPath: agent.path,
-              toolName: tool.name,
-              description: tool.description,
-              agentName: agent.config?.name,
-              agentDescription: agent.config?.description,
-            });
-          }
-        }
-
-        const index = createBM25Index(documents);
-        const results = index.search(query, resultLimit ?? 10);
-
-        // Map results back to tool details
-        const docMap = new Map(documents.map((d) => [d.id, d]));
-        const matches = results.map((r) => {
-          const doc = docMap.get(r.id)!;
-          return {
-            agentPath: doc.agentPath,
-            tool: doc.toolName,
-            description: doc.description,
-            agentName: doc.agentName,
-            agentDescription: doc.agentDescription,
-            score: r.score,
-          };
-        });
-
-        return mcpResult({
-          success: true,
-          query,
-          results: matches,
-          total: matches.length,
         });
       }
 
