@@ -1611,7 +1611,7 @@ export function createAgentServer(
         key.privateKey,
         key.kid,
         options.serverName ?? "agents-sdk",
-        "1h",
+        claims.exp != null ? undefined : "1h",
       );
     },
 
