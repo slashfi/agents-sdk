@@ -598,7 +598,9 @@ export async function createRegistryConsumer(
       );
     }
 
-    const agents = (await res.json()) as Array<{
+    const body = await res.json();
+    // Support both paginated { agents: [...] } and legacy array responses
+    const agents = (Array.isArray(body) ? body : body.agents) as Array<{
       path: string;
       description?: string;
       tools?: Array<{ name: string; description?: string }>;

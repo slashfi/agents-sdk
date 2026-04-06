@@ -184,7 +184,13 @@ export const listAgentsToolInputSchema = z.object({
     .number()
     .optional()
     .describe(
-      "Maximum number of results to return (default: all for no query, 20 for query)",
+      "Maximum number of results per page (default: 20)",
+    ),
+  cursor: z
+    .string()
+    .optional()
+    .describe(
+      "Pagination cursor from a previous response's nextCursor field.",
     ),
 });
 

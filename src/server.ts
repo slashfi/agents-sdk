@@ -634,7 +634,7 @@ export function createAgentServer(
       }
 
       case "list_agents": {
-        const { query: listQuery, limit: listLimit } =
+        const { query: listQuery, limit: listLimit, cursor: listCursor } =
           listAgentsToolInputSchema.parse(args);
         const agents = registry.list();
         let visible = agents.filter((agent) => canSeeAgent(agent, auth));
@@ -665,15 +665,28 @@ export function createAgentServer(
             ].join(" "),
           }));
           const index = createBM25Index(docs);
-          const ranked = index.search(listQuery, listLimit ?? 20);
+          const ranked = index.search(listQuery);
           visible = ranked.map((r) => visible[Number(r.id)]);
-        } else if (listLimit) {
-          visible = visible.slice(0, listLimit);
         }
+
+        // Pagination
+        const total = visible.length;
+        const pageSize = listLimit ?? 20;
+        const offset = listCursor
+          ? Number(Buffer.from(listCursor, "base64url").toString())
+          : 0;
+        const page = visible.slice(offset, offset + pageSize);
+        const nextOffset = offset + pageSize;
+        const nextCursor =
+          nextOffset < total
+            ? Buffer.from(String(nextOffset)).toString("base64url")
+            : undefined;
 
         return mcpResult({
           success: true,
-          agents: visible.map((agent) => ({
+          total,
+          nextCursor,
+          agents: page.map((agent) => ({
             path: agent.path,
             name: agent.config?.name,
             description: agent.config?.description,
@@ -1211,6 +1224,7 @@ export function createAgentServer(
         // BM25 search if ?q= provided
         const searchQuery = url.searchParams.get("q");
         const searchLimit = url.searchParams.get("limit");
+        const searchCursor = url.searchParams.get("cursor");
         if (searchQuery) {
           const docs = visible.map((agent, i) => ({
             id: String(i),
@@ -1230,17 +1244,27 @@ export function createAgentServer(
             ].join(" "),
           }));
           const index = createBM25Index(docs);
-          const ranked = index.search(
-            searchQuery,
-            searchLimit ? Number(searchLimit) : 20,
-          );
+          const ranked = index.search(searchQuery);
           visible = ranked.map((r) => visible[Number(r.id)]);
-        } else if (searchLimit) {
-          visible = visible.slice(0, Number(searchLimit));
         }
 
-        const res = jsonResponse(
-          visible.map((agent) => ({
+        // Pagination
+        const httpTotal = visible.length;
+        const httpPageSize = searchLimit ? Number(searchLimit) : 20;
+        const httpOffset = searchCursor
+          ? Number(Buffer.from(searchCursor, "base64url").toString())
+          : 0;
+        const httpPage = visible.slice(httpOffset, httpOffset + httpPageSize);
+        const httpNextOffset = httpOffset + httpPageSize;
+        const httpNextCursor =
+          httpNextOffset < httpTotal
+            ? Buffer.from(String(httpNextOffset)).toString("base64url")
+            : undefined;
+
+        const res = jsonResponse({
+          total: httpTotal,
+          nextCursor: httpNextCursor,
+          agents: httpPage.map((agent) => ({
             path: agent.path,
             name: agent.config?.name,
             description: agent.config?.description,
@@ -1259,7 +1283,7 @@ export function createAgentServer(
                 description: t.description,
               })),
           })),
-        );
+        });
         return cors ? addCors(res) : res;
       }
 
