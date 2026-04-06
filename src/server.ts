@@ -44,7 +44,7 @@ import {
 } from "./jwt.js";
 import { type OIDCProviderConfig, createOIDCSignIn } from "./oidc-signin.js";
 import type { AgentRegistry } from "./registry.js";
-import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
+import type { AgentDefinition, CallAgentRequest } from "./types.js";
 
 import {
   callAgentInputSchema,

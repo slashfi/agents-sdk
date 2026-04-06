@@ -598,7 +598,7 @@ export async function createRegistryConsumer(
       );
     }
 
-    const body = await res.json();
+    const body = (await res.json()) as any;
     // Support both paginated { agents: [...] } and legacy array responses
     const agents = (Array.isArray(body) ? body : body.agents) as Array<{
       path: string;
@@ -709,7 +709,7 @@ export async function createRegistryConsumer(
     async list(): Promise<AgentListing[]> {
       // Collect from standard registries
       const registryResults = await Promise.allSettled(
-        resolvedRegistries.map(listFromRegistry),
+        resolvedRegistries.map((r) => listFromRegistry(r)),
       );
       const listings = registryResults.flatMap((r) =>
         r.status === "fulfilled" ? r.value : [],
