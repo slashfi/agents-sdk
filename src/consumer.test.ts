@@ -663,6 +663,6 @@ describe("Registry Consumer — API Key Auth", () => {
 
     const agents = await consumer.browse(`http://localhost:${PORT}`);
     expect(agents.length).toBeGreaterThan(0);
-    expect(agents[0].path).toBe("@math");
+    expect(agents.some((a) => a.path === "@math")).toBe(true);
   });
 });

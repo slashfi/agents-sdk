@@ -639,8 +639,19 @@ export function createAgentServer(
         const agents = registry.list();
         let visible = agents.filter((agent) => canSeeAgent(agent, auth));
 
-        // BM25 search if query provided
+        // Decode cursor if provided
+        const after = listCursor
+          ? (JSON.parse(
+              Buffer.from(listCursor, "base64url").toString(),
+            ) as { path: string; score?: number })
+          : undefined;
+
+        const pageSize = listLimit ?? 20;
+        let page: typeof visible;
+        let nextCursor: string | undefined;
+
         if (listQuery) {
+          // BM25 search — ranked by score desc, path asc for tie-breaking
           const docs = visible.map((agent, i) => ({
             id: String(i),
             text: [
@@ -666,25 +677,51 @@ export function createAgentServer(
           }));
           const index = createBM25Index(docs);
           const ranked = index.search(listQuery);
-          visible = ranked.map((r) => visible[Number(r.id)]);
-        }
 
-        // Pagination
-        const total = visible.length;
-        const pageSize = listLimit ?? 20;
-        const offset = listCursor
-          ? Number(Buffer.from(listCursor, "base64url").toString())
-          : 0;
-        const page = visible.slice(offset, offset + pageSize);
-        const nextOffset = offset + pageSize;
-        const nextCursor =
-          nextOffset < total
-            ? Buffer.from(String(nextOffset)).toString("base64url")
-            : undefined;
+          // Build scored list
+          type ScoredAgent = (typeof visible)[number] & { _score: number };
+          let scored: ScoredAgent[] = ranked.map((r) => ({
+            ...visible[Number(r.id)],
+            _score: r.score,
+          }));
+
+          // Apply cursor: skip past the after position
+          if (after?.score !== undefined) {
+            scored = scored.filter(
+              (a) =>
+                a._score < after.score! ||
+                (a._score === after.score! && a.path > after.path),
+            );
+          }
+
+          page = scored.slice(0, pageSize);
+          if (scored.length > pageSize) {
+            const last = scored[pageSize - 1] as ScoredAgent;
+            nextCursor = Buffer.from(
+              JSON.stringify({ path: last.path, score: last._score }),
+            ).toString("base64url");
+          }
+        } else {
+          // Alphabetical listing — sorted by path
+          visible.sort((a, b) => a.path.localeCompare(b.path));
+
+          // Apply cursor: skip past afterPath
+          if (after) {
+            visible = visible.filter((a) => a.path > after.path);
+          }
+
+          page = visible.slice(0, pageSize);
+          if (visible.length > pageSize) {
+            const last = page[page.length - 1];
+            nextCursor = Buffer.from(
+              JSON.stringify({ path: last.path }),
+            ).toString("base64url");
+          }
+        }
 
         return mcpResult({
           success: true,
-          total,
+          total: agents.filter((a) => canSeeAgent(a, auth)).length,
           nextCursor,
           agents: page.map((agent) => ({
             path: agent.path,
@@ -1214,17 +1251,28 @@ export function createAgentServer(
         return cors ? addCors(res) : res;
       }
 
-      // ── GET /list → List agents (legacy endpoint) ──
+      // ── GET /list → List agents (──
       if (path === "/list" && req.method === "GET") {
         const agents = registry.list();
         let visible = agents.filter((agent) =>
           canSeeAgent(agent, effectiveAuth),
         );
 
-        // BM25 search if ?q= provided
         const searchQuery = url.searchParams.get("q");
         const searchLimit = url.searchParams.get("limit");
         const searchCursor = url.searchParams.get("cursor");
+
+        // Decode cursor
+        const httpAfter = searchCursor
+          ? (JSON.parse(
+              Buffer.from(searchCursor, "base64url").toString(),
+            ) as { path: string; score?: number })
+          : undefined;
+
+        const httpPageSize = searchLimit ? Number(searchLimit) : 20;
+        let httpPage: typeof visible;
+        let httpNextCursor: string | undefined;
+
         if (searchQuery) {
           const docs = visible.map((agent, i) => ({
             id: String(i),
@@ -1245,24 +1293,44 @@ export function createAgentServer(
           }));
           const index = createBM25Index(docs);
           const ranked = index.search(searchQuery);
-          visible = ranked.map((r) => visible[Number(r.id)]);
+
+          type ScoredAgent = (typeof visible)[number] & { _score: number };
+          let scored: ScoredAgent[] = ranked.map((r) => ({
+            ...visible[Number(r.id)],
+            _score: r.score,
+          }));
+
+          if (httpAfter?.score !== undefined) {
+            scored = scored.filter(
+              (a) =>
+                a._score < httpAfter.score! ||
+                (a._score === httpAfter.score! && a.path > httpAfter.path),
+            );
+          }
+
+          httpPage = scored.slice(0, httpPageSize);
+          if (scored.length > httpPageSize) {
+            const last = scored[httpPageSize - 1] as ScoredAgent;
+            httpNextCursor = Buffer.from(
+              JSON.stringify({ path: last.path, score: last._score }),
+            ).toString("base64url");
+          }
+        } else {
+          visible.sort((a, b) => a.path.localeCompare(b.path));
+          if (httpAfter) {
+            visible = visible.filter((a) => a.path > httpAfter.path);
+          }
+          httpPage = visible.slice(0, httpPageSize);
+          if (visible.length > httpPageSize) {
+            const last = httpPage[httpPage.length - 1];
+            httpNextCursor = Buffer.from(
+              JSON.stringify({ path: last.path }),
+            ).toString("base64url");
+          }
         }
 
-        // Pagination
-        const httpTotal = visible.length;
-        const httpPageSize = searchLimit ? Number(searchLimit) : 20;
-        const httpOffset = searchCursor
-          ? Number(Buffer.from(searchCursor, "base64url").toString())
-          : 0;
-        const httpPage = visible.slice(httpOffset, httpOffset + httpPageSize);
-        const httpNextOffset = httpOffset + httpPageSize;
-        const httpNextCursor =
-          httpNextOffset < httpTotal
-            ? Buffer.from(String(httpNextOffset)).toString("base64url")
-            : undefined;
-
         const res = jsonResponse({
-          total: httpTotal,
+          total: agents.filter((a) => canSeeAgent(a, effectiveAuth)).length,
           nextCursor: httpNextCursor,
           agents: httpPage.map((agent) => ({
             path: agent.path,
