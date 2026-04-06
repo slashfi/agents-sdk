@@ -136,6 +136,8 @@ export {
   detectAuth,
   resolveAuth,
   canSeeAgent,
+  canSeeTool,
+  getVisibleTools,
   hasAdminScope,
 } from "./server.js";
 export type {

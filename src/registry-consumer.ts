@@ -37,6 +37,7 @@ import type {
   ResolvedRef,
   ResolvedRegistry,
 } from "./define-config.js";
+import type { CallAgentRequest } from "./call-agent-schema.js";
 import type { SecuritySchemeSummary } from "./types.js";
 import {
   isSecretUri,
@@ -120,6 +121,60 @@ async function resolveTemplates<T>(
     return result as T;
   }
   return obj;
+}
+
+// ============================================
+// Registry Auth Headers
+// ============================================
+
+/**
+ * Build auth headers for a registry based on its auth config and custom headers.
+ * Merges typed auth (bearer, api-key) with arbitrary custom headers.
+ */
+function buildRegistryAuthHeaders(
+  registry: ResolvedRegistry,
+  fallbackToken?: string,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+
+  // Apply typed auth
+  switch (registry.auth.type) {
+    case "bearer": {
+      const token = ("token" in registry.auth ? registry.auth.token : undefined) ?? fallbackToken;
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      break;
+    }
+    case "api-key": {
+      if ("key" in registry.auth && registry.auth.key) {
+        const headerName = ("header" in registry.auth ? registry.auth.header : undefined) ?? "x-api-key";
+        headers[headerName] = registry.auth.key;
+      }
+      break;
+    }
+    case "jwt": {
+      // JWT auth would require token exchange — not yet implemented
+      if (fallbackToken) {
+        headers.Authorization = `Bearer ${fallbackToken}`;
+      }
+      break;
+    }
+    case "none":
+    default: {
+      if (fallbackToken) {
+        headers.Authorization = `Bearer ${fallbackToken}`;
+      }
+      break;
+    }
+  }
+
+  // Merge custom headers (these override auth-generated headers)
+  if (registry.headers) {
+    Object.assign(headers, registry.headers);
+  }
+
+  return headers;
 }
 
 // ============================================
@@ -450,6 +505,15 @@ export interface RegistryConsumer {
   /** Discover a registry's configuration */
   discover(registryUrl: string): Promise<RegistryConfiguration>;
 
+  /** Browse agents from a specific registry (or all if url omitted), with optional BM25 search */
+  browse(registryUrl?: string, query?: string): Promise<AgentListing[]>;
+
+  /** Inspect a specific agent — returns tools, auth requirements, resources */
+  inspect(
+    agentPath: string,
+    registryUrl?: string,
+  ): Promise<AgentListing | null>;
+
   /** Resolve a secret URL to its value */
   resolveSecret(url: string): Promise<string>;
 
@@ -490,12 +554,15 @@ export async function createRegistryConsumer(
   const discoveryCache = new Map<string, RegistryConfiguration>();
 
   // Discover a registry
-  async function discover(registryUrl: string): Promise<RegistryConfiguration> {
+  async function discover(registryUrl: string, registry?: ResolvedRegistry): Promise<RegistryConfiguration> {
     const cached = discoveryCache.get(registryUrl);
     if (cached) return cached;
 
     const url = `${registryUrl.replace(/\/$/, "")}/.well-known/configuration`;
-    const res = await fetchFn(url);
+    const headers: Record<string, string> = registry
+      ? buildRegistryAuthHeaders(registry, options.token)
+      : (options.token ? { Authorization: `Bearer ${options.token}` } : {});
+    const res = await fetchFn(url, { headers });
     if (!res.ok) {
       throw new Error(
         `Failed to discover registry ${registryUrl}: ${res.status}`,
@@ -506,21 +573,23 @@ export async function createRegistryConsumer(
     return configuration;
   }
 
-  // List agents from a single registry
+  // List agents from a single registry, with optional search query
   async function listFromRegistry(
     registry: ResolvedRegistry,
+    query?: string,
   ): Promise<AgentListing[]> {
-    const configuration = await discover(registry.url);
-    const listUrl =
+    const configuration = await discover(registry.url, registry);
+    let listUrl =
       configuration.agents_endpoint ??
       `${registry.url.replace(/\/$/, "")}/list`;
 
-    const headers: Record<string, string> = {};
-    if (registry.auth.type === "bearer" && "token" in registry.auth) {
-      headers.Authorization = `Bearer ${registry.auth.token}`;
-    } else if (options.token) {
-      headers.Authorization = `Bearer ${options.token}`;
+    // Append search query if provided
+    if (query) {
+      const sep = listUrl.includes("?") ? "&" : "?";
+      listUrl += `${sep}q=${encodeURIComponent(query)}`;
     }
+
+    const headers = buildRegistryAuthHeaders(registry, options.token);
 
     const res = await fetchFn(listUrl, { headers });
     if (!res.ok) {
@@ -529,7 +598,9 @@ export async function createRegistryConsumer(
       );
     }
 
-    const agents = (await res.json()) as Array<{
+    const body = await res.json();
+    // Support both paginated { agents: [...] } and legacy array responses
+    const agents = (Array.isArray(body) ? body : body.agents) as Array<{
       path: string;
       description?: string;
       tools?: Array<{ name: string; description?: string }>;
@@ -546,26 +617,19 @@ export async function createRegistryConsumer(
     }));
   }
 
-  // Call a tool via a registry using MCP JSON-RPC (tools/call)
-  async function callTool(
+  // Send any call_agent request through a registry's MCP endpoint
+  async function callRegistry(
     registry: ResolvedRegistry,
-    agentPath: string,
-    tool: string,
-    params: Record<string, unknown>,
+    request: CallAgentRequest,
   ): Promise<unknown> {
-    const configuration = await discover(registry.url);
-    // MCP endpoint is the base URL (POST /), not /call
+    const configuration = await discover(registry.url, registry);
     const mcpUrl =
       configuration.call_endpoint ?? registry.url.replace(/\/$/, "");
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      ...buildRegistryAuthHeaders(registry, options.token),
     };
-    if (registry.auth.type === "bearer" && "token" in registry.auth) {
-      headers.Authorization = `Bearer ${registry.auth.token}`;
-    } else if (options.token) {
-      headers.Authorization = `Bearer ${options.token}`;
-    }
 
     const requestId = `call-${Date.now()}`;
     const res = await fetchFn(mcpUrl, {
@@ -577,14 +641,7 @@ export async function createRegistryConsumer(
         method: "tools/call",
         params: {
           name: "call_agent",
-          arguments: {
-            request: {
-              action: "execute_tool",
-              path: agentPath,
-              tool,
-              params,
-            },
-          },
+          arguments: { request },
         },
       }),
     });
@@ -592,7 +649,7 @@ export async function createRegistryConsumer(
     if (!res.ok) {
       const text = await res.text().catch(() => "unknown error");
       throw new Error(
-        `Tool call failed (${registry.url}/${agentPath}/${tool}): ${res.status} ${text}`,
+        `Registry call failed (${registry.url}): ${res.status} ${text}`,
       );
     }
 
@@ -608,7 +665,7 @@ export async function createRegistryConsumer(
 
     if (rpcResponse.error) {
       throw new Error(
-        `Tool call RPC error (${agentPath}/${tool}): ${rpcResponse.error.message}`,
+        `Registry RPC error: ${rpcResponse.error.message}`,
       );
     }
 
@@ -616,10 +673,10 @@ export async function createRegistryConsumer(
     if (mcpResult?.isError) {
       const errorText =
         mcpResult.content?.map((c) => c.text).join("\n") ?? "Unknown error";
-      throw new Error(`Tool call error (${agentPath}/${tool}): ${errorText}`);
+      throw new Error(`Registry call error: ${errorText}`);
     }
 
-    // Parse text content - call_agent returns JSON-stringified results
+    // Parse text content
     const textContent = mcpResult?.content?.find((c) => c.type === "text");
     if (textContent?.text) {
       try {
@@ -630,6 +687,21 @@ export async function createRegistryConsumer(
     }
 
     return mcpResult;
+  }
+
+  // Call a tool via a registry (convenience wrapper)
+  async function callTool(
+    registry: ResolvedRegistry,
+    agentPath: string,
+    tool: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    return callRegistry(registry, {
+      action: "execute_tool",
+      path: agentPath,
+      tool,
+      params,
+    });
   }
 
   // Build the consumer
@@ -730,7 +802,59 @@ export async function createRegistryConsumer(
       return callTool(registry, ref.ref, tool, params);
     },
 
-    discover,
+    discover(registryUrl: string) {
+      // Find matching resolved registry for auth headers
+      const registry = resolvedRegistries.find((r) => r.url === registryUrl);
+      return discover(registryUrl, registry);
+    },
+
+    async browse(registryUrl?: string, query?: string): Promise<AgentListing[]> {
+      // List agents from a specific registry, or all registries if not specified
+      const targets = registryUrl
+        ? resolvedRegistries.filter(
+            (r) => r.url === registryUrl || r.name === registryUrl,
+          )
+        : resolvedRegistries;
+      // Pass query to server for BM25 search
+      const results = await Promise.allSettled(
+        targets.map((t) => listFromRegistry(t, query)),
+      );
+      return results.flatMap((r) =>
+        r.status === "fulfilled" ? r.value : [],
+      );
+    },
+
+    async inspect(
+      agentPath: string,
+      registryUrl?: string,
+    ): Promise<AgentListing | null> {
+      const targetRegistries = registryUrl
+        ? resolvedRegistries.filter((r) => r.url === registryUrl || r.name === registryUrl)
+        : resolvedRegistries;
+
+      // Parallel O(1) lookups via describe_tools
+      const results = await Promise.allSettled(
+        targetRegistries.map(async (registry) => {
+          const data = (await callRegistry(registry, {
+            action: "describe_tools",
+            path: agentPath,
+            tools: [],
+          })) as { tools?: unknown[]; description?: string } | null;
+          if (!data) return null;
+          return {
+            path: agentPath,
+            publisher: registry.publisher,
+            tools: data.tools,
+            description: data.description,
+          } as AgentListing;
+        }),
+      );
+
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value) return r.value;
+      }
+      return null;
+    },
 
     async resolveSecret(url: string): Promise<string> {
       return resolveSecretFn(url, { token: options.token });

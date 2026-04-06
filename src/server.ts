@@ -4,7 +4,7 @@
  * Minimal JSON-RPC server implementing the MCP protocol for agent interaction.
  * Handles only core SDK concerns:
  * - MCP protocol (initialize, tools/list, tools/call)
- * - Agent registry routing (call_agent, list_agents, search_agent_tools)
+ * - Agent registry routing (call_agent, list_agents)
  * - Auth resolution (Bearer tokens, root key, JWT)
  * - OAuth2 token exchange (client_credentials)
  * - Health check
@@ -30,7 +30,7 @@ import {
   type SecretStore,
   processSecretParams,
 } from "./agent-definitions/secrets.js";
-import { type BM25Document, createBM25Index } from "./bm25.js";
+import { createBM25Index } from "./bm25.js";
 import { verifyJwt } from "./jwt.js";
 import type { SigningKey } from "./jwt.js";
 import {
@@ -46,7 +46,11 @@ import { type OIDCProviderConfig, createOIDCSignIn } from "./oidc-signin.js";
 import type { AgentRegistry } from "./registry.js";
 import type { AgentDefinition, CallAgentRequest, Visibility } from "./types.js";
 
-import { callAgentInputSchema } from "./call-agent-schema.js";
+import {
+  callAgentInputSchema,
+  listAgentsInputSchema,
+  listAgentsToolInputSchema,
+} from "./call-agent-schema.js";
 
 // ============================================
 // Server Types
@@ -206,20 +210,22 @@ export interface AuthConfig {
   tokenTtl?: number;
 }
 
-export interface ResolvedAuth {
-  issuer?: string;
-  callerId: string;
-  callerType: "agent" | "user" | "system";
-  scopes: string[];
-  /** All JWT claims from the verified token (passthrough) */
-  claims: Record<string, unknown>;
-}
 
-/** Check if auth has admin-level access (wildcard or admin scope) */
-export function hasAdminScope(auth: ResolvedAuth | null): boolean {
-  if (!auth) return false;
-  return auth.scopes.includes("*") || auth.scopes.includes("admin");
-}
+// Auth governance — single source of truth for visibility/access control
+export {
+  type ResolvedAuth,
+  hasAdminScope,
+  canSeeAgent,
+  canSeeTool,
+  getVisibleTools,
+} from "./auth-governance.js";
+import {
+  type ResolvedAuth,
+  hasAdminScope,
+  canSeeAgent,
+  canSeeTool,
+  getVisibleTools,
+} from "./auth-governance.js";
 
 // ============================================
 // HTTP Helpers
@@ -415,19 +421,6 @@ export async function resolveAuth(
   };
 }
 
-export function canSeeAgent(
-  agent: AgentDefinition,
-  auth: ResolvedAuth | null,
-): boolean {
-  const visibility = ((agent as any).visibility ??
-    agent.config?.visibility ??
-    "internal") as Visibility;
-  if (hasAdminScope(auth)) return true;
-  if (visibility === "public") return true;
-  if (visibility === "internal" && auth) return true;
-  return false;
-}
-
 /**
  * Resolve an agent by path, handling @ prefix normalization.
  * Tries the path as-is first, then with @ prefix.
@@ -438,33 +431,6 @@ function resolveAgent(
 ): AgentDefinition | undefined {
   const normalized = path.replace(/^@/, "");
   return registry.get(normalized) ?? registry.get(`@${normalized}`);
-}
-
-/**
- * Filter tools visible on a public agent endpoint.
- * For /agents/ routes, tools inherit the agent's visibility:
- * - If agent is public, tools without explicit visibility are shown
- * - Tool-level visibility still overrides (e.g. visibility: "private" hides it)
- */
-function getVisibleTools(
-  agent: AgentDefinition,
-  auth: ResolvedAuth | null,
-): typeof agent.tools {
-  const agentVisibility = ((agent as any).visibility ??
-    agent.config?.visibility ??
-    "internal") as Visibility;
-  return agent.tools.filter((t) => {
-    const tv = t.visibility;
-    if (hasAdminScope(auth)) return true;
-    // Tool has explicit visibility — respect it
-    if (tv === "public") return true;
-    if (tv === "private") return hasAdminScope(auth) ?? false;
-    if (tv === "internal" && auth) return true;
-    // No explicit tool visibility — inherit from agent
-    if (!tv && agentVisibility === "public") return true;
-    if (!tv && agentVisibility === "internal" && auth) return true;
-    return false;
-  });
 }
 
 // ============================================
@@ -481,37 +447,9 @@ function getToolDefinitions() {
     },
     {
       name: "list_agents",
-      description: "List all registered agents and their available tools.",
-      inputSchema: {
-        type: "object",
-        properties: {},
-      },
-    },
-    {
-      name: "search_agent_tools",
       description:
-        "Search across all registered agent tools using natural language. Returns tools ranked by relevance using BM25 scoring.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description:
-              "Natural language search query (e.g. 'send a message', 'database query')",
-          },
-          agents: {
-            type: "array",
-            items: { type: "string" },
-            description:
-              "Optional list of agent paths to search within (e.g. ['@notifications', '@db']). Searches all agents if omitted.",
-          },
-          limit: {
-            type: "number",
-            description: "Maximum number of results to return (default: 10)",
-          },
-        },
-        required: ["query"],
-      },
+        "List all registered agents and their available tools. Optionally search/filter by query using BM25 ranking.",
+      inputSchema: listAgentsInputSchema,
     },
   ];
 }
@@ -658,12 +596,84 @@ export function createAgentServer(
       }
 
       case "list_agents": {
+        const { query: listQuery, limit: listLimit, cursor: listCursor } =
+          listAgentsToolInputSchema.parse(args);
         const agents = registry.list();
-        const visible = agents.filter((agent) => canSeeAgent(agent, auth));
+        let visible = agents.filter((agent) => canSeeAgent(agent, auth));
+
+        // Decode cursor if provided
+        const after = listCursor
+          ? (JSON.parse(
+              Buffer.from(listCursor, "base64url").toString(),
+            ) as { path: string; score?: number })
+          : undefined;
+
+        const pageSize = listLimit ?? 20;
+        let page: typeof visible;
+        let nextCursor: string | undefined;
+
+        if (listQuery) {
+          // BM25 search — ranked by score desc, path asc for tie-breaking
+          const docs = visible.map((agent, i) => ({
+            id: String(i),
+            text: [
+              agent.path,
+              agent.config?.name ?? "",
+              agent.config?.description ?? "",
+              ...agent.tools
+                .filter((t) => canSeeTool(t, auth))
+                .map((t) => `${t.name} ${t.description}`),
+            ].join(" "),
+          }));
+          const index = createBM25Index(docs);
+          const ranked = index.search(listQuery);
+
+          // Build scored list
+          type ScoredAgent = (typeof visible)[number] & { _score: number };
+          let scored: ScoredAgent[] = ranked.map((r) => ({
+            ...visible[Number(r.id)],
+            _score: r.score,
+          }));
+
+          // Apply cursor: skip past the after position
+          if (after?.score !== undefined) {
+            scored = scored.filter(
+              (a) =>
+                a._score < after.score! ||
+                (a._score === after.score! && a.path > after.path),
+            );
+          }
+
+          page = scored.slice(0, pageSize);
+          if (scored.length > pageSize) {
+            const last = scored[pageSize - 1] as ScoredAgent;
+            nextCursor = Buffer.from(
+              JSON.stringify({ path: last.path, score: last._score }),
+            ).toString("base64url");
+          }
+        } else {
+          // Alphabetical listing — sorted by path
+          visible.sort((a, b) => a.path.localeCompare(b.path));
+
+          // Apply cursor: skip past afterPath
+          if (after) {
+            visible = visible.filter((a) => a.path > after.path);
+          }
+
+          page = visible.slice(0, pageSize);
+          if (visible.length > pageSize) {
+            const last = page[page.length - 1];
+            nextCursor = Buffer.from(
+              JSON.stringify({ path: last.path }),
+            ).toString("base64url");
+          }
+        }
 
         return mcpResult({
           success: true,
-          agents: visible.map((agent) => ({
+          total: agents.filter((a) => canSeeAgent(a, auth)).length,
+          nextCursor,
+          agents: page.map((agent) => ({
             path: agent.path,
             name: agent.config?.name,
             description: agent.config?.description,
@@ -678,119 +688,9 @@ export function createAgentServer(
               mimeType: r.mimeType,
             })),
             tools: agent.tools
-              .filter((t) => {
-                const tv = t.visibility ?? "internal";
-                if (hasAdminScope(auth)) return true;
-                if (tv === "public") return true;
-                if (
-                  tv === "authenticated" &&
-                  auth?.callerId &&
-                  auth.callerId !== "anonymous"
-                )
-                  return true;
-                if (tv === "internal" && auth) return true;
-                return false;
-              })
+              .filter((t) => canSeeTool(t, auth))
               .map((t) => t.name),
           })),
-        });
-      }
-
-      case "search_agent_tools": {
-        const { query, agents: agentFilter, limit: resultLimit } = args as {
-          query: string;
-          agents?: string[];
-          limit?: number;
-        };
-
-        const agents = registry.list();
-        const visible = agents.filter((agent) => {
-          if (!canSeeAgent(agent, auth)) return false;
-          if (agentFilter && agentFilter.length > 0) {
-            return agentFilter.includes(agent.path);
-          }
-          return true;
-        });
-
-        // Build search documents from all visible tools
-        const documents: (BM25Document & {
-          agentPath: string;
-          toolName: string;
-          description: string;
-          agentName?: string;
-          agentDescription?: string;
-        })[] = [];
-
-        for (const agent of visible) {
-          const visibleTools = agent.tools.filter((t) => {
-            const tv = t.visibility ?? "internal";
-            if (hasAdminScope(auth)) return true;
-            if (tv === "public") return true;
-            if (
-              tv === "authenticated" &&
-              auth?.callerId &&
-              auth.callerId !== "anonymous"
-            )
-              return true;
-            if (tv === "internal" && auth) return true;
-            return false;
-          });
-
-          for (const tool of visibleTools) {
-            // Build searchable text from tool name, description, agent context, and schema
-            const parts = [
-              tool.name,
-              tool.description,
-              agent.config?.name ?? "",
-              agent.config?.description ?? "",
-              agent.path,
-            ];
-
-            // Include property names and descriptions from input schema
-            const schema = tool.inputSchema as any;
-            if (schema?.properties) {
-              for (const [key, prop] of Object.entries(schema.properties)) {
-                parts.push(key);
-                if ((prop as any)?.description) {
-                  parts.push((prop as any).description);
-                }
-              }
-            }
-
-            documents.push({
-              id: `${agent.path}/${tool.name}`,
-              text: parts.join(" "),
-              agentPath: agent.path,
-              toolName: tool.name,
-              description: tool.description,
-              agentName: agent.config?.name,
-              agentDescription: agent.config?.description,
-            });
-          }
-        }
-
-        const index = createBM25Index(documents);
-        const results = index.search(query, resultLimit ?? 10);
-
-        // Map results back to tool details
-        const docMap = new Map(documents.map((d) => [d.id, d]));
-        const matches = results.map((r) => {
-          const doc = docMap.get(r.id)!;
-          return {
-            agentPath: doc.agentPath,
-            tool: doc.toolName,
-            description: doc.description,
-            agentName: doc.agentName,
-            agentDescription: doc.agentDescription,
-            score: r.score,
-          };
-        });
-
-        return mcpResult({
-          success: true,
-          query,
-          results: matches,
-          total: matches.length,
         });
       }
 
@@ -1266,9 +1166,12 @@ export function createAgentServer(
       // Public registries (e.g. registry.slash.com) skip this entirely.
       if (
         path === "/.well-known/oauth-authorization-server" &&
-        req.method === "GET" &&
-        (options.registry?.oauthCallbackUrl || serverSigningKeys.length > 0)
+        req.method === "GET"
       ) {
+        if (!(options.registry?.oauthCallbackUrl || serverSigningKeys.length > 0)) {
+          const res = new Response("Not Found", { status: 404 });
+          return cors ? addCors(res) : res;
+        }
         const baseUrl = resolveBaseUrl(req);
         const res = jsonResponse({
           issuer: baseUrl,
@@ -1286,33 +1189,95 @@ export function createAgentServer(
         return cors ? addCors(res) : res;
       }
 
-      // ── GET /list → List agents (legacy endpoint) ──
+      // ── GET /list → List agents (──
       if (path === "/list" && req.method === "GET") {
         const agents = registry.list();
-        const visible = agents.filter((agent) =>
+        let visible = agents.filter((agent) =>
           canSeeAgent(agent, effectiveAuth),
         );
-        const res = jsonResponse(
-          visible.map((agent) => ({
+
+        const searchQuery = url.searchParams.get("q");
+        const searchLimit = url.searchParams.get("limit");
+        const searchCursor = url.searchParams.get("cursor");
+
+        // Decode cursor
+        const httpAfter = searchCursor
+          ? (JSON.parse(
+              Buffer.from(searchCursor, "base64url").toString(),
+            ) as { path: string; score?: number })
+          : undefined;
+
+        const httpPageSize = searchLimit ? Number(searchLimit) : 20;
+        let httpPage: typeof visible;
+        let httpNextCursor: string | undefined;
+
+        if (searchQuery) {
+          const docs = visible.map((agent, i) => ({
+            id: String(i),
+            text: [
+              agent.path,
+              agent.config?.name ?? "",
+              agent.config?.description ?? "",
+              ...agent.tools
+                .filter((t) => canSeeTool(t, effectiveAuth))
+                .map((t) => `${t.name} ${t.description}`),
+            ].join(" "),
+          }));
+          const index = createBM25Index(docs);
+          const ranked = index.search(searchQuery);
+
+          type ScoredAgent = (typeof visible)[number] & { _score: number };
+          let scored: ScoredAgent[] = ranked.map((r) => ({
+            ...visible[Number(r.id)],
+            _score: r.score,
+          }));
+
+          if (httpAfter?.score !== undefined) {
+            scored = scored.filter(
+              (a) =>
+                a._score < httpAfter.score! ||
+                (a._score === httpAfter.score! && a.path > httpAfter.path),
+            );
+          }
+
+          httpPage = scored.slice(0, httpPageSize);
+          if (scored.length > httpPageSize) {
+            const last = scored[httpPageSize - 1] as ScoredAgent;
+            httpNextCursor = Buffer.from(
+              JSON.stringify({ path: last.path, score: last._score }),
+            ).toString("base64url");
+          }
+        } else {
+          visible.sort((a, b) => a.path.localeCompare(b.path));
+          if (httpAfter) {
+            visible = visible.filter((a) => a.path > httpAfter.path);
+          }
+          httpPage = visible.slice(0, httpPageSize);
+          if (visible.length > httpPageSize) {
+            const last = httpPage[httpPage.length - 1];
+            httpNextCursor = Buffer.from(
+              JSON.stringify({ path: last.path }),
+            ).toString("base64url");
+          }
+        }
+
+        const res = jsonResponse({
+          total: agents.filter((a) => canSeeAgent(a, effectiveAuth)).length,
+          nextCursor: httpNextCursor,
+          agents: httpPage.map((agent) => ({
             path: agent.path,
             name: agent.config?.name,
             description: agent.config?.description,
             supportedActions: agent.config?.supportedActions,
             integration: agent.config?.integration || null,
             tools: agent.tools
-              .filter((t) => {
-                const tv = t.visibility ?? "internal";
-                if (hasAdminScope(effectiveAuth)) return true;
-                if (tv === "public") return true;
-                if (tv === "internal" && effectiveAuth) return true;
-                return false;
-              })
+              .filter((t) => canSeeTool(t, effectiveAuth))
               .map((t) => ({
                 name: t.name,
                 description: t.description,
               })),
           })),
-        );
+        });
         return cors ? addCors(res) : res;
       }
 

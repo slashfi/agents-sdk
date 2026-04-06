@@ -42,11 +42,17 @@ export interface RegistryEntry {
   /** How to authenticate with this registry */
   auth?: RegistryAuth;
 
+  /** Arbitrary headers to send with every request to this registry (values can be secret URIs) */
+  headers?: Record<string, string>;
+
   /** Human-readable name / alias for this registry */
   name?: string;
 
   /** Publisher name shown in the app store UI */
   publisher?: string;
+
+  /** Connection status — set by validation/test, used to filter active entries */
+  status?: 'active' | 'inactive' | 'error';
 }
 
 // ============================================
@@ -75,6 +81,9 @@ export type RefEntry = {
 
       /** The registry where this ref was discovered */
       sourceRegistry?: { url: string; agentPath: string };
+
+      /** Connection status — set by validation/test, used to filter active entries */
+      status?: 'active' | 'inactive' | 'error';
     };
 
 // ============================================
@@ -109,6 +118,8 @@ export interface ResolvedRegistry {
   name: string;
   publisher: string;
   auth: RegistryAuth;
+  /** Resolved headers (secret URIs replaced with values at resolution time) */
+  headers?: Record<string, string>;
 }
 
 /** A normalized ref entry (after resolution) */
@@ -170,6 +181,7 @@ export function normalizeRegistry(
     name: entry.name ?? url.hostname,
     publisher: entry.publisher ?? url.hostname.split(".")[0],
     auth: entry.auth ?? { type: "none" },
+    ...(entry.headers && { headers: entry.headers }),
   };
 }
 
