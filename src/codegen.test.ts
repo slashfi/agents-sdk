@@ -62,6 +62,10 @@ beforeAll(() => {
     port: 0,
     fetch(req) {
       return (async () => {
+        // Handle GET requests (well-known endpoints, etc.)
+        if (req.method === "GET") {
+          return new Response("Not Found", { status: 404 });
+        }
         const body = (await req.json()) as {
           id?: number;
           method: string;
@@ -305,6 +309,9 @@ describe("codegen JSON Schema support", () => {
       port: 0,
       fetch(req) {
         return (async () => {
+          if (req.method === "GET") {
+            return new Response("Not Found", { status: 404 });
+          }
           const body = (await req.json()) as { id?: number; method: string; params?: Record<string, unknown> };
           if (body.id === undefined) return new Response(null, { status: 202 });
 
@@ -401,6 +408,9 @@ describe("codegen pagination", () => {
       port: 0,
       fetch(req) {
         return (async () => {
+          if (req.method === "GET") {
+            return new Response("Not Found", { status: 404 });
+          }
           const body = (await req.json()) as {
             id?: number;
             method: string;

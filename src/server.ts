@@ -1266,9 +1266,12 @@ export function createAgentServer(
       // Public registries (e.g. registry.slash.com) skip this entirely.
       if (
         path === "/.well-known/oauth-authorization-server" &&
-        req.method === "GET" &&
-        (options.registry?.oauthCallbackUrl || serverSigningKeys.length > 0)
+        req.method === "GET"
       ) {
+        if (!(options.registry?.oauthCallbackUrl || serverSigningKeys.length > 0)) {
+          const res = new Response("Not Found", { status: 404 });
+          return cors ? addCors(res) : res;
+        }
         const baseUrl = resolveBaseUrl(req);
         const res = jsonResponse({
           issuer: baseUrl,
