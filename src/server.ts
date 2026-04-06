@@ -433,6 +433,39 @@ export function canSeeAgent(
 }
 
 /**
+ * Check if a tool is visible to the given auth context.
+ * Centralizes tool visibility logic — use instead of inline filters.
+ *
+ * When agentVisibility is provided, tools without explicit visibility
+ * inherit from their parent agent.
+ */
+export function canSeeTool(
+  tool: { visibility?: Visibility },
+  auth: ResolvedAuth | null,
+  agentVisibility?: Visibility,
+): boolean {
+  const tv = tool.visibility;
+  if (hasAdminScope(auth)) return true;
+  // Tool has explicit visibility — respect it
+  if (tv === "public") return true;
+  if (tv === "private") return false;
+  if (
+    tv === "authenticated" &&
+    auth?.callerId &&
+    auth.callerId !== "anonymous"
+  )
+    return true;
+  if (tv === "internal" && auth) return true;
+  // No explicit tool visibility — inherit from agent or default to internal
+  if (!tv) {
+    const inherited = agentVisibility ?? "internal";
+    if (inherited === "public") return true;
+    if (inherited === "internal" && auth) return true;
+  }
+  return false;
+}
+
+/**
  * Resolve an agent by path, handling @ prefix normalization.
  * Tries the path as-is first, then with @ prefix.
  */
@@ -457,18 +490,7 @@ function getVisibleTools(
   const agentVisibility = ((agent as any).visibility ??
     agent.config?.visibility ??
     "internal") as Visibility;
-  return agent.tools.filter((t) => {
-    const tv = t.visibility;
-    if (hasAdminScope(auth)) return true;
-    // Tool has explicit visibility — respect it
-    if (tv === "public") return true;
-    if (tv === "private") return hasAdminScope(auth) ?? false;
-    if (tv === "internal" && auth) return true;
-    // No explicit tool visibility — inherit from agent
-    if (!tv && agentVisibility === "public") return true;
-    if (!tv && agentVisibility === "internal" && auth) return true;
-    return false;
-  });
+  return agent.tools.filter((t) => canSeeTool(t, auth, agentVisibility));
 }
 
 // ============================================
@@ -659,19 +681,7 @@ export function createAgentServer(
               agent.config?.name ?? "",
               agent.config?.description ?? "",
               ...agent.tools
-                .filter((t) => {
-                  const tv = t.visibility ?? "internal";
-                  if (hasAdminScope(auth)) return true;
-                  if (tv === "public") return true;
-                  if (
-                    tv === "authenticated" &&
-                    auth?.callerId &&
-                    auth.callerId !== "anonymous"
-                  )
-                    return true;
-                  if (tv === "internal" && auth) return true;
-                  return false;
-                })
+                .filter((t) => canSeeTool(t, auth))
                 .map((t) => `${t.name} ${t.description}`),
             ].join(" "),
           }));
@@ -738,19 +748,7 @@ export function createAgentServer(
               mimeType: r.mimeType,
             })),
             tools: agent.tools
-              .filter((t) => {
-                const tv = t.visibility ?? "internal";
-                if (hasAdminScope(auth)) return true;
-                if (tv === "public") return true;
-                if (
-                  tv === "authenticated" &&
-                  auth?.callerId &&
-                  auth.callerId !== "anonymous"
-                )
-                  return true;
-                if (tv === "internal" && auth) return true;
-                return false;
-              })
+              .filter((t) => canSeeTool(t, auth))
               .map((t) => t.name),
           })),
         });
@@ -1281,13 +1279,7 @@ export function createAgentServer(
               agent.config?.name ?? "",
               agent.config?.description ?? "",
               ...agent.tools
-                .filter((t) => {
-                  const tv = t.visibility ?? "internal";
-                  if (hasAdminScope(effectiveAuth)) return true;
-                  if (tv === "public") return true;
-                  if (tv === "internal" && effectiveAuth) return true;
-                  return false;
-                })
+                .filter((t) => canSeeTool(t, effectiveAuth))
                 .map((t) => `${t.name} ${t.description}`),
             ].join(" "),
           }));
@@ -1339,13 +1331,7 @@ export function createAgentServer(
             supportedActions: agent.config?.supportedActions,
             integration: agent.config?.integration || null,
             tools: agent.tools
-              .filter((t) => {
-                const tv = t.visibility ?? "internal";
-                if (hasAdminScope(effectiveAuth)) return true;
-                if (tv === "public") return true;
-                if (tv === "internal" && effectiveAuth) return true;
-                return false;
-              })
+              .filter((t) => canSeeTool(t, effectiveAuth))
               .map((t) => ({
                 name: t.name,
                 description: t.description,
