@@ -210,20 +210,22 @@ export interface AuthConfig {
   tokenTtl?: number;
 }
 
-export interface ResolvedAuth {
-  issuer?: string;
-  callerId: string;
-  callerType: "agent" | "user" | "system";
-  scopes: string[];
-  /** All JWT claims from the verified token (passthrough) */
-  claims: Record<string, unknown>;
-}
 
-/** Check if auth has admin-level access (wildcard or admin scope) */
-export function hasAdminScope(auth: ResolvedAuth | null): boolean {
-  if (!auth) return false;
-  return auth.scopes.includes("*") || auth.scopes.includes("admin");
-}
+// Auth governance — single source of truth for visibility/access control
+export {
+  type ResolvedAuth,
+  hasAdminScope,
+  canSeeAgent,
+  canSeeTool,
+  getVisibleTools,
+} from "./auth-governance.js";
+import {
+  type ResolvedAuth,
+  hasAdminScope,
+  canSeeAgent,
+  canSeeTool,
+  getVisibleTools,
+} from "./auth-governance.js";
 
 // ============================================
 // HTTP Helpers
@@ -419,52 +421,6 @@ export async function resolveAuth(
   };
 }
 
-export function canSeeAgent(
-  agent: AgentDefinition,
-  auth: ResolvedAuth | null,
-): boolean {
-  const visibility = ((agent as any).visibility ??
-    agent.config?.visibility ??
-    "internal") as Visibility;
-  if (hasAdminScope(auth)) return true;
-  if (visibility === "public") return true;
-  if (visibility === "internal" && auth) return true;
-  return false;
-}
-
-/**
- * Check if a tool is visible to the given auth context.
- * Centralizes tool visibility logic — use instead of inline filters.
- *
- * When agentVisibility is provided, tools without explicit visibility
- * inherit from their parent agent.
- */
-export function canSeeTool(
-  tool: { visibility?: Visibility },
-  auth: ResolvedAuth | null,
-  agentVisibility?: Visibility,
-): boolean {
-  const tv = tool.visibility;
-  if (hasAdminScope(auth)) return true;
-  // Tool has explicit visibility — respect it
-  if (tv === "public") return true;
-  if (tv === "private") return false;
-  if (
-    tv === "authenticated" &&
-    auth?.callerId &&
-    auth.callerId !== "anonymous"
-  )
-    return true;
-  if (tv === "internal" && auth) return true;
-  // No explicit tool visibility — inherit from agent or default to internal
-  if (!tv) {
-    const inherited = agentVisibility ?? "internal";
-    if (inherited === "public") return true;
-    if (inherited === "internal" && auth) return true;
-  }
-  return false;
-}
-
 /**
  * Resolve an agent by path, handling @ prefix normalization.
  * Tries the path as-is first, then with @ prefix.
@@ -475,22 +431,6 @@ function resolveAgent(
 ): AgentDefinition | undefined {
   const normalized = path.replace(/^@/, "");
   return registry.get(normalized) ?? registry.get(`@${normalized}`);
-}
-
-/**
- * Filter tools visible on a public agent endpoint.
- * For /agents/ routes, tools inherit the agent's visibility:
- * - If agent is public, tools without explicit visibility are shown
- * - Tool-level visibility still overrides (e.g. visibility: "private" hides it)
- */
-function getVisibleTools(
-  agent: AgentDefinition,
-  auth: ResolvedAuth | null,
-): typeof agent.tools {
-  const agentVisibility = ((agent as any).visibility ??
-    agent.config?.visibility ??
-    "internal") as Visibility;
-  return agent.tools.filter((t) => canSeeTool(t, auth, agentVisibility));
 }
 
 // ============================================
