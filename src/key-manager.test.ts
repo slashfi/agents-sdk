@@ -118,6 +118,23 @@ describe("KeyManager", () => {
     expect(payload.exp - payload.iat).toBe(60);
   });
 
+  test("respects exp claim instead of default TTL", async () => {
+    const store = createMemoryKeyStore();
+    km = await createKeyManager({
+      store,
+      issuer: "http://test:3000",
+      tokenTtlSeconds: 300,
+      checkIntervalMs: 60_000,
+    });
+
+    const customExp = Math.floor(Date.now() / 1000) + 86400; // 24h from now
+    const token = await km.signJwt({ sub: "custom-exp", exp: customExp });
+    const payload = JSON.parse(
+      Buffer.from(token.split(".")[1], "base64url").toString(),
+    );
+    expect(payload.exp).toBe(customExp);
+  });
+
   // ---- Rotation tests ----
 
   test("rotation: creates new key when threshold exceeded", async () => {

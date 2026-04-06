@@ -236,12 +236,18 @@ export async function createKeyManager(
 
     async signJwt(claims: Record<string, unknown>): Promise<string> {
       const key = getActiveKey();
-      return new SignJWT({ ...claims } as any)
+      let builder = new SignJWT({ ...claims } as any)
         .setProtectedHeader({ alg: ALG, kid: key.kid })
         .setIssuer(issuer)
-        .setIssuedAt()
-        .setExpirationTime(`${tokenTtlSeconds}s`)
-        .sign(key.privateKey);
+        .setIssuedAt();
+
+      if (claims.exp != null) {
+        builder = builder.setExpirationTime(claims.exp as number);
+      } else {
+        builder = builder.setExpirationTime(`${tokenTtlSeconds}s`);
+      }
+
+      return builder.sign(key.privateKey);
     },
 
     async rotate(): Promise<void> {
