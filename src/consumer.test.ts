@@ -534,3 +534,119 @@ describe("Secret URI resolution", () => {
     );
   });
 });
+
+// ─── API Key Auth Tests ──────────────────────────────────────────
+
+describe("Registry Consumer — API Key Auth", () => {
+  let server: AgentServer;
+  const PORT = 19894;
+  const API_KEY = "test-secret-key-12345";
+
+  beforeAll(async () => {
+    const registry = createAgentRegistry();
+    registry.register(mathAgent);
+    registry.register(echoAgent);
+
+    server = createAgentServer(registry, {
+      port: PORT,
+      resolveAuth: async (req) => {
+        const apiKey = req.headers.get("x-api-key");
+        if (apiKey === API_KEY) {
+          return {
+            callerId: "api-key-user",
+            callerType: "system" as const,
+            scopes: ["*"],
+          };
+        }
+        return null;
+      },
+    });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  test("consumer with api-key auth type can list agents", async () => {
+    const consumer = await createRegistryConsumer({
+      registries: [
+        {
+          url: `http://localhost:${PORT}`,
+          auth: { type: "api-key", key: API_KEY, header: "x-api-key" },
+        },
+      ],
+      refs: [{ ref: "@math" }],
+    });
+
+    const agents = await consumer.list();
+    expect(agents.length).toBeGreaterThanOrEqual(2);
+    const paths = agents.map((a) => a.path);
+    expect(paths).toContain("@math");
+    expect(paths).toContain("@echo");
+  });
+
+  test("consumer with custom headers can list agents", async () => {
+    const consumer = await createRegistryConsumer({
+      registries: [
+        {
+          url: `http://localhost:${PORT}`,
+          headers: { "x-api-key": API_KEY },
+        },
+      ],
+      refs: [{ ref: "@math" }],
+    });
+
+    const agents = await consumer.list();
+    expect(agents.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("consumer with wrong api-key gets different auth context", async () => {
+    // Without the right key, resolveAuth returns null (no auth context)
+    // The server still processes the request but without auth identity
+    const consumer = await createRegistryConsumer({
+      registries: [
+        {
+          url: `http://localhost:${PORT}`,
+          auth: { type: "api-key", key: "wrong-key", header: "x-api-key" },
+        },
+      ],
+      refs: [{ ref: "@math" }],
+    });
+
+    // Can still list public agents (discovery doesn't require auth)
+    const agents = await consumer.list();
+    expect(agents.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("consumer with api-key auth can call tools", async () => {
+    const consumer = await createRegistryConsumer({
+      registries: [
+        {
+          url: `http://localhost:${PORT}`,
+          auth: { type: "api-key", key: API_KEY, header: "x-api-key" },
+        },
+      ],
+      refs: [{ ref: "@math" }],
+    });
+
+    const result = await consumer.call("@math", "add", { a: 10, b: 20 });
+    expect(result).toBeDefined();
+  });
+
+  test("inspect returns agent details via describe_tools", async () => {
+    const consumer = await createRegistryConsumer({
+      registries: [
+        {
+          url: `http://localhost:${PORT}`,
+          auth: { type: "api-key", key: API_KEY, header: "x-api-key" },
+        },
+      ],
+      refs: [{ ref: "@math" }],
+    });
+
+    const listing = await consumer.inspect("@math");
+    expect(listing).not.toBeNull();
+    expect(listing!.path).toBe("@math");
+  });
+});
