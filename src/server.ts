@@ -48,8 +48,11 @@ import type { AgentDefinition, CallAgentRequest } from "./types.js";
 
 import {
   callAgentInputSchema,
+  callAgentValidationSchema,
   listAgentsInputSchema,
-  listAgentsToolInputSchema,
+  listAgentsValidationSchema,
+  nullTolerant,
+  zodToOpenAiJsonSchema,
 } from "./call-agent-schema.js";
 
 // ============================================
@@ -146,6 +149,24 @@ export interface AgentServerOptions {
    * ```
    */
   resolveAuth?: (req: Request) => Promise<ResolvedAuth | null>;
+  /**
+   * Schema overrides for built-in MCP tools.
+   * When provided, these replace the default schemas for both
+   * JSON Schema generation (what LLMs see) and runtime validation.
+   *
+   * Schemas must be Zod schemas that are supersets of the defaults
+   * (e.g., extending the base action schemas with additional fields).
+   *
+   * The server automatically:
+   * - Converts to JSON Schema (openAi target) for tools/list
+   * - Wraps with nullTolerant() for validation
+   */
+  schemas?: {
+    /** Override call_agent tool input schema (wraps callAgentRequestSchema) */
+    callAgent?: import("zod").ZodTypeAny;
+    /** Override list_agents tool input schema */
+    listAgents?: import("zod").ZodTypeAny;
+  };
   /**
    * Registry capabilities — advertised in MCP initialize response.
    * When set, this server identifies as an agent registry (superset of MCP).
@@ -437,19 +458,23 @@ function resolveAgent(
 // MCP Tool Definitions
 // ============================================
 
-function getToolDefinitions() {
+function getToolDefinitions(schemas?: AgentServerOptions["schemas"]) {
   return [
     {
       name: "call_agent",
       description:
         "Execute a tool on a registered agent. Provide the agent path and tool name.\n\nSupported actions:\n- invoke: Fire-and-forget agent invocation\n- ask: Invoke and wait for response\n- execute_tool: Call a specific tool on an agent\n- describe_tools: Get tool schemas for an agent\n- load: Get agent definition/system prompt\n- list_resources: List all resources available on an agent (docs, auth instructions, config schemas, etc.)\n- read_resources: Fetch one or more resources by URI",
-      inputSchema: callAgentInputSchema,
+      inputSchema: schemas?.callAgent
+        ? zodToOpenAiJsonSchema(schemas.callAgent)
+        : callAgentInputSchema,
     },
     {
       name: "list_agents",
       description:
         "List all registered agents and their available tools. Optionally search/filter by query using BM25 ranking.",
-      inputSchema: listAgentsInputSchema,
+      inputSchema: schemas?.listAgents
+        ? zodToOpenAiJsonSchema(schemas.listAgents)
+        : listAgentsInputSchema,
     },
   ];
 }
@@ -472,6 +497,15 @@ export function createAgentServer(
     secretStore,
     oauthIdentityProvider,
   } = options;
+
+  // Build tool definitions and validation schemas from overrides
+  const toolDefs = getToolDefinitions(options.schemas);
+  const callAgentValidate = options.schemas?.callAgent
+    ? nullTolerant(options.schemas.callAgent)
+    : callAgentValidationSchema;
+  const listAgentsValidate = options.schemas?.listAgents
+    ? nullTolerant(options.schemas.listAgents)
+    : listAgentsValidationSchema;
 
   // OIDC sign-in handler (if configured)
   const oidcSignIn = options.oidcProvider
@@ -518,7 +552,7 @@ export function createAgentServer(
 
       case "tools/list":
         return jsonRpcSuccess(request.id, {
-          tools: getToolDefinitions(),
+          tools: toolDefs,
         });
 
       case "tools/call": {
@@ -562,7 +596,11 @@ export function createAgentServer(
   ) {
     switch (toolName) {
       case "call_agent": {
-        const req = (args.request ?? args) as CallAgentRequest;
+        // Validate + strip nulls (OpenAI convention: null = absent)
+        const parsed = callAgentValidate.safeParse(args);
+        const req = (parsed.success
+          ? (parsed.data as Record<string, unknown>).request ?? parsed.data
+          : (args.request ?? args)) as CallAgentRequest;
 
         // Inject auth context
         if (auth) {
@@ -597,7 +635,7 @@ export function createAgentServer(
 
       case "list_agents": {
         const { query: listQuery, limit: listLimit, cursor: listCursor } =
-          listAgentsToolInputSchema.parse(args);
+          listAgentsValidate.parse(args);
         const agents = registry.list();
         let visible = agents.filter((agent) => canSeeAgent(agent, auth));
 
