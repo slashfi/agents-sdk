@@ -12,7 +12,69 @@
  * Response types live in types.ts (they're output shapes, not validated input).
  */
 
-import { z } from "zod";
+import { z, type ZodTypeAny } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OpenAI null-tolerance transform
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Recursively strip null values from an object, converting them to undefined.
+ * This is the inverse of zod-to-json-schema's openAi target behavior, which
+ * converts .optional() fields to nullable+required in JSON Schema.
+ *
+ * Used as a z.preprocess() step so that Zod's .optional() (which accepts
+ * undefined but not null) works correctly with LLM outputs that send null
+ * for "no value" per the OpenAI function calling convention.
+ */
+export function stripNulls(obj: unknown): unknown {
+  if (obj === null) return undefined;
+  if (Array.isArray(obj)) return obj.map(stripNulls);
+  if (typeof obj === "object") {
+    return Object.fromEntries(
+      Object.entries(obj as Record<string, unknown>).map(([k, v]) => [
+        k,
+        stripNulls(v),
+      ]),
+    );
+  }
+  return obj;
+}
+
+/**
+ * Wrap a Zod schema with a preprocess step that converts null → undefined.
+ * This makes the schema "null-tolerant" — matching what the OpenAI JSON Schema
+ * target promises to LLMs (nullable fields) while keeping Zod's .optional()
+ * semantics internally.
+ *
+ * @example
+ * ```ts
+ * const schema = z.object({ name: z.string().optional() });
+ * const tolerant = nullTolerant(schema);
+ * tolerant.parse({ name: null }); // { name: undefined } — no error
+ * ```
+ */
+export function nullTolerant<T extends ZodTypeAny>(schema: T) {
+  return z.preprocess(stripNulls, schema) as unknown as T;
+}
+
+/**
+ * Convert a Zod schema to JSON Schema using the OpenAI target,
+ * which makes all optional fields nullable+required.
+ *
+ * This is the standard way to generate input schemas for MCP tools
+ * that will be called by LLMs.
+ */
+export function zodToOpenAiJsonSchema(
+  schema: ZodTypeAny,
+): Record<string, unknown> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return zodToJsonSchema(schema as any, { target: "openAi" }) as Record<
+    string,
+    unknown
+  >;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Base schemas
@@ -85,12 +147,20 @@ export const loadActionSchema = callAgentBaseSchema.extend({
 
 /** List resources: discover available resources on an agent */
 export const listResourcesActionSchema = callAgentBaseSchema.extend({
-  action: z.literal("list_resources").describe("List all resources available on an agent — docs, auth instructions, config schemas, etc."),
+  action: z
+    .literal("list_resources")
+    .describe(
+      "List all resources available on an agent — docs, auth instructions, config schemas, etc.",
+    ),
 });
 
 /** Read resources: fetch one or more resources by URI */
 export const readResourcesActionSchema = callAgentBaseSchema.extend({
-  action: z.literal("read_resources").describe("Fetch one or more resources by URI. Use list_resources first to discover available URIs."),
+  action: z
+    .literal("read_resources")
+    .describe(
+      "Fetch one or more resources by URI. Use list_resources first to discover available URIs.",
+    ),
   uris: z
     .array(z.string())
     .describe("Resource URIs to read (e.g., ['AUTH.md'])"),
@@ -140,14 +210,12 @@ export type CallerType = z.infer<typeof callerTypeSchema>;
 /** All supported action strings as a const array. */
 export const CALL_AGENT_ACTIONS: AgentAction[] =
   callAgentRequestSchema.options.map(
-    (s) => (s.shape as { action: z.ZodLiteral<AgentAction> }).action.value
+    (s) => (s.shape as { action: z.ZodLiteral<AgentAction> }).action.value,
   );
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Schema for MCP (derived from zod)
 // ─────────────────────────────────────────────────────────────────────────────
-
-import { zodToJsonSchema } from "zod-to-json-schema";
 
 /**
  * Zod schema for the full MCP tool input (wraps request in an outer object).
@@ -163,10 +231,17 @@ export const callAgentToolInputSchema = z.object({
  *
  * Fully derived from the zod schemas — no hand-written JSON Schema.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const callAgentInputSchema = zodToJsonSchema(
-  callAgentToolInputSchema as any,
-  { target: "openAi" }
+export const callAgentInputSchema = zodToOpenAiJsonSchema(
+  callAgentToolInputSchema,
+);
+
+/**
+ * Null-tolerant validation schema for `call_agent`.
+ * Accepts null values where the JSON Schema promises nullable,
+ * converting them to undefined before Zod validation.
+ */
+export const callAgentValidationSchema = nullTolerant(
+  callAgentToolInputSchema,
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -183,9 +258,7 @@ export const listAgentsToolInputSchema = z.object({
   limit: z
     .number()
     .optional()
-    .describe(
-      "Maximum number of results per page (default: 20)",
-    ),
+    .describe("Maximum number of results per page (default: 20)"),
   cursor: z
     .string()
     .optional()
@@ -196,8 +269,10 @@ export const listAgentsToolInputSchema = z.object({
 
 export type ListAgentsInput = z.infer<typeof listAgentsToolInputSchema>;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const listAgentsInputSchema = zodToJsonSchema(
-  listAgentsToolInputSchema as any,
-  { target: "openAi" }
+export const listAgentsInputSchema = zodToOpenAiJsonSchema(
+  listAgentsToolInputSchema,
+);
+
+export const listAgentsValidationSchema = nullTolerant(
+  listAgentsToolInputSchema,
 );

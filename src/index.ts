@@ -384,6 +384,8 @@ export type { IntrospectOptions } from "./introspect.js";
 export {
   callAgentInputSchema,
   callAgentRequestSchema,
+  callAgentValidationSchema,
+  callAgentToolInputSchema,
   invokeActionSchema,
   askActionSchema,
   executeToolActionSchema,
@@ -393,6 +395,10 @@ export {
   readResourcesActionSchema,
   callerTypeSchema,
   CALL_AGENT_ACTIONS,
+  nullTolerant,
+  stripNulls,
+  zodToOpenAiJsonSchema,
+  listAgentsValidationSchema,
 } from "./call-agent-schema.js";
 
 // ============================================
