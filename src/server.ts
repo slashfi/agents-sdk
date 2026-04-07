@@ -108,7 +108,7 @@ export interface AgentServerOptions {
   basePath?: string;
   /** Enable CORS (default: true) */
   cors?: boolean;
-  /** Server name reported in MCP initialize (default: 'agents-sdk') */
+  /** Server name reported in MCP initialize, or full public URL (e.g., 'https://registry.example.com') used as canonical base for discovery endpoints. When a full URL is provided, it takes precedence over x-forwarded-* headers. (default: 'agents-sdk') */
   serverName?: string;
   /** Server version reported in MCP initialize (default: '1.0.0') */
   serverVersion?: string;
@@ -703,12 +703,21 @@ export function createAgentServer(
   // OAuth2 token handler
   // ──────────────────────────────────────────
 
-  // Resolve public-facing base URL, respecting reverse proxy headers
-  const resolveBaseUrl = (r: Request): string => {
-    const fwdProto = r.headers.get("x-forwarded-proto");
-    const fwdHost = r.headers.get("x-forwarded-host");
+  // Resolve public-facing base URL from explicit config or reverse proxy headers.
+  // When serverName is a valid URL, use it as the canonical base URL.
+  // This is the correct pattern for servers behind TLS-terminating load balancers
+  // (e.g., NLB) that don't set x-forwarded-proto headers.
+  const resolveBaseUrl = (_r: Request): string => {
+    try {
+      const parsed = new URL(serverName);
+      if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+        return parsed.origin;
+      }
+    } catch {}
+    const fwdProto = _r.headers.get("x-forwarded-proto");
+    const fwdHost = _r.headers.get("x-forwarded-host");
     if (fwdProto && fwdHost) return `${fwdProto}://${fwdHost}`;
-    return new URL(r.url).origin;
+    return new URL(_r.url).origin;
   };
 
   async function handleOAuthToken(req: Request): Promise<Response> {
