@@ -224,6 +224,14 @@ export interface AgentListing {
   };
 }
 
+/** Raw agent entry returned by the list_agents MCP tool (before normalization). */
+type ListAgentsEntry = Omit<AgentListing, "publisher" | "tools"> & {
+  tools?: Array<{ name: string; description?: string } | string>;
+};
+
+/** Response shape from list_agents — an array of agent entries. */
+type ListAgentsResponse = ListAgentsEntry[];
+
 // ============================================
 // Secret Resolver
 // ============================================
@@ -573,46 +581,33 @@ export async function createRegistryConsumer(
     return configuration;
   }
 
-  // List agents from a single registry, with optional search query
+  // List agents from a single registry via MCP tools/call list_agents
   async function listFromRegistry(
     registry: ResolvedRegistry,
     query?: string,
   ): Promise<AgentListing[]> {
     const configuration = await discover(registry.url, registry);
-    let listUrl =
-      configuration.agents_endpoint ??
-      `${registry.url.replace(/\/$/, "")}/list`;
+    const mcpUrl =
+      configuration.call_endpoint ?? registry.url.replace(/\/$/, "");
 
-    // Append search query if provided
-    if (query) {
-      const sep = listUrl.includes("?") ? "&" : "?";
-      listUrl += `${sep}q=${encodeURIComponent(query)}`;
-    }
-
-    const headers = buildRegistryAuthHeaders(registry, options.token);
-
-    const res = await fetchFn(listUrl, { headers });
-    if (!res.ok) {
-      throw new Error(
-        `Failed to list agents from ${registry.url}: ${res.status}`,
-      );
-    }
-
-    const body = (await res.json()) as any;
-    // Support both paginated { agents: [...] } and legacy array responses
-    const agents = (Array.isArray(body) ? body : body.agents) as Array<{
-      path: string;
-      description?: string;
-      tools?: Array<{ name: string; description?: string }>;
-      integration?: {
-        provider: string;
-        displayName: string;
-        category?: string;
-      };
-    }>;
+    const agents = await callMcpTool(
+      mcpUrl,
+      "list_agents",
+      query ? { query } : {},
+      {
+        token: options.token,
+        headers: buildRegistryAuthHeaders(registry, options.token),
+      },
+      fetchFn,
+    ) as ListAgentsResponse;
 
     return agents.map((agent) => ({
       ...agent,
+      ...agent,
+      // Normalize tools: strings become { name } objects
+      tools: agent.tools?.map((t) =>
+        typeof t === "string" ? { name: t } : t,
+      ),
       publisher: registry.publisher,
     }));
   }
