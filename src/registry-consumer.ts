@@ -229,8 +229,13 @@ type ListAgentsEntry = Omit<AgentListing, "publisher" | "tools"> & {
   tools?: Array<{ name: string; description?: string } | string>;
 };
 
-/** Response shape from list_agents — an array of agent entries. */
-type ListAgentsResponse = ListAgentsEntry[];
+/** Response shape from list_agents — wrapped object with agents array. */
+type ListAgentsResponse = {
+  agents: ListAgentsEntry[];
+  total?: number;
+  nextCursor?: string;
+  success?: boolean;
+};
 
 // ============================================
 // Secret Resolver
@@ -590,7 +595,7 @@ export async function createRegistryConsumer(
     const mcpUrl =
       configuration.call_endpoint ?? registry.url.replace(/\/$/, "");
 
-    const agents = await callMcpTool(
+    const response = await callMcpTool(
       mcpUrl,
       "list_agents",
       query ? { query } : {},
@@ -600,6 +605,8 @@ export async function createRegistryConsumer(
       },
       fetchFn,
     ) as ListAgentsResponse;
+
+    const agents = response.agents ?? [];
 
     return agents.map((agent) => ({
       ...agent,
