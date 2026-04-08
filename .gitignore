@@ -6,5 +6,5 @@ dist/
 drizzle/
 test-notion-client.ts
 
-# Local-only copy of internal MCP smoke script (see scripts/test-slash-internal-mcp.example.ts)
-scripts/test-slash-internal-mcp.ts
+# Internal smoke scripts (keep local only)
+scripts/test-slash-internal-mcp*.ts
