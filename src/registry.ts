@@ -5,7 +5,7 @@
  */
 
 import { dirname, resolve } from "node:path";
-import type { AgentEvent, BaseEvent, CustomEventMap, EventCallback, EventType } from "./events.js";
+import type { AgentEvent, BaseEvent, CallAgentToolCallEvent, CustomEventMap, EventCallback, EventType, ListAgentsResult, ListAgentsToolCallEvent } from "./events.js";
 import { createEventBus } from "./events.js";
 import type { SerializedAgentDefinition } from "./serialized.js";
 import type {
@@ -96,6 +96,21 @@ export interface AgentRegistry {
   /** Call an agent (execute action) */
   call(request: CallAgentRequest): Promise<CallAgentResponse>;
 
+  /**
+   * List agents with hook support.
+   * Emits `tools/call/list_agents` event so hosts can inject additional agents
+   * (e.g., from remote registries or consumer config) before the callback runs.
+   *
+   * @param params - Query/pagination params from the MCP tool call
+   * @param callback - Processes the (possibly augmented) agent list into the final result.
+   *                   Receives the merged agent list; responsible for visibility, BM25, pagination.
+   * @returns The ListAgentsResult from either the callback or an intercepting listener
+   */
+  listAgents(
+    params: { query?: string; limit?: number; cursor?: string },
+    callback: (agents: AgentDefinition[]) => Promise<ListAgentsResult>,
+  ): Promise<ListAgentsResult>;
+
   /** Register an event listener (global scope — fires for all agents) */
   on<T extends EventType>(eventType: T, callback: EventCallback<T>): void;
 
@@ -181,6 +196,18 @@ export function agentFromSerialized(
         }) as unknown as ToolDefinition,
     ),
   };
+}
+
+/**
+ * Deduplicate agents by path. Later entries (from additionalAgents) override
+ * earlier ones from the base set.
+ */
+function dedupeAgents(agents: AgentDefinition[]): AgentDefinition[] {
+  const seen = new Map<string, AgentDefinition>();
+  for (const agent of agents) {
+    seen.set(agent.path, agent);
+  }
+  return Array.from(seen.values());
 }
 
 export function createAgentRegistry(
@@ -484,6 +511,46 @@ export function createAgentRegistry(
       return Array.from(agents.keys());
     },
 
+    async listAgents(
+      params: { query?: string; limit?: number; cursor?: string },
+      callback: (agents: AgentDefinition[]) => Promise<ListAgentsResult>,
+    ): Promise<ListAgentsResult> {
+      const baseAgents = Array.from(agents.values());
+      let intercepted: ListAgentsResult | undefined;
+      let nextCalled = false;
+      let nextResult: ListAgentsResult | undefined;
+
+      const nextFn = async (additionalAgents?: AgentDefinition[]) => {
+        nextCalled = true;
+        const merged = additionalAgents
+          ? dedupeAgents([...baseAgents, ...additionalAgents])
+          : baseAgents;
+        nextResult = await callback(merged);
+        return nextResult;
+      };
+      const resolveFn = (result: ListAgentsResult) => {
+        intercepted = result;
+      };
+
+      await eventBus.emit({
+        type: "tools/call/list_agents",
+        agentPath: "*",
+        timestamp: Date.now(),
+        baseAgents,
+        query: params.query,
+        limit: params.limit,
+        cursor: params.cursor,
+        next: nextFn,
+        resolve: resolveFn,
+      } satisfies ListAgentsToolCallEvent);
+
+      if (intercepted) return intercepted;
+      if (nextCalled) return nextResult!;
+
+      // No listener engaged — run default with base agents
+      return callback(baseAgents);
+    },
+
     on<T extends EventType>(eventType: T, callback: EventCallback<T>): void {
       eventBus.on(eventType, callback);
     },
@@ -500,26 +567,32 @@ export function createAgentRegistry(
     },
 
     async call(request: CallAgentRequest): Promise<CallAgentResponse> {
-      // Emit call event — listeners can next()/resolve() to control flow
+      // Emit tools/call/call_agent event — listeners can next()/resolve() to control flow
       let intercepted: CallAgentResponse | undefined;
       let nextCalled = false;
       let nextResult: CallAgentResponse | undefined;
+
+      const nextFn = async (overrideRequest?: CallAgentRequest) => {
+        nextCalled = true;
+        nextResult = await callInternal(overrideRequest ?? request);
+        return nextResult;
+      };
+      const resolveFn = (response: CallAgentResponse) => {
+        intercepted = response;
+      };
+
+      // Emit the new namespaced event
       await eventBus.emit({
-        type: "call",
+        type: "tools/call/call_agent",
         agentPath: request.path,
         timestamp: Date.now(),
         request,
-        async next(overrideRequest?: CallAgentRequest) {
-          nextCalled = true;
-          nextResult = await callInternal(overrideRequest ?? request);
-          return nextResult;
-        },
-        resolve(response: CallAgentResponse) {
-          intercepted = response;
-        },
-      });
+        next: nextFn,
+        resolve: resolveFn,
+      } satisfies CallAgentToolCallEvent);
       if (intercepted) return intercepted;
       if (nextCalled) return nextResult!;
+
       // No listener engaged — run default
       return callInternal(request);
     },

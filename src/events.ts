@@ -10,7 +10,7 @@
  * Filtering happens in the callback, not the API.
  */
 
-import type { CallAgentRequest, CallAgentResponse } from "./types.js";
+import type { AgentDefinition, CallAgentRequest, CallAgentResponse } from "./types.js";
 // =============================================================================
 // Event Types
 // =============================================================================
@@ -24,7 +24,8 @@ export type SystemEventType =
   | "tool/error"
   | "step"
   | "invoke"
-  | "call";
+  | "tools/call/call_agent"
+  | "tools/call/list_agents";
 
 /**
  * Augmentable map for custom event types. Consumers extend this
@@ -124,12 +125,28 @@ export interface InvokeEvent extends BaseEvent {
 }
 
 /**
- * Event emitted when a call_agent request is received.
- * Call `resolve(response)` to short-circuit the default handler.
- * If no listener resolves, the default call handler runs.
+ * Event emitted when the `call_agent` MCP tool is invoked.
+ * Replaces the legacy `call` event with a namespaced type.
+ *
+ * Call `next()` to run the default call handler (optionally with a modified request).
+ * Call `resolve(response)` to short-circuit with a custom response.
+ * If neither is called, the default handler runs.
+ *
+ * @example
+ * ```ts
+ * registry.on('tools/call/call_agent', async (event) => {
+ *   // Proxy to a remote registry
+ *   if (isRemoteAgent(event.request.path)) {
+ *     const result = await proxyToRemote(event.request);
+ *     event.resolve(result);
+ *     return;
+ *   }
+ *   // Fall through to default handler
+ * });
+ * ```
  */
-export interface CallEvent extends BaseEvent {
-  type: "call";
+export interface CallAgentToolCallEvent extends BaseEvent {
+  type: "tools/call/call_agent";
   /** The incoming call_agent request */
   request: CallAgentRequest;
   /** Run the default call handler and return its result.
@@ -137,6 +154,61 @@ export interface CallEvent extends BaseEvent {
   next(request?: CallAgentRequest): Promise<CallAgentResponse>;
   /** Short-circuit with a response (skips default handler if next() not called) */
   resolve(response: CallAgentResponse): void;
+}
+
+/**
+ * Result shape for list_agents responses.
+ */
+export interface ListAgentsResult {
+  success: true;
+  total: number;
+  nextCursor?: string;
+  agents: Array<{
+    path: string;
+    name?: string;
+    description?: string;
+    supportedActions?: string[];
+    integration?: unknown;
+    security?: { type: string };
+    resources?: Array<{ uri: string; name?: string; mimeType?: string }>;
+    tools: string[];
+  }>;
+}
+
+/**
+ * Event emitted when the `list_agents` MCP tool is invoked.
+ *
+ * Gives hosts a chance to inject additional agents (e.g., from remote registries
+ * or consumer config) before BM25 search and pagination run.
+ *
+ * Call `next(additionalAgents?)` to continue default behavior with optional
+ * extra agents merged into the base set.
+ * Call `resolve(result)` to short-circuit with a fully formed response.
+ * If neither is called, the default handler runs with the base agents.
+ *
+ * @example
+ * ```ts
+ * registry.on('tools/call/list_agents', async (event) => {
+ *   const remoteAgents = await fetchRemoteAgents();
+ *   await event.next(remoteAgents);
+ * });
+ * ```
+ */
+export interface ListAgentsToolCallEvent extends BaseEvent {
+  type: "tools/call/list_agents";
+  /** Agents from the local registry (before search/pagination) */
+  baseAgents: AgentDefinition[];
+  /** Search query, if provided */
+  query?: string;
+  /** Requested page size */
+  limit?: number;
+  /** Pagination cursor */
+  cursor?: string;
+  /** Continue with default BM25/pagination behavior.
+   *  Pass additional agents to merge into the base set. */
+  next(additionalAgents?: AgentDefinition[]): Promise<ListAgentsResult>;
+  /** Short-circuit with a complete response (same shape as list_agents output) */
+  resolve(result: ListAgentsResult): void;
 }
 
 /**
@@ -148,7 +220,8 @@ export type AgentEvent =
   | ToolErrorEvent
   | StepEvent
   | InvokeEvent
-  | CallEvent;
+  | CallAgentToolCallEvent
+  | ListAgentsToolCallEvent;
 
 /**
  * Map from system event type string to event interface.
@@ -159,7 +232,8 @@ export interface SystemEventMap {
   "tool/error": ToolErrorEvent;
   step: StepEvent;
   invoke: InvokeEvent;
-  call: CallEvent;
+  "tools/call/call_agent": CallAgentToolCallEvent;
+  "tools/call/list_agents": ListAgentsToolCallEvent;
 }
 
 /**

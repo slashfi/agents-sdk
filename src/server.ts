@@ -670,101 +670,108 @@ export function createAgentServer(
           limit: listLimit,
           cursor: listCursor,
         } = listAgentsValidate.parse(args);
-        const agents = registry.list();
-        let visible = agents.filter((agent) => canSeeAgent(agent, auth));
 
-        // Decode cursor if provided
-        const after = listCursor
-          ? (JSON.parse(Buffer.from(listCursor, "base64url").toString()) as {
-              path: string;
-              score?: number;
-            })
-          : undefined;
+        const result = await registry.listAgents(
+          { query: listQuery, limit: listLimit, cursor: listCursor },
+          async (allAgents) => {
+            let visible = allAgents.filter((agent) => canSeeAgent(agent, auth));
 
-        const pageSize = listLimit ?? 20;
-        let page: typeof visible;
-        let nextCursor: string | undefined;
+            // Decode cursor if provided
+            const after = listCursor
+              ? (JSON.parse(Buffer.from(listCursor, "base64url").toString()) as {
+                  path: string;
+                  score?: number;
+                })
+              : undefined;
 
-        if (listQuery) {
-          // BM25 search — ranked by score desc, path asc for tie-breaking
-          const docs = visible.map((agent, i) => ({
-            id: String(i),
-            text: [
-              agent.path,
-              agent.config?.name ?? "",
-              agent.config?.description ?? "",
-              ...agent.tools
-                .filter((t) => canSeeTool(t, auth))
-                .map((t) => `${t.name} ${t.description}`),
-            ].join(" "),
-          }));
-          const index = createBM25Index(docs);
-          const ranked = index.search(listQuery);
+            const pageSize = listLimit ?? 20;
+            let page: typeof visible;
+            let nextCursor: string | undefined;
 
-          // Build scored list
-          type ScoredAgent = (typeof visible)[number] & { _score: number };
-          let scored: ScoredAgent[] = ranked.map((r) => ({
-            ...visible[Number(r.id)],
-            _score: r.score,
-          }));
+            if (listQuery) {
+              // BM25 search — ranked by score desc, path asc for tie-breaking
+              const docs = visible.map((agent, i) => ({
+                id: String(i),
+                text: [
+                  agent.path,
+                  agent.config?.name ?? "",
+                  agent.config?.description ?? "",
+                  ...agent.tools
+                    .filter((t) => canSeeTool(t, auth))
+                    .map((t) => `${t.name} ${t.description}`),
+                ].join(" "),
+              }));
+              const index = createBM25Index(docs);
+              const ranked = index.search(listQuery);
 
-          // Apply cursor: skip past the after position
-          if (after?.score !== undefined) {
-            scored = scored.filter(
-              (a) =>
-                a._score < after.score! ||
-                (a._score === after.score! && a.path > after.path),
-            );
-          }
+              // Build scored list
+              type ScoredAgent = (typeof visible)[number] & { _score: number };
+              let scored: ScoredAgent[] = ranked.map((r) => ({
+                ...visible[Number(r.id)],
+                _score: r.score,
+              }));
 
-          page = scored.slice(0, pageSize);
-          if (scored.length > pageSize) {
-            const last = scored[pageSize - 1] as ScoredAgent;
-            nextCursor = Buffer.from(
-              JSON.stringify({ path: last.path, score: last._score }),
-            ).toString("base64url");
-          }
-        } else {
-          // Alphabetical listing — sorted by path
-          visible.sort((a, b) => a.path.localeCompare(b.path));
+              // Apply cursor: skip past the after position
+              if (after?.score !== undefined) {
+                scored = scored.filter(
+                  (a) =>
+                    a._score < after.score! ||
+                    (a._score === after.score! && a.path > after.path),
+                );
+              }
 
-          // Apply cursor: skip past afterPath
-          if (after) {
-            visible = visible.filter((a) => a.path > after.path);
-          }
+              page = scored.slice(0, pageSize);
+              if (scored.length > pageSize) {
+                const last = scored[pageSize - 1] as ScoredAgent;
+                nextCursor = Buffer.from(
+                  JSON.stringify({ path: last.path, score: last._score }),
+                ).toString("base64url");
+              }
+            } else {
+              // Alphabetical listing — sorted by path
+              visible.sort((a, b) => a.path.localeCompare(b.path));
 
-          page = visible.slice(0, pageSize);
-          if (visible.length > pageSize) {
-            const last = page[page.length - 1];
-            nextCursor = Buffer.from(
-              JSON.stringify({ path: last.path }),
-            ).toString("base64url");
-          }
-        }
+              // Apply cursor: skip past afterPath
+              if (after) {
+                visible = visible.filter((a) => a.path > after.path);
+              }
 
-        return mcpResult({
-          success: true,
-          total: agents.filter((a) => canSeeAgent(a, auth)).length,
-          nextCursor,
-          agents: page.map((agent) => ({
-            path: agent.path,
-            name: agent.config?.name,
-            description: agent.config?.description,
-            supportedActions: agent.config?.supportedActions,
-            integration: agent.config?.integration || null,
-            security: agent.config?.security
-              ? { type: agent.config.security.type }
-              : undefined,
-            resources: agent.config?.resources?.map((r) => ({
-              uri: r.uri,
-              name: r.name,
-              mimeType: r.mimeType,
-            })),
-            tools: agent.tools
-              .filter((t) => canSeeTool(t, auth))
-              .map((t) => t.name),
-          })),
-        });
+              page = visible.slice(0, pageSize);
+              if (visible.length > pageSize) {
+                const last = page[page.length - 1];
+                nextCursor = Buffer.from(
+                  JSON.stringify({ path: last.path }),
+                ).toString("base64url");
+              }
+            }
+
+            return {
+              success: true as const,
+              total: allAgents.filter((a) => canSeeAgent(a, auth)).length,
+              nextCursor,
+              agents: page.map((agent) => ({
+                path: agent.path,
+                name: agent.config?.name,
+                description: agent.config?.description,
+                supportedActions: agent.config?.supportedActions,
+                integration: agent.config?.integration || null,
+                security: agent.config?.security
+                  ? { type: agent.config.security.type }
+                  : undefined,
+                resources: agent.config?.resources?.map((r) => ({
+                  uri: r.uri,
+                  name: r.name,
+                  mimeType: r.mimeType,
+                })),
+                tools: agent.tools
+                  .filter((t) => canSeeTool(t, auth))
+                  .map((t) => t.name),
+              })),
+            };
+          },
+        );
+
+        return mcpResult(result);
       }
 
       default:
