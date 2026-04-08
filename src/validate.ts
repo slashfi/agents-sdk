@@ -22,7 +22,7 @@ export const SerializedToolSchema = z.object({
   inputSchema: z
     .record(z.unknown())
     .default({ type: "object", properties: {} }),
-  outputSchema: z.record(z.unknown()).optional(),
+  outputSchema: z.object({}).passthrough().optional(),
 });
 
 // ============================================
@@ -36,7 +36,7 @@ export const SerializedAgentDefinitionSchema = z
     description: z.string().default(""),
     version: z.string().default("1.0.0"),
     visibility: z.enum(["public", "private"]).default("public"),
-    auth: z.record(z.unknown()).optional(),
+    auth: z.object({}).passthrough().optional(),
     serverSource: z.string().optional(),
     serverInfo: z
       .object({
