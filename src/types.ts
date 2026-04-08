@@ -750,6 +750,12 @@ export interface CallAgentExecuteToolResponse {
 export interface CallAgentDescribeToolsResponse {
   success: true;
   tools: ToolSchema[];
+  /** Agent description */
+  description?: string;
+  /** Security scheme (if any) */
+  security?: SecuritySchemeSummary;
+  /** Available resources (e.g., AUTH.md) */
+  resources?: Array<{ uri: string; name?: string; mimeType?: string }>;
 }
 
 /** A resolved agent ref with its discovered tools */

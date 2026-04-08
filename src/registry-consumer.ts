@@ -902,13 +902,20 @@ export async function createRegistryConsumer(
             action: "describe_tools",
             path: agentPath,
             tools: undefined,
-          })) as { tools?: unknown[]; description?: string } | null;
+          })) as {
+            tools?: unknown[];
+            description?: string;
+            security?: SecuritySchemeSummary;
+            resources?: Array<{ uri: string; name?: string; mimeType?: string }>;
+          } | null;
           if (!data) return null;
           return {
             path: agentPath,
             publisher: registry.publisher,
             tools: data.tools,
             description: data.description,
+            security: data.security,
+            resources: data.resources,
           } as AgentListing;
         }),
       );
