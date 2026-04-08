@@ -66,14 +66,47 @@ export function nullTolerant<T extends ZodTypeAny>(schema: T) {
  * This is the standard way to generate input schemas for MCP tools
  * that will be called by LLMs.
  */
+/**
+ * Recursively normalize a JSON schema for Anthropic compatibility.
+ * Replaces `additionalProperties: {}` (empty schema = any) with `true`,
+ * which is semantically equivalent but accepted by Anthropic's validator.
+ */
+function normalizeJsonSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  if (typeof schema !== "object" || schema === null) return schema;
+
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (
+      key === "additionalProperties" &&
+      typeof value === "object" &&
+      value !== null &&
+      Object.keys(value).length === 0
+    ) {
+      result[key] = true;
+    } else if (Array.isArray(value)) {
+      result[key] = value.map((item) =>
+        typeof item === "object" && item !== null
+          ? normalizeJsonSchema(item as Record<string, unknown>)
+          : item,
+      );
+    } else if (typeof value === "object" && value !== null) {
+      result[key] = normalizeJsonSchema(value as Record<string, unknown>);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 export function zodToOpenAiJsonSchema(
   schema: ZodTypeAny,
 ): Record<string, unknown> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return zodToJsonSchema(schema as any, { target: "openAi" }) as Record<
+  const raw = zodToJsonSchema(schema as any, { target: "openAi" }) as Record<
     string,
     unknown
   >;
+  return normalizeJsonSchema(raw);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -86,7 +119,7 @@ const callAgentBaseSchema = z.object({
   path: z.string().describe("Agent path (e.g., '@my-agent')"),
   callerId: z.string().optional().describe("Caller ID for access control"),
   callerType: callerTypeSchema.optional().describe("Caller type"),
-  metadata: z.record(z.unknown()).optional().describe("Additional metadata"),
+  metadata: z.object({}).passthrough().optional().describe("Additional metadata"),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -126,7 +159,7 @@ export const executeToolActionSchema = callAgentBaseSchema.extend({
   action: z.literal("execute_tool"),
   tool: z.string().describe("Tool name to call"),
   params: z
-    .record(z.unknown())
+    .object({}).passthrough()
     .optional()
     .describe("Parameters for the tool"),
 });
