@@ -795,13 +795,12 @@ export function createAgentRegistry(
             success: true,
             tools: toolSchemas,
             description: agent.config?.description,
-            security: agent.config?.security
-              ? { type: agent.config.security.type }
-              : undefined,
+            security: agent.config?.security,
             resources: agent.config?.resources?.map((r) => ({
               uri: r.uri,
               name: r.name,
               mimeType: r.mimeType,
+              content: r.content,
             })),
           } as CallAgentDescribeToolsResponse;
         }
