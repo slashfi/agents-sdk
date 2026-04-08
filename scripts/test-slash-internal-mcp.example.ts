@@ -1,15 +1,16 @@
 /**
- * Smoke-test createRegistryConsumer against Slash internal MCP.
+ * Smoke-test createRegistryConsumer against Slash MCP (default: public registry).
  *
  * Copy this file to `test-slash-internal-mcp.ts` (gitignored) and run from repo root:
  *
- *   doppler run -p server -c prd -- bun scripts/test-slash-internal-mcp.ts
+ *   bun scripts/test-slash-internal-mcp.ts
  *
- * Manual / local override:
+ * Internal MCP (needs Atlas key):
  *
- *   SLASH_ATLAS_API_KEY=... bun scripts/test-slash-internal-mcp.ts
+ *   SLASH_MCP_URL=https://api.slash.com/internal/mcp \
+ *   ATLAS_INTERNAL_API_KEY=... bun scripts/test-slash-internal-mcp.ts
  *
- * The server returns 401 without x-atlas-api-key.
+ * Optional: `SLASH_TEST_REF=notion` to pick an agent path for inspect/call (default: first from list).
  */
 
 import {
@@ -17,7 +18,14 @@ import {
   createRegistryConsumer,
 } from "@slashfi/agents-sdk";
 
-const DEFAULT_MCP = "https://api.slash.com/internal/mcp";
+/** Public registry — MCP JSON-RPC is POSTed to the origin (see server mount). */
+const DEFAULT_REGISTRY_MCP = "https://registry.slash.com";
+
+function isInternalSlashMcp(url: string): boolean {
+  return (
+    url.includes("api.slash.com/internal") || url.includes("/internal/mcp")
+  );
+}
 
 /** Doppler `server` / prd; falls back to SLASH_ATLAS_API_KEY for ad-hoc runs. */
 function resolveAtlasApiKey(): string | undefined {
@@ -25,29 +33,51 @@ function resolveAtlasApiKey(): string | undefined {
 }
 
 async function main() {
-  const url = process.env.SLASH_MCP_URL ?? DEFAULT_MCP;
+  const url = process.env.SLASH_MCP_URL ?? DEFAULT_REGISTRY_MCP;
   const key = resolveAtlasApiKey();
 
-  if (!key) {
+  if (isInternalSlashMcp(url) && !key) {
     console.error(
-      "No API key: set ATLAS_INTERNAL_API_KEY (e.g. via Doppler) or SLASH_ATLAS_API_KEY.",
+      "Internal MCP requires ATLAS_INTERNAL_API_KEY or SLASH_ATLAS_API_KEY.",
     );
     console.error(`Target: ${url}`);
     process.exit(1);
   }
 
+  const registryEntry =
+    isInternalSlashMcp(url) && key
+      ? {
+          url,
+          auth: {
+            type: "api-key" as const,
+            key,
+            header: "x-atlas-api-key",
+          },
+        }
+      : { url, auth: { type: "none" as const } };
+
+  const scout = await createRegistryConsumer({
+    registries: [registryEntry],
+    refs: [],
+  });
+
+  let agents: Awaited<ReturnType<typeof scout.list>>;
+  try {
+    agents = await scout.list();
+  } catch (e) {
+    console.error("list() failed:", e instanceof Error ? e.message : e);
+    process.exit(1);
+  }
+
+  const agentPath = process.env.SLASH_TEST_REF ?? agents[0]?.path ?? null;
+  if (!agentPath) {
+    console.error("No agents returned and SLASH_TEST_REF not set.");
+    process.exit(1);
+  }
+
   const consumer = await createRegistryConsumer({
-    registries: [
-      {
-        url,
-        auth: {
-          type: "api-key",
-          key,
-          header: "x-atlas-api-key",
-        },
-      },
-    ],
-    refs: [{ ref: "@legal-entities" }],
+    registries: [registryEntry],
+    refs: [{ ref: agentPath }],
   });
 
   let discovery: RegistryConfiguration;
@@ -61,7 +91,6 @@ async function main() {
   console.log("discover() → issuer:", discovery.issuer);
   console.log("         token_endpoint:", discovery.token_endpoint);
 
-  let agents: Awaited<ReturnType<typeof consumer.list>>;
   try {
     agents = await consumer.list();
     console.log(`list() → ${agents.length} agent(s)`);
@@ -78,7 +107,6 @@ async function main() {
     process.exit(1);
   }
 
-  const agentPath = "@legal-entities";
   try {
     const fromList = agents.find((a) => a.path === agentPath);
     const info = await consumer.inspect(agentPath);
