@@ -240,8 +240,9 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
               config: { type: "object" },
             },
           },
-          execute: (input: any, ctx: any) => fn(input, ctx),
-        }) as any,
+          execute: (input: Record<string, unknown>, ctx: ToolContext) =>
+            fn(input, ctx),
+        }) as ToolDefinition<ToolContext>,
       );
     }
     if (h.connect) {
@@ -260,8 +261,9 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
             },
             required: ["registryId"] as const,
           },
-          execute: (input: any, ctx: any) => fn(input, ctx),
-        }) as any,
+          execute: (input: Record<string, unknown>, ctx: ToolContext) =>
+            fn(input, ctx),
+        }) as ToolDefinition<ToolContext>,
       );
     }
     if (h.discover) {
@@ -275,8 +277,9 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
             type: "object" as const,
             properties: { url: { type: "string" } },
           },
-          execute: (input: any, ctx: any) => fn(input, ctx),
-        }) as any,
+          execute: (input: Record<string, unknown>, ctx: ToolContext) =>
+            fn(input, ctx),
+        }) as ToolDefinition<ToolContext>,
       );
     }
     if (h.list) {
@@ -287,8 +290,9 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
           description: `List connected ${h.displayName} instances.`,
           visibility: "public" as const,
           inputSchema: { type: "object" as const, properties: {} },
-          execute: (input: any, ctx: any) => fn(input, ctx),
-        }) as any,
+          execute: (input: Record<string, unknown>, ctx: ToolContext) =>
+            fn(input, ctx),
+        }) as ToolDefinition<ToolContext>,
       );
     }
     if (h.get) {
@@ -303,8 +307,9 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
             properties: { registryId: { type: "string" } },
             required: ["registryId"] as const,
           },
-          execute: (input: any, ctx: any) => fn(input, ctx),
-        }) as any,
+          execute: (input: Record<string, unknown>, ctx: ToolContext) =>
+            fn(input, ctx),
+        }) as ToolDefinition<ToolContext>,
       );
     }
     if (h.update) {
@@ -323,8 +328,9 @@ export function defineAgent<TContext extends ToolContext = ToolContext>(
             },
             required: ["registryId"] as const,
           },
-          execute: (input: any, ctx: any) => fn(input, ctx),
-        }) as any,
+          execute: (input: Record<string, unknown>, ctx: ToolContext) =>
+            fn(input, ctx),
+        }) as ToolDefinition<ToolContext>,
       );
     }
   }

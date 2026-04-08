@@ -20,10 +20,10 @@
  * ```
  */
 
-import type { ConsumerConfig, RefEntry } from "../define-config.js";
+import type { ConsumerConfig, RefEntry, RegistryAuth } from "../define-config.js";
 import { normalizeRef } from "../define-config.js";
 import { defineAgent, defineTool } from "../define.js";
-import type { AgentDefinition, ToolContext } from "../types.js";
+import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
 
 // ============================================
 // FsStore Interface
@@ -275,7 +275,7 @@ export function createConfigAgent(
       const entry = {
         url: input.url,
         ...(input.name && { name: input.name }),
-        ...(input.auth && { auth: input.auth as any }),
+        ...(input.auth && { auth: input.auth as RegistryAuth }),
       };
 
       // Upsert by URL
@@ -313,6 +313,6 @@ export function createConfigAgent(
         "Manage consumer config — add/remove/list agent refs and registries. " +
         "Replaces @integrations for connecting to third-party services.",
     },
-    tools: [addRefTool, removeRefTool, listRefsTool, addRegistryTool] as any,
+    tools: [addRefTool, removeRefTool, listRefsTool, addRegistryTool] as ToolDefinition<ToolContext>[],
   });
 }

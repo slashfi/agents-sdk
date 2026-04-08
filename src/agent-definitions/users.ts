@@ -230,6 +230,39 @@ export interface UsersAgentOptions {
   store: UserStore;
 }
 
+interface CreateUserToolInput {
+  id?: string;
+  tenantId: string;
+  email?: string;
+  name?: string;
+  avatarUrl?: string;
+  metadata?: Record<string, unknown>;
+  externalRef?: { issuer: string; userId: string };
+}
+
+interface UpdateUserToolInput {
+  userId: string;
+  email?: string;
+  name?: string;
+  avatarUrl?: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface LinkIdentityToolInput {
+  userId: string;
+  provider: string;
+  providerUserId: string;
+  email?: string;
+  name?: string;
+  avatarUrl?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: number;
+  tokenType?: string;
+  scopes?: string[];
+  metadata?: Record<string, unknown>;
+}
+
 export function createUsersAgent(options: UsersAgentOptions): AgentDefinition {
   const { store } = options;
 
@@ -268,7 +301,7 @@ export function createUsersAgent(options: UsersAgentOptions): AgentDefinition {
       },
       required: ["tenantId"],
     },
-    execute: async (input: any, __ctx: ToolContext) => {
+    execute: async (input: CreateUserToolInput, __ctx: ToolContext) => {
       // If externalRef provided, check if identity already exists
       if (input.externalRef) {
         const existing = await store.findIdentityByProviderUserId(
@@ -365,7 +398,7 @@ export function createUsersAgent(options: UsersAgentOptions): AgentDefinition {
       },
       required: ["userId"],
     },
-    execute: async (input: any, __ctx: ToolContext) => {
+    execute: async (input: UpdateUserToolInput, __ctx: ToolContext) => {
       const { userId, ...updates } = input;
       const user = await store.updateUser(userId, updates);
       if (!user) return { error: `User '${userId}' not found` };
@@ -416,7 +449,7 @@ export function createUsersAgent(options: UsersAgentOptions): AgentDefinition {
       },
       required: ["userId", "provider", "providerUserId"],
     },
-    execute: async (input: any, __ctx: ToolContext) => {
+    execute: async (input: LinkIdentityToolInput, __ctx: ToolContext) => {
       // Check if identity already exists
       const existing = await store.getIdentityByProvider(
         input.userId,

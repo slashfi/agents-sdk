@@ -1,9 +1,10 @@
 /**
  * Registry Consumer — Connects to registries and resolves refs.
  *
- * The consumer reads a `ConsumerConfig`, discovers registries via
- * `/.well-known/configuration`, resolves refs to agent definitions,
- * and provides a unified interface for calling tools across all connected agents.
+ * The consumer reads a `ConsumerConfig`, connects to each registry at its MCP URL,
+ * resolves refs to agent definitions, and provides a unified interface for calling
+ * tools across all connected agents. Registry metadata comes from the MCP
+ * `initialize` handshake (`discover()`).
  *
  * @example
  * ```typescript
@@ -181,16 +182,15 @@ function buildRegistryAuthHeaders(
 // Registry Discovery Types
 // ============================================
 
-/** Registry well-known configuration (from /.well-known/configuration) */
+/**
+ * Registry configuration derived from the MCP `initialize` response and the registry
+ * URL (OAuth/JWKS paths follow the usual layout under `issuer`).
+ */
 export interface RegistryConfiguration {
   issuer: string;
   jwks_uri?: string;
   token_endpoint?: string;
-  agents_endpoint?: string;
-  call_endpoint?: string;
   supported_grant_types?: string[];
-  /** @deprecated Use agents_endpoint + GET /list instead */
-  agents?: string[];
 }
 
 /** An agent definition as listed by a registry */
@@ -365,6 +365,73 @@ async function listFromMcpServer(
     tools: toolsResult?.tools ?? [],
     requiresAuth: false,
   }];
+}
+
+function issuerFromMcpUrlAndServerInfo(
+  serverUrl: string,
+  serverInfo?: { name?: string },
+): string {
+  const name = serverInfo?.name;
+  if (name && /^https?:\/\//.test(name)) {
+    return name.replace(/\/$/, "");
+  }
+  return new URL(serverUrl).origin;
+}
+
+/**
+ * Load registry OAuth-facing metadata via MCP initialize (same URL as tools/call).
+ */
+async function discoverRegistryViaMcp(
+  registryUrl: string,
+  authHeaders: Record<string, string>,
+  fetchFn: typeof globalThis.fetch,
+): Promise<RegistryConfiguration> {
+  const serverUrl = registryUrl.replace(/\/$/, "");
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...authHeaders,
+  };
+
+  let reqId = 0;
+  async function rpc(method: string, params?: Record<string, unknown>) {
+    const res = await fetchFn(serverUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: ++reqId,
+        method,
+        ...(params && { params }),
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`MCP initialize to ${serverUrl} failed: ${res.status}`);
+    }
+    const json = (await res.json()) as { result?: unknown; error?: { message: string } };
+    if (json.error) {
+      throw new Error(`MCP RPC error: ${json.error.message}`);
+    }
+    return json.result;
+  }
+
+  const initResult = (await rpc("initialize", {
+    protocolVersion: "2024-11-05",
+    capabilities: {},
+    clientInfo: { name: "agents-sdk-consumer", version: "1.0.0" },
+  })) as {
+    serverInfo?: { name?: string; version?: string };
+  };
+
+  await rpc("notifications/initialized").catch(() => {});
+
+  const issuer = issuerFromMcpUrlAndServerInfo(serverUrl, initResult?.serverInfo);
+
+  return {
+    issuer,
+    jwks_uri: `${issuer}/.well-known/jwks.json`,
+    token_endpoint: `${issuer}/oauth/token`,
+    supported_grant_types: ["client_credentials", "jwt_exchange"],
+  };
 }
 
 /**
@@ -571,17 +638,15 @@ export async function createRegistryConsumer(
     const cached = discoveryCache.get(registryUrl);
     if (cached) return cached;
 
-    const url = `${registryUrl.replace(/\/$/, "")}/.well-known/configuration`;
-    const headers: Record<string, string> = registry
+    const authHeaders = registry
       ? buildRegistryAuthHeaders(registry, options.token)
       : (options.token ? { Authorization: `Bearer ${options.token}` } : {});
-    const res = await fetchFn(url, { headers });
-    if (!res.ok) {
-      throw new Error(
-        `Failed to discover registry ${registryUrl}: ${res.status}`,
-      );
-    }
-    const configuration = (await res.json()) as RegistryConfiguration;
+
+    const configuration = await discoverRegistryViaMcp(
+      registryUrl,
+      authHeaders,
+      fetchFn,
+    );
     discoveryCache.set(registryUrl, configuration);
     return configuration;
   }
@@ -591,9 +656,7 @@ export async function createRegistryConsumer(
     registry: ResolvedRegistry,
     query?: string,
   ): Promise<AgentListing[]> {
-    const configuration = await discover(registry.url, registry);
-    const mcpUrl =
-      configuration.call_endpoint ?? registry.url.replace(/\/$/, "");
+    const mcpUrl = registry.url.replace(/\/$/, "");
 
     const response = await callMcpTool(
       mcpUrl,
@@ -624,9 +687,7 @@ export async function createRegistryConsumer(
     registry: ResolvedRegistry,
     request: CallAgentRequest,
   ): Promise<unknown> {
-    const configuration = await discover(registry.url, registry);
-    const mcpUrl =
-      configuration.call_endpoint ?? registry.url.replace(/\/$/, "");
+    const mcpUrl = registry.url.replace(/\/$/, "");
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -840,7 +901,7 @@ export async function createRegistryConsumer(
           const data = (await callRegistry(registry, {
             action: "describe_tools",
             path: agentPath,
-            tools: [],
+            tools: undefined,
           })) as { tools?: unknown[]; description?: string } | null;
           if (!data) return null;
           return {
