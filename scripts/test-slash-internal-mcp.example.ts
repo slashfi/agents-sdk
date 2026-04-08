@@ -18,7 +18,7 @@ import {
   createRegistryConsumer,
 } from "@slashfi/agents-sdk";
 
-/** Public registry — MCP JSON-RPC is POSTed to the origin (see server mount). */
+/** Public registry: MCP JSON-RPC is POSTed to `/` on this host, not `/mcp`. */
 const DEFAULT_REGISTRY_MCP = "https://registry.slash.com";
 
 function isInternalSlashMcp(url: string): boolean {
