@@ -56,7 +56,7 @@ app.get("/api/custom", (c) => c.json({ hello: "world" }));
 ### List agents
 
 ```bash
-curl http://localhost:3000/list
+curl http://localhost:3000/agents
 ```
 
 ### Call a public tool (no auth)

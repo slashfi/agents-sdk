@@ -13,7 +13,14 @@
  * - Signs JWTs with the active key
  */
 
-import { type JWK, SignJWT, exportJWK, generateKeyPair, importJWK } from "jose";
+import {
+  type JWK,
+  type JWTPayload,
+  SignJWT,
+  exportJWK,
+  generateKeyPair,
+  importJWK,
+} from "jose";
 
 // ── Types ──
 
@@ -236,7 +243,7 @@ export async function createKeyManager(
 
     async signJwt(claims: Record<string, unknown>): Promise<string> {
       const key = getActiveKey();
-      let builder = new SignJWT({ ...claims } as any)
+      let builder = new SignJWT({ ...claims } as JWTPayload)
         .setProtectedHeader({ alg: ALG, kid: key.kid })
         .setIssuer(issuer)
         .setIssuedAt();

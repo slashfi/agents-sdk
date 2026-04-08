@@ -65,7 +65,7 @@ app.use("*", cors());
 // Forward these to the SDK's fetch handler
 app.post("/", (c) => agentServer.fetch(c.req.raw));
 app.get("/health", (c) => agentServer.fetch(c.req.raw));
-app.get("/list", (c) => agentServer.fetch(c.req.raw));
+app.get("/agents", (c) => agentServer.fetch(c.req.raw));
 app.post("/oauth/token", (c) => agentServer.fetch(c.req.raw));
 
 // --- Custom routes (your application code) ---
@@ -310,8 +310,8 @@ app.get("/", (c) => {
             </div>
             <div class="endpoint">
               <span class="method method-get">GET</span>
-              <span class="endpoint-path">/list</span>
-              <span class="endpoint-desc">List agents</span>
+              <span class="endpoint-path">/agents</span>
+              <span class="endpoint-desc">List public agents (HTTP)</span>
             </div>
             <div class="endpoint">
               <span class="method method-get">GET</span>
@@ -363,7 +363,7 @@ const port = Number(process.env.PORT) || 3000;
 console.log(`\n  Sample Agent Registry`);
 console.log(`  http://localhost:${port}\n`);
 console.log(`  MCP endpoint:  POST http://localhost:${port}/`);
-console.log(`  Agent list:    GET  http://localhost:${port}/list`);
+console.log(`  Agent list:    GET  http://localhost:${port}/agents`);
 console.log(`  Health:        GET  http://localhost:${port}/health`);
 console.log(`  Custom route:  GET  http://localhost:${port}/api/cities`);
 console.log(`  Root key:      ${ROOT_KEY}\n`);

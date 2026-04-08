@@ -28,7 +28,23 @@ import {
   generateCollectionToken,
   pendingCollections,
 } from "../secret-collection.js";
-import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
+import type {
+  AgentDefinition,
+  CallAgentRequest,
+  CallAgentResponse,
+  JsonSchema,
+  ToolContext,
+  ToolDefinition,
+} from "../types.js";
+
+/** Unwrap `execute_tool` payload from a registry response. */
+function executeToolResult(
+  r: CallAgentResponse | undefined,
+): unknown | undefined {
+  if (!r || r.success === false) return undefined;
+  if ("result" in r) return r.result;
+  return undefined;
+}
 
 // ============================================
 // OAuth Config Types
@@ -73,6 +89,9 @@ export interface IntegrationOAuthConfig {
   refreshGrantType?: string;
   refreshBodyParams?: string[];
   refreshHeaders?: Record<string, string>;
+
+  /** OAuth client id (plain string or secret: ref) */
+  clientId?: string;
 }
 
 // ============================================
@@ -106,7 +125,14 @@ export interface ProviderConfig {
    * Agent path that handles this integration type.
    * @integrations dispatches setup/connect/call to that agent's integrationMethods.
    */
-  agentPath: string;
+  agentPath?: string;
+  /**
+   * @internal Secret store ids for credentials encrypted by @integrations.
+   */
+  _clientIdSecretId?: string;
+  _clientSecretSecretId?: string;
+  /** Client id as plain string or secret: ref (when not using _clientIdSecretId) */
+  clientId?: string;
   /**
    * Scope of the integration:
    * - 'user': per-user tokens (Slack, Notion, Linear)
@@ -515,7 +541,7 @@ export interface IntegrationsAgentOptions {
   /** Registry instance for calling other agents' internal tools */
   registry?: {
     list?(): AgentDefinition[];
-    call(request: any): Promise<any>;
+    call(request: CallAgentRequest): Promise<CallAgentResponse>;
   };
 
   /** Secret store for storing/resolving client credentials and tokens */
@@ -668,29 +694,32 @@ export function createIntegrationsAgent(
       },
       required: ["id", "name", "type", "api"],
     },
-    execute: async (input: any, _ctx: ToolContext) => {
+    execute: async (input: Record<string, unknown>, _ctx: ToolContext) => {
       const config: ProviderConfig = {
-        id: input.id,
-        name: input.name,
-        agentPath: input.agentPath,
-        scope: input.scope,
-        docs: input.docs,
-        auth: input.auth,
-        api: input.api,
+        id: input.id as string,
+        name: input.name as string,
+        agentPath: input.agentPath as string | undefined,
+        scope: input.scope as "user" | "tenant" | undefined,
+        docs: input.docs as ProviderConfig["docs"],
+        auth: input.auth as ProviderConfig["auth"],
+        api: input.api as ProviderConfig["api"],
       };
       // Store client credentials encrypted and save secret IDs
       const result: Record<string, unknown> = { success: true };
       if (input.clientId) {
-        const secretId = await secretStore.store(input.clientId, SYSTEM_OWNER);
-        (config as any)._clientIdSecretId = secretId;
+        const secretId = await secretStore.store(
+          input.clientId as string,
+          SYSTEM_OWNER,
+        );
+        config._clientIdSecretId = secretId;
         result.clientIdStored = true;
       }
       if (input.clientSecret) {
         const secretId = await secretStore.store(
-          input.clientSecret,
+          input.clientSecret as string,
           SYSTEM_OWNER,
         );
-        (config as any)._clientSecretSecretId = secretId;
+        config._clientSecretSecretId = secretId;
         result.clientSecretStored = true;
       }
 
@@ -703,10 +732,11 @@ export function createIntegrationsAgent(
             action: "execute_tool",
             path: config.agentPath,
             tool: "setup_integration",
-            params: input.config ?? input,
+            params: (input.config ?? input) as Record<string, unknown>,
             callerType: "system",
           });
-          result.setupResult = (setupResult as any)?.result ?? setupResult;
+          result.setupResult =
+            executeToolResult(setupResult) ?? setupResult;
         } catch (err) {
           result.setupError = err instanceof Error ? err.message : String(err);
         }
@@ -857,7 +887,7 @@ export function createIntegrationsAgent(
         const agents = options.registry.list?.() ?? [];
         for (const agent of agents) {
           const hasListTool = agent.tools?.some(
-            (t: any) => t.name === "list_integrations",
+            (t: ToolDefinition) => t.name === "list_integrations",
           );
           if (hasListTool && agent.config?.integration) {
             const meta = {
@@ -878,9 +908,15 @@ export function createIntegrationsAgent(
                     callerType: "system",
                   })
                 : null;
-              const result = (callResult as any)?.result ??
-                callResult ?? { success: false };
-              if (result.success && result.data) {
+              const raw =
+                executeToolResult(callResult ?? undefined) ??
+                callResult ??
+                { success: false };
+              const result = raw as {
+                success?: boolean;
+                data?: unknown;
+              };
+              if (result.success && result.data != null) {
                 // Flatten: if data has an array field, each item becomes an integration
                 const items = Array.isArray(result.data)
                   ? result.data
@@ -982,7 +1018,7 @@ export function createIntegrationsAgent(
           params: { ...input, registryId: config.id },
           callerType: "system",
         });
-        return (connectResult as any)?.result ?? connectResult;
+        return executeToolResult(connectResult) ?? connectResult;
       }
 
       if (!config.auth)
@@ -998,26 +1034,26 @@ export function createIntegrationsAgent(
       // Check both _clientIdSecretId (from setup_integration direct) and
       // clientId field as secret:ref (from collect_secrets flow)
       let clientId: string | null = null;
-      const cidSecretId = (config as any)._clientIdSecretId;
+      const cidSecretId = config._clientIdSecretId;
       if (cidSecretId && secretStore) {
         clientId = await secretStore.resolve(cidSecretId, SYSTEM_OWNER);
       }
       // Also check if auth config has clientId as a secret:ref
       if (
         !clientId &&
-        (oauth as any).clientId &&
-        typeof (oauth as any).clientId === "string"
+        oauth.clientId &&
+        typeof oauth.clientId === "string"
       ) {
-        if ((oauth as any).clientId.startsWith("secret:") && secretStore) {
-          const refId = (oauth as any).clientId.slice("secret:".length);
+        if (oauth.clientId.startsWith("secret:") && secretStore) {
+          const refId = oauth.clientId.slice("secret:".length);
           clientId = await secretStore.resolve(refId, SYSTEM_OWNER);
-        } else if (!(oauth as any).clientId.startsWith("secret:")) {
-          clientId = (oauth as any).clientId;
+        } else if (!oauth.clientId.startsWith("secret:")) {
+          clientId = oauth.clientId;
         }
       }
       // Check top-level config too
-      if (!clientId && (config as any).clientId) {
-        const cid = (config as any).clientId;
+      if (!clientId && config.clientId) {
+        const cid = config.clientId;
         if (
           typeof cid === "string" &&
           cid.startsWith("secret:") &&
@@ -1112,14 +1148,17 @@ export function createIntegrationsAgent(
       },
       required: ["provider", "type"],
     },
-    execute: async (input: any, ctx: ToolContext) => {
-      const config = await store.getProvider(input.provider);
+    execute: async (input: Record<string, unknown>, ctx: ToolContext) => {
+      const config = await store.getProvider(input.provider as string);
       if (!config) return { error: `Provider '${input.provider}' not found` };
 
       const userId = ctx.callerId;
 
       // Get access token
-      const connection = await store.getConnection(userId, input.provider);
+      const connection = await store.getConnection(
+        userId,
+        input.provider as string,
+      );
       if (!connection) {
         return {
           error: `Not connected to '${input.provider}'. Use connect_integration first.`,
@@ -1135,8 +1174,8 @@ export function createIntegrationsAgent(
         connection.refreshToken
       ) {
         try {
-          const rCidId = (config as any)._clientIdSecretId;
-          const rCsecId = (config as any)._clientSecretSecretId;
+          const rCidId = config._clientIdSecretId;
+          const rCsecId = config._clientSecretSecretId;
           if (!rCidId || !rCsecId) {
             throw new Error(
               "No client credentials stored. Re-run setup_integration with clientId/clientSecret.",
@@ -1181,12 +1220,12 @@ export function createIntegrationsAgent(
           return executeRestCall(
             config,
             {
-              provider: input.provider,
+              provider: input.provider as string,
               type: "rest",
-              method: input.method ?? "GET",
-              path: input.path ?? "/",
-              body: input.body,
-              query: input.query,
+              method: (input.method as RestCallInput["method"]) ?? "GET",
+              path: (input.path as string) ?? "/",
+              body: input.body as Record<string, unknown> | undefined,
+              query: input.query as Record<string, string> | undefined,
             },
             accessToken,
           );
@@ -1195,10 +1234,12 @@ export function createIntegrationsAgent(
           return executeGraphqlCall(
             config,
             {
-              provider: input.provider,
+              provider: input.provider as string,
               type: "graphql",
-              query: input.graphqlQuery ?? input.query ?? "",
-              variables: input.variables,
+              query: String(input.graphqlQuery ?? ""),
+              variables: input.variables as
+                | Record<string, unknown>
+                | undefined,
             },
             accessToken,
           );
@@ -1249,7 +1290,7 @@ export function createIntegrationsAgent(
           params: { ...input, registryId: config.id },
           callerType: "system",
         });
-        return (connectResult as any)?.result ?? connectResult;
+        return executeToolResult(connectResult) ?? connectResult;
       }
 
       if (!config.auth)
@@ -1266,8 +1307,8 @@ export function createIntegrationsAgent(
       }
 
       // Resolve client credentials from secret store via config
-      const cbCidId = (config as any)._clientIdSecretId;
-      const cbCsecId = (config as any)._clientSecretSecretId;
+      const cbCidId = config._clientIdSecretId;
+      const cbCsecId = config._clientSecretSecretId;
       if (!cbCidId || !cbCsecId) {
         return { error: "No client credentials stored for this provider." };
       }
@@ -1390,7 +1431,7 @@ export function createIntegrationsAgent(
       // Fetch tool schema from registry
       let toolSchema: {
         name: string;
-        inputSchema?: any;
+        inputSchema?: JsonSchema;
         description?: string;
       } | null = null;
       const registryUrl = input.registry;
@@ -1414,10 +1455,14 @@ export function createIntegrationsAgent(
           },
         }),
       });
-      const data = (await res.json()) as any;
-      const parsed = JSON.parse(data?.result?.content?.[0]?.text ?? "{}");
+      const data = (await res.json()) as Record<string, unknown>;
+      const resultBlock = data.result as
+        | { content?: Array<{ text?: string }> }
+        | undefined;
+      const parsed = JSON.parse(resultBlock?.content?.[0]?.text ?? "{}");
       const tools = parsed?.tools ?? parsed?.result?.tools ?? [];
-      toolSchema = tools.find((t: any) => t.name === input.tool) ?? null;
+      toolSchema =
+        tools.find((t: { name: string }) => t.name === input.tool) ?? null;
 
       if (!toolSchema?.inputSchema) {
         return { error: `Tool '${input.tool}' not found on '${input.agent}'` };
@@ -1437,15 +1482,24 @@ export function createIntegrationsAgent(
         required: boolean;
       }> = [];
 
-      for (const [name, def] of Object.entries(properties) as [string, any][]) {
+      for (const [name, def] of Object.entries(properties) as [
+        string,
+        Record<string, unknown>,
+      ][]) {
         const isSecret = def.secret === true;
         const isRequired = requiredFields.has(name);
         const isProvided = name in providedParams;
         if (isSecret || (isRequired && !isProvided)) {
           fields.push({
             name,
-            type: def.type ?? "string",
-            description: def.description ?? name,
+            type:
+              typeof def.type === "string"
+                ? def.type
+                : Array.isArray(def.type)
+                  ? def.type.join("|")
+                  : "string",
+            description:
+              typeof def.description === "string" ? def.description : name,
             secret: isSecret,
             required: isRequired,
           });
@@ -1502,11 +1556,11 @@ export function createIntegrationsAgent(
     inputSchema: { type: "object" as const, properties: {} },
     execute: async () => {
       const agents = options.registry?.list?.() ?? [];
-      const results: any[] = [];
+      const results: unknown[] = [];
       if (options.registry) {
         for (const agent of agents) {
           const hasDiscoverTool = agent.tools?.some(
-            (t: any) => t.name === "discover_integrations",
+            (t: ToolDefinition) => t.name === "discover_integrations",
           );
           if (hasDiscoverTool) {
             try {
@@ -1518,8 +1572,9 @@ export function createIntegrationsAgent(
                 callerId: "@integrations",
                 callerType: "system",
               });
-              if (res?.result && Array.isArray(res.result)) {
-                results.push(...res.result);
+              const payload = executeToolResult(res);
+              if (payload && Array.isArray(payload)) {
+                results.push(...payload);
               }
             } catch {}
           }
@@ -1542,14 +1597,14 @@ export function createIntegrationsAgent(
     },
     execute: async (input: { agent_path?: string }) => {
       const agents = options.registry?.list?.() ?? [];
-      const results: any[] = [];
+      const results: unknown[] = [];
       if (options.registry) {
         const targetAgents = input.agent_path
-          ? agents.filter((a: any) => a.path === input.agent_path)
+          ? agents.filter((a: AgentDefinition) => a.path === input.agent_path)
           : agents;
         for (const agent of targetAgents) {
           const hasListTool = agent.tools?.some(
-            (t: any) => t.name === "list_integrations",
+            (t: ToolDefinition) => t.name === "list_integrations",
           );
           if (hasListTool) {
             try {
@@ -1561,8 +1616,9 @@ export function createIntegrationsAgent(
                 callerId: "@integrations",
                 callerType: "system",
               });
-              if (res?.result && Array.isArray(res.result)) {
-                results.push(...res.result);
+              const payload = executeToolResult(res);
+              if (payload && Array.isArray(payload)) {
+                results.push(...payload);
               }
             } catch {}
           }

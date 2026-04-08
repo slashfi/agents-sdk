@@ -31,9 +31,10 @@ import {
   processSecretParams,
 } from "./agent-definitions/secrets.js";
 import { createBM25Index } from "./bm25.js";
-import { verifyJwt } from "./jwt.js";
-import type { SigningKey } from "./jwt.js";
 import {
+  verifyJwt,
+  type AgentJwtPayload,
+  type SigningKey,
   buildJwks,
   exportSigningKey,
   generateSigningKey,
@@ -44,8 +45,6 @@ import {
 } from "./jwt.js";
 import { type OIDCProviderConfig, createOIDCSignIn } from "./oidc-signin.js";
 import type { AgentRegistry } from "./registry.js";
-import type { AgentDefinition, CallAgentRequest } from "./types.js";
-
 import {
   callAgentInputSchema,
   callAgentValidationSchema,
@@ -53,7 +52,33 @@ import {
   listAgentsValidationSchema,
   nullTolerant,
   zodToOpenAiJsonSchema,
+  type CallAgentExecuteToolRequest,
+  type CallerType,
 } from "./call-agent-schema.js";
+import type {
+  AgentDefinition,
+  AuthClientCredentialsTokenResult,
+  CallAgentRequest,
+  ExchangeTokenToolResult,
+} from "./types.js";
+import {
+  isCallAgentErrorResponse,
+  isExchangeTokenLinkedSuccess,
+  isExchangeTokenNeedsIdentity,
+} from "./types.js";
+
+/** JWT payload claims used for reverse registry registration (jwt_exchange). */
+interface RegistryAssertionPayload {
+  type?: string;
+  iss?: string;
+  name?: string;
+  tenantId?: string;
+}
+
+function parseProxyCallerType(raw: string | null): CallerType {
+  if (raw === "agent" || raw === "user" || raw === "system") return raw;
+  return "agent";
+}
 
 // ============================================
 // Server Types
@@ -230,7 +255,6 @@ export interface AuthConfig {
   /** @deprecated Use JWT scopes instead. Will be removed in a future version. */
   tokenTtl?: number;
 }
-
 
 // Auth governance — single source of truth for visibility/access control
 export {
@@ -539,8 +563,12 @@ export function createAgentServer(
             ...(options.registry && {
               registry: {
                 version: options.registry.version ?? "1.0",
-                ...(options.registry.features && { features: options.registry.features }),
-                ...(options.registry.oauthCallbackUrl && { oauthCallbackUrl: options.registry.oauthCallbackUrl }),
+                ...(options.registry.features && {
+                  features: options.registry.features,
+                }),
+                ...(options.registry.oauthCallbackUrl && {
+                  oauthCallbackUrl: options.registry.oauthCallbackUrl,
+                }),
               },
             }),
           },
@@ -598,9 +626,11 @@ export function createAgentServer(
       case "call_agent": {
         // Validate + strip nulls (OpenAI convention: null = absent)
         const parsed = callAgentValidate.safeParse(args);
-        const req = (parsed.success
-          ? (parsed.data as Record<string, unknown>).request ?? parsed.data
-          : (args.request ?? args)) as CallAgentRequest;
+        const req = (
+          parsed.success
+            ? ((parsed.data as Record<string, unknown>).request ?? parsed.data)
+            : (args.request ?? args)
+        ) as CallAgentRequest;
 
         // Inject auth context
         if (auth) {
@@ -615,18 +645,19 @@ export function createAgentServer(
         }
 
         // Process secret params: resolve refs, store raw secrets
-        if ((req as any).params && secretStore) {
+        if (req.action === "execute_tool" && req.params && secretStore) {
+          const execReq: CallAgentExecuteToolRequest = req;
           const ownerId = auth?.callerId ?? "anonymous";
-          const agent = registry.get(req.path);
-          const tool = agent?.tools.find((t) => t.name === (req as any).tool);
-          const schema = tool?.inputSchema as any;
+          const agent = registry.get(execReq.path);
+          const tool = agent?.tools.find((t) => t.name === execReq.tool);
+          const schema = tool?.inputSchema;
           const { resolved } = await processSecretParams(
-            (req as any).params as Record<string, unknown>,
-            schema,
+            execReq.params as Record<string, unknown>,
+            schema as Parameters<typeof processSecretParams>[1],
             secretStore,
             ownerId,
           );
-          (req as any).params = resolved;
+          execReq.params = resolved;
         }
 
         const result = await registry.call(req);
@@ -634,16 +665,20 @@ export function createAgentServer(
       }
 
       case "list_agents": {
-        const { query: listQuery, limit: listLimit, cursor: listCursor } =
-          listAgentsValidate.parse(args);
+        const {
+          query: listQuery,
+          limit: listLimit,
+          cursor: listCursor,
+        } = listAgentsValidate.parse(args);
         const agents = registry.list();
         let visible = agents.filter((agent) => canSeeAgent(agent, auth));
 
         // Decode cursor if provided
         const after = listCursor
-          ? (JSON.parse(
-              Buffer.from(listCursor, "base64url").toString(),
-            ) as { path: string; score?: number })
+          ? (JSON.parse(Buffer.from(listCursor, "base64url").toString()) as {
+              path: string;
+              score?: number;
+            })
           : undefined;
 
         const pageSize = listLimit ?? 20;
@@ -798,19 +833,28 @@ export function createAgentServer(
           callerType: "system",
         });
 
-        const exchangeResult = (result as any)?.result;
-        // If the tool call failed, forward the error
-        if ((result as any)?.success === false) {
+        if (isCallAgentErrorResponse(result)) {
           return jsonResponse(
             {
               error: "server_error",
-              error_description:
-                (result as any)?.error ?? "Exchange tool failed",
+              error_description: result.error ?? "Exchange tool failed",
               raw: JSON.stringify(result)?.slice(0, 300),
             },
             500,
           );
         }
+
+        if (!("result" in result)) {
+          return jsonResponse(
+            {
+              error: "server_error",
+              error_description: `Unexpected exchange response: ${JSON.stringify(result)?.slice(0, 300)}`,
+            },
+            500,
+          );
+        }
+
+        const exchangeResult = result.result as ExchangeTokenToolResult;
 
         // ── Reverse registration: if caller is an agent-registry, auto-store connection ──
         try {
@@ -818,7 +862,7 @@ export function createAgentServer(
           if (assertionParts.length === 3) {
             const assertionPayload = JSON.parse(
               Buffer.from(assertionParts[1], "base64url").toString(),
-            ) as any;
+            ) as RegistryAssertionPayload;
             if (
               assertionPayload.type === "agent-registry" &&
               assertionPayload.iss
@@ -844,7 +888,7 @@ export function createAgentServer(
               } else {
                 console.error(
                   "[jwt_exchange] Reverse connection failed:",
-                  (addResult as any).error,
+                  addResult.error,
                 );
               }
             }
@@ -867,7 +911,7 @@ export function createAgentServer(
         }
 
         // User not linked yet — needs OAuth identity linking
-        if (exchangeResult.needsAuth) {
+        if (isExchangeTokenNeedsIdentity(exchangeResult)) {
           const baseUrl = resolveBaseUrl(req);
           const authorizeUrl = new URL(`${baseUrl}${basePath}/oauth/authorize`);
           authorizeUrl.searchParams.set("token", assertion);
@@ -890,7 +934,10 @@ export function createAgentServer(
         }
 
         // User found — sign a local access token
-        if (exchangeResult.userId && serverSigningKeys.length > 0) {
+        if (
+          isExchangeTokenLinkedSuccess(exchangeResult) &&
+          serverSigningKeys.length > 0
+        ) {
           const sigKey = serverSigningKeys[0];
           const token = await signJwtES256(
             {
@@ -951,8 +998,28 @@ export function createAgentServer(
           callerType: "system",
         });
 
-        const tokenResult = (result as any)?.result;
-        if (!tokenResult?.accessToken) {
+        if (isCallAgentErrorResponse(result)) {
+          return jsonResponse(
+            {
+              error: "invalid_client",
+              error_description: result.error ?? "Authentication failed",
+            },
+            401,
+          );
+        }
+
+        if (!("result" in result)) {
+          return jsonResponse(
+            {
+              error: "invalid_client",
+              error_description: "Authentication failed",
+            },
+            401,
+          );
+        }
+
+        const tokenResult = result.result as AuthClientCredentialsTokenResult;
+        if (tokenResult.accessToken == null) {
           return jsonResponse(
             {
               error: "invalid_client",
@@ -1020,7 +1087,7 @@ export function createAgentServer(
             if (actorId) {
               return {
                 callerId: actorId,
-                callerType: (actorType as any) ?? "agent",
+                callerType: parseProxyCallerType(actorType),
                 scopes: ["*"],
                 claims: {},
               };
@@ -1119,12 +1186,12 @@ export function createAgentServer(
               claims = result as unknown as Record<string, unknown>;
               break;
             }
-          } catch (e: any) {
+          } catch (e: unknown) {
             console.log(
               "[oauth/authorize] verify",
               issuerUrl,
               "-> ERROR:",
-              e.message,
+              e instanceof Error ? e.message : String(e),
             );
           }
         }
@@ -1190,24 +1257,6 @@ export function createAgentServer(
         return cors ? addCors(res) : res;
       }
 
-      // ── GET /.well-known/configuration → Server discovery (deprecated, use MCP initialize capabilities) ──
-      if (path === "/.well-known/configuration" && req.method === "GET") {
-        const baseUrl = resolveBaseUrl(req);
-        const res = jsonResponse({
-          issuer: baseUrl,
-          jwks_uri: `${baseUrl}/.well-known/jwks.json`,
-          token_endpoint: `${baseUrl}/oauth/token`,
-          agents_endpoint: `${baseUrl}/list`,
-          call_endpoint: baseUrl,
-          supported_grant_types: ["client_credentials", "jwt_exchange"],
-          authorization_endpoint: `${baseUrl}/oauth/authorize`,
-          ...(oidcSignIn
-            ? { signin_endpoint: `${baseUrl}/signin/authorize` }
-            : {}),
-        });
-        return cors ? addCors(res) : res;
-      }
-
       // ── GET /.well-known/oauth-authorization-server → OAuth Server Metadata (RFC 8414) ──
       // Only exposed when the server requires auth (private registries).
       // Public registries (e.g. registry.slash.com) skip this entirely.
@@ -1215,7 +1264,9 @@ export function createAgentServer(
         path === "/.well-known/oauth-authorization-server" &&
         req.method === "GET"
       ) {
-        if (!(options.registry?.oauthCallbackUrl || serverSigningKeys.length > 0)) {
+        if (
+          !(options.registry?.oauthCallbackUrl || serverSigningKeys.length > 0)
+        ) {
           const res = new Response("Not Found", { status: 404 });
           return cors ? addCors(res) : res;
         }
@@ -1226,104 +1277,16 @@ export function createAgentServer(
           token_endpoint: `${baseUrl}/oauth/token`,
           jwks_uri: `${baseUrl}/.well-known/jwks.json`,
           response_types_supported: ["code"],
-          grant_types_supported: ["authorization_code", "client_credentials", "jwt_exchange"],
+          grant_types_supported: [
+            "authorization_code",
+            "client_credentials",
+            "jwt_exchange",
+          ],
           code_challenge_methods_supported: ["S256"],
           token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
           ...(options.registry?.oauthCallbackUrl && {
             registration_endpoint: `${baseUrl}/oauth/register`,
           }),
-        });
-        return cors ? addCors(res) : res;
-      }
-
-      // ── GET /list → List agents (──
-      if (path === "/list" && req.method === "GET") {
-        const agents = registry.list();
-        let visible = agents.filter((agent) =>
-          canSeeAgent(agent, effectiveAuth),
-        );
-
-        const searchQuery = url.searchParams.get("q");
-        const searchLimit = url.searchParams.get("limit");
-        const searchCursor = url.searchParams.get("cursor");
-
-        // Decode cursor
-        const httpAfter = searchCursor
-          ? (JSON.parse(
-              Buffer.from(searchCursor, "base64url").toString(),
-            ) as { path: string; score?: number })
-          : undefined;
-
-        const httpPageSize = searchLimit ? Number(searchLimit) : 20;
-        let httpPage: typeof visible;
-        let httpNextCursor: string | undefined;
-
-        if (searchQuery) {
-          const docs = visible.map((agent, i) => ({
-            id: String(i),
-            text: [
-              agent.path,
-              agent.config?.name ?? "",
-              agent.config?.description ?? "",
-              ...agent.tools
-                .filter((t) => canSeeTool(t, effectiveAuth))
-                .map((t) => `${t.name} ${t.description}`),
-            ].join(" "),
-          }));
-          const index = createBM25Index(docs);
-          const ranked = index.search(searchQuery);
-
-          type ScoredAgent = (typeof visible)[number] & { _score: number };
-          let scored: ScoredAgent[] = ranked.map((r) => ({
-            ...visible[Number(r.id)],
-            _score: r.score,
-          }));
-
-          if (httpAfter?.score !== undefined) {
-            scored = scored.filter(
-              (a) =>
-                a._score < httpAfter.score! ||
-                (a._score === httpAfter.score! && a.path > httpAfter.path),
-            );
-          }
-
-          httpPage = scored.slice(0, httpPageSize);
-          if (scored.length > httpPageSize) {
-            const last = scored[httpPageSize - 1] as ScoredAgent;
-            httpNextCursor = Buffer.from(
-              JSON.stringify({ path: last.path, score: last._score }),
-            ).toString("base64url");
-          }
-        } else {
-          visible.sort((a, b) => a.path.localeCompare(b.path));
-          if (httpAfter) {
-            visible = visible.filter((a) => a.path > httpAfter.path);
-          }
-          httpPage = visible.slice(0, httpPageSize);
-          if (visible.length > httpPageSize) {
-            const last = httpPage[httpPage.length - 1];
-            httpNextCursor = Buffer.from(
-              JSON.stringify({ path: last.path }),
-            ).toString("base64url");
-          }
-        }
-
-        const res = jsonResponse({
-          total: agents.filter((a) => canSeeAgent(a, effectiveAuth)).length,
-          nextCursor: httpNextCursor,
-          agents: httpPage.map((agent) => ({
-            path: agent.path,
-            name: agent.config?.name,
-            description: agent.config?.description,
-            supportedActions: agent.config?.supportedActions,
-            integration: agent.config?.integration || null,
-            tools: agent.tools
-              .filter((t) => canSeeTool(t, effectiveAuth))
-              .map((t) => ({
-                name: t.name,
-                description: t.description,
-              })),
-          })),
         });
         return cors ? addCors(res) : res;
       }
@@ -1342,7 +1305,7 @@ export function createAgentServer(
             name: agent.config?.name,
             description:
               agent.config?.description ?? agent.entrypoint?.slice(0, 200),
-            mode: agent.mode ?? 'direct',
+            mode: agent.mode ?? "direct",
             ...(agent.upstream && { upstream: agent.upstream }),
             tools: getVisibleTools(agent, effectiveAuth).map((t) => ({
               name: t.name,
@@ -1369,7 +1332,7 @@ export function createAgentServer(
           name: agent.config?.name,
           description:
             agent.config?.description ?? agent.entrypoint?.slice(0, 200),
-          mode: agent.mode ?? 'direct',
+          mode: agent.mode ?? "direct",
           ...(agent.upstream && { upstream: agent.upstream }),
           tools: getVisibleTools(agent, effectiveAuth).map((t) => ({
             name: t.name,
@@ -1595,7 +1558,7 @@ export function createAgentServer(
         hostname,
         fetch,
       });
-      (this as any).url = `http://${hostname}:${port}`;
+      this.url = `http://${hostname}:${port}`;
       console.log(
         `[agents-sdk] Server listening on http://${hostname}:${port}`,
       );
@@ -1605,7 +1568,7 @@ export function createAgentServer(
       if (serverInstance) {
         serverInstance.stop();
         serverInstance = null;
-        (this as any).url = null;
+        this.url = null;
       }
     },
 
@@ -1618,8 +1581,14 @@ export function createAgentServer(
         );
       }
       const key = serverSigningKeys[0];
+      const payload: Omit<AgentJwtPayload, "iat" | "exp"> = {
+        sub: "system",
+        name: "atlas-os",
+        scopes: ["*"],
+        ...(claims as Partial<Omit<AgentJwtPayload, "iat" | "exp">>),
+      };
       return signJwtES256(
-        { sub: "system", name: "atlas-os", scopes: ["*"], ...claims } as any,
+        payload,
         key.privateKey,
         key.kid,
         options.serverName ?? "agents-sdk",

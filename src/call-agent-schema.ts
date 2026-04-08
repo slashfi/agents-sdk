@@ -101,8 +101,7 @@ function normalizeJsonSchema(schema: Record<string, unknown>): Record<string, un
 export function zodToOpenAiJsonSchema(
   schema: ZodTypeAny,
 ): Record<string, unknown> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw = zodToJsonSchema(schema as any, { target: "openAi" }) as Record<
+  const raw = zodToJsonSchema(schema, { target: "openAi" }) as Record<
     string,
     unknown
   >;
@@ -170,7 +169,9 @@ export const describeToolsActionSchema = callAgentBaseSchema.extend({
   tools: z
     .array(z.string())
     .optional()
-    .describe("Optional: filter to specific tool names. Omit to list all."),
+    .describe(
+      "Optional filter: specific tool names. Use undefined / omit for all tools; do not use [] (empty array is not 'all tools').",
+    ),
 });
 
 /** Load: get agent definition */

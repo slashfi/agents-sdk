@@ -293,7 +293,10 @@ describe("zodToOpenAiJsonSchema", () => {
       required: z.string(),
       optional: z.string().optional(),
     });
-    const jsonSchema = zodToOpenAiJsonSchema(schema) as any;
+    const jsonSchema = zodToOpenAiJsonSchema(schema) as Record<
+      string,
+      unknown
+    >;
 
     // Required field should be in required array
     expect(jsonSchema.required).toContain("required");

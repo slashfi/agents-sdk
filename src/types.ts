@@ -822,3 +822,65 @@ export type CallAgentResponse =
   | CallAgentListResourcesResponse
   | CallAgentReadResourcesResponse
   | CallAgentErrorResponse;
+
+/** Narrowing: registry returned an error (not an executed tool result). */
+export function isCallAgentErrorResponse(
+  r: CallAgentResponse,
+): r is CallAgentErrorResponse {
+  return r.success === false;
+}
+
+/**
+ * Result payload from the @auth `exchange_token` tool (the `result` field of a
+ * successful `execute_tool` response).
+ */
+export type ExchangeTokenToolResult =
+  | ExchangeTokenLinkedSuccess
+  | ExchangeTokenNeedsIdentity
+  | ExchangeTokenRejected;
+
+export interface ExchangeTokenLinkedSuccess {
+  success: true;
+  tenantId?: string;
+  userId: string;
+}
+
+export interface ExchangeTokenNeedsIdentity {
+  success: false;
+  needsAuth: true;
+  tenantId?: string;
+  issuer: string;
+  sub: string;
+}
+
+export interface ExchangeTokenRejected {
+  success: false;
+  error: string;
+}
+
+export function isExchangeTokenLinkedSuccess(
+  r: ExchangeTokenToolResult,
+): r is ExchangeTokenLinkedSuccess {
+  return r.success === true;
+}
+
+export function isExchangeTokenNeedsIdentity(
+  r: ExchangeTokenToolResult,
+): r is ExchangeTokenNeedsIdentity {
+  return r.success === false && "needsAuth" in r && r.needsAuth === true;
+}
+
+/** Result payload from @auth `token` tool (client_credentials). */
+export interface AuthClientCredentialsTokenResult {
+  accessToken: unknown;
+  tokenType?: string;
+  expiresIn: number;
+  refreshToken?: unknown;
+  scopes?: string[];
+}
+
+/** Wrapped secret values returned by auth tools (serialized for wire). */
+export interface AuthSecretValue {
+  $agent_type: "secret";
+  value: string;
+}

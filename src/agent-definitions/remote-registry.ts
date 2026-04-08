@@ -27,9 +27,9 @@
 import { defineAgent, defineTool } from "../define.js";
 import type {
   AgentDefinition,
-  IntegrationMethodContext,
   IntegrationMethodResult,
   ToolContext,
+  ToolDefinition,
 } from "../types.js";
 import type { SecretStore } from "./secrets.js";
 
@@ -52,6 +52,39 @@ interface RegistryConnection {
 }
 
 const ENTITY_TYPE = "remote-registry-connections";
+
+/** JSON-RPC response for MCP `tools/call` over HTTP. */
+interface McpToolsCallRpcBody {
+  result?: {
+    content?: Array<{ type: string; text?: string }>;
+  };
+  error?: { message: string };
+}
+
+interface ProxyCallToolInput {
+  registryId: string;
+  action: string;
+  path: string;
+  tool: string;
+  params?: Record<string, unknown>;
+}
+
+interface AddConnectionToolInput {
+  id: string;
+  name?: string;
+  url: string;
+  remoteTenantId?: string;
+}
+
+/** Typical fields from POST /oauth/token JSON body. */
+interface OAuthTokenJsonBody {
+  access_token?: string;
+  tenant_id?: string;
+  user_id?: string;
+  error?: string;
+  error_description?: string;
+  authorize_url?: string;
+}
 
 export function createRemoteRegistryAgent(
   options: RemoteRegistryAgentOptions,
@@ -122,7 +155,7 @@ export function createRemoteRegistryAgent(
     url: string,
     jwt: string,
     request: Record<string, unknown>,
-  ): Promise<any> {
+  ): Promise<unknown> {
     const res = await globalThis.fetch(url, {
       method: "POST",
       headers: {
@@ -136,7 +169,7 @@ export function createRemoteRegistryAgent(
         params: { name: "call_agent", arguments: { request } },
       }),
     });
-    const rpc = (await res.json()) as any;
+    const rpc = (await res.json()) as McpToolsCallRpcBody;
     const text = rpc.result?.content?.[0]?.text;
     if (!text) return rpc.result;
     const parsed = JSON.parse(text);
@@ -167,7 +200,7 @@ export function createRemoteRegistryAgent(
       tool: string;
       params?: Record<string, unknown>;
     },
-  ): Promise<any> {
+  ): Promise<unknown> {
     const conn = await loadConnection(ownerId, registryId);
     if (!conn) {
       throw new Error(
@@ -202,7 +235,7 @@ export function createRemoteRegistryAgent(
       },
       required: ["registryId", "action", "path", "tool"],
     },
-    execute: async (input: any, _ctx: ToolContext) => {
+    execute: async (input: ProxyCallToolInput, _ctx: ToolContext) => {
       return proxyCall("system", input.registryId, {
         action: input.action,
         path: input.path,
@@ -230,7 +263,7 @@ export function createRemoteRegistryAgent(
       },
       required: ["id", "url"],
     },
-    execute: async (input: any, _ctx: ToolContext) => {
+    execute: async (input: AddConnectionToolInput, _ctx: ToolContext) => {
       const conn: RegistryConnection = {
         id: input.id,
         name: input.name ?? input.id,
@@ -248,7 +281,7 @@ export function createRemoteRegistryAgent(
     description: "List all connected remote registries.",
     visibility: "public" as const,
     inputSchema: { type: "object" as const, properties: {} },
-    execute: async (_input: any, _ctx: ToolContext) => {
+    execute: async (_input: Record<string, unknown>, _ctx: ToolContext) => {
       const all = await loadAllConnections("system");
       return {
         connections: Object.values(all).map((c) => ({
@@ -264,7 +297,7 @@ export function createRemoteRegistryAgent(
   // Extract setup/connect as standalone functions to avoid circular reference
   const setupFn = async (
     params: Record<string, unknown>,
-    _ctx: IntegrationMethodContext,
+    _ctx: ToolContext,
   ): Promise<IntegrationMethodResult> => {
     console.log(
       "[remote-registry] setupFn called with:",
@@ -294,7 +327,7 @@ export function createRemoteRegistryAgent(
             redirect_uri: params.redirect_uri ?? "",
           }),
         });
-        const tokenData = (await tokenRes.json()) as any;
+        const tokenData = (await tokenRes.json()) as OAuthTokenJsonBody;
         if (!tokenData.access_token && !tokenData.tenant_id) {
           return {
             success: false,
@@ -319,23 +352,16 @@ export function createRemoteRegistryAgent(
         };
       }
 
-      // Phase 1: Discover JWKS, establish trust, then request OIDC
-      const configUrl = `${baseUrl}/.well-known/configuration`;
-      console.log("[setupFn] fetching config:", configUrl);
-      const configRes = await globalThis.fetch(configUrl);
-      console.log("[setupFn] config status:", configRes.status);
-      if (!configRes.ok)
+      // Phase 1: Verify JWKS at origin, establish trust, then request OIDC
+      const jwksUri = `${new URL(baseUrl).origin}/.well-known/jwks.json`;
+      console.log("[setupFn] fetching JWKS:", jwksUri);
+      const jwksRes = await globalThis.fetch(jwksUri);
+      console.log("[setupFn] JWKS status:", jwksRes.status);
+      if (!jwksRes.ok)
         return {
           success: false,
-          error: `Failed to discover registry at ${configUrl}`,
+          error: `JWKS not reachable at ${jwksUri}`,
         };
-      const remoteConfig = (await configRes.json()) as any;
-      if (remoteConfig.jwks_uri) {
-        console.log("[setupFn] fetching JWKS:", remoteConfig.jwks_uri);
-        const jwksRes = await globalThis.fetch(remoteConfig.jwks_uri);
-        console.log("[setupFn] JWKS status:", jwksRes.status);
-        if (!jwksRes.ok) return { success: false, error: "JWKS not reachable" };
-      }
       if (addTrustedIssuer) {
         console.log("[setupFn] adding trusted issuer:", baseUrl);
         await addTrustedIssuer(baseUrl);
@@ -361,7 +387,7 @@ export function createRemoteRegistryAgent(
         }),
       });
       console.log("[setupFn] token status:", tokenRes.status);
-      const tokenData = (await tokenRes.json()) as any;
+      const tokenData = (await tokenRes.json()) as OAuthTokenJsonBody;
       console.log(
         "[setupFn] tokenData:",
         JSON.stringify(tokenData).substring(0, 300),
@@ -414,7 +440,7 @@ export function createRemoteRegistryAgent(
 
   const connectFn = async (
     params: Record<string, unknown>,
-    ctx: IntegrationMethodContext,
+    ctx: ToolContext,
   ): Promise<IntegrationMethodResult> => {
     const registryId = params.registryId as string;
     const redirectUri = (params.redirectUri as string) ?? "";
@@ -443,7 +469,7 @@ export function createRemoteRegistryAgent(
           redirect_uri: redirectUri,
         }),
       });
-      const tokenData = (await tokenRes.json()) as any;
+      const tokenData = (await tokenRes.json()) as OAuthTokenJsonBody;
       if (tokenData.access_token)
         return {
           success: true,
@@ -498,27 +524,28 @@ export function createRemoteRegistryAgent(
       category: "infrastructure",
       description:
         "Connect to a remote agent registry via JWKS trust exchange.",
-      setup: (params, ctx) => setupFn(params, ctx as any),
-      connect: (params, ctx) => connectFn(params, ctx as any),
+      setup: (params, ctx) => setupFn(params, ctx),
+      connect: (params, ctx) => connectFn(params, ctx),
       async discover(params) {
         const url = (params.url as string) ?? "";
         try {
-          const res = await globalThis.fetch(
-            `${url.replace(/\/$/, "")}/.well-known/configuration`,
-          );
-          if (!res.ok)
+          const base = url.replace(/\/$/, "");
+          const origin = new URL(base).origin;
+          const jwksUri = `${origin}/.well-known/jwks.json`;
+          const res = await globalThis.fetch(jwksUri);
+          if (!res.ok) {
             return {
               success: false,
-              error: `No configuration endpoint at ${url}`,
+              error: `JWKS not reachable at ${jwksUri}`,
             };
-          const config = (await res.json()) as any;
+          }
           return {
             success: true,
             data: {
               url,
-              issuer: config.issuer,
-              grantTypes: config.supported_grant_types,
-              jwksUri: config.jwks_uri,
+              issuer: origin,
+              grantTypes: ["client_credentials", "jwt_exchange"],
+              jwksUri,
             },
           };
         } catch (err) {
@@ -558,6 +585,6 @@ export function createRemoteRegistryAgent(
         return { success: true, data: conn };
       },
     },
-    tools: [proxyTool, listTool, addConnectionTool] as any[],
+    tools: [proxyTool, listTool, addConnectionTool] as ToolDefinition<ToolContext>[],
   });
 }

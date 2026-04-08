@@ -149,7 +149,7 @@ await server.start();
 
 console.log('\nTry these commands:');
 console.log(
-  '  curl http://localhost:3000/list'
+  '  curl http://localhost:3000/agents'
 );
 console.log(
   '  curl -X POST http://localhost:3000/call -H "Content-Type: application/json" -d \'{"action":"execute_tool","path":"@example","tool":"greet","params":{"name":"World"}}\''

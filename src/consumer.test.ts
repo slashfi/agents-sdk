@@ -70,7 +70,7 @@ describe("Registry Consumer E2E", () => {
     await server.stop();
   });
 
-  test("discover registry via .well-known/configuration", async () => {
+  test("discover registry via MCP initialize", async () => {
     const config = {
       registries: [`http://localhost:${PORT}`],
     };
@@ -80,6 +80,9 @@ describe("Registry Consumer E2E", () => {
 
     expect(discovery).toBeDefined();
     expect(discovery.issuer).toBeDefined();
+    expect(discovery.token_endpoint).toBe(
+      `http://localhost:${PORT}/oauth/token`,
+    );
   });
 
   test("list agents from registry", async () => {

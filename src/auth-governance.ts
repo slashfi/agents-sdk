@@ -39,7 +39,7 @@ export function canSeeAgent(
   agent: AgentDefinition,
   auth: ResolvedAuth | null,
 ): boolean {
-  const visibility = ((agent as any).visibility ??
+  const visibility = (agent.visibility ??
     agent.config?.visibility ??
     "internal") as Visibility;
   if (hasAdminScope(auth)) return true;
@@ -87,7 +87,7 @@ export function getVisibleTools(
   agent: AgentDefinition,
   auth: ResolvedAuth | null,
 ): typeof agent.tools {
-  const agentVisibility = ((agent as any).visibility ??
+  const agentVisibility = (agent.visibility ??
     agent.config?.visibility ??
     "internal") as Visibility;
   return agent.tools.filter((t) => canSeeTool(t, auth, agentVisibility));

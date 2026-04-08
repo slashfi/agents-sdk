@@ -32,7 +32,13 @@ import {
   signJwt,
   verifyJwtFromIssuer,
 } from "../jwt.js";
-import type { AgentDefinition, ToolContext, ToolDefinition } from "../types.js";
+import type {
+  AgentDefinition,
+  AuthClientCredentialsTokenResult,
+  AuthSecretValue,
+  ToolContext,
+  ToolDefinition,
+} from "../types.js";
 
 // ============================================
 // Auth Types
@@ -120,8 +126,10 @@ export interface AuthStore {
   /** Revoke a client (delete). */
   revokeClient(clientId: string): Promise<boolean>;
 
-  /** Rotate a client's secret. Returns new raw secret. */
-  rotateSecret(clientId: string): Promise<{ clientSecret: string } | null>;
+  /** Rotate a client's secret. Returns new secret (wrapped for wire format). */
+  rotateSecret(
+    clientId: string,
+  ): Promise<{ clientSecret: AuthSecretValue } | null>;
 
   /** Store a token. */
   storeToken(token: AuthToken): Promise<void>;
@@ -333,8 +341,11 @@ export function createMemoryAuthStore(): AuthStore {
       const clientSecret = generateSecret();
       client.clientSecretHash = await hashSecret(clientSecret);
       return {
-        clientSecret: { $agent_type: "secret", value: clientSecret },
-      } as any;
+        clientSecret: {
+          $agent_type: "secret",
+          value: clientSecret,
+        } satisfies AuthSecretValue,
+      };
     },
 
     async storeToken(token) {
@@ -572,7 +583,7 @@ export function createAuthAgent(
           refreshToken: { $agent_type: "secret", value: result.refreshToken },
           tokenType: "bearer",
           expiresIn: tokenTtl,
-        } as any;
+        } satisfies AuthClientCredentialsTokenResult;
       }
 
       if (input.grantType !== "client_credentials") {
@@ -607,7 +618,7 @@ export function createAuthAgent(
         tokenType: "bearer",
         expiresIn: tokenTtl,
         scopes: client.scopes,
-      };
+      } satisfies AuthClientCredentialsTokenResult;
     },
   });
 
@@ -666,9 +677,12 @@ export function createAuthAgent(
 
       return {
         clientId,
-        clientSecret: { $agent_type: "secret", value: clientSecret },
+        clientSecret: {
+          $agent_type: "secret",
+          value: clientSecret,
+        } satisfies AuthSecretValue,
         scopes,
-      } as any;
+      };
     },
   });
 
@@ -907,17 +921,20 @@ export function createAuthAgent(
       if (parts.length !== 3) {
         return { success: false, error: "Invalid JWT format" };
       }
-      let decoded: any;
+      let decoded: Record<string, unknown>;
       try {
-        decoded = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+        decoded = JSON.parse(
+          Buffer.from(parts[1], "base64url").toString(),
+        ) as Record<string, unknown>;
       } catch {
         return { success: false, error: "Failed to decode JWT payload" };
       }
 
       const issuer = decoded.iss;
       const sub = decoded.sub;
-      const foreignTenantId = decoded.tenantId;
-      if (!issuer || !sub) {
+      const foreignTenantId =
+        typeof decoded.tenantId === "string" ? decoded.tenantId : undefined;
+      if (typeof issuer !== "string" || typeof sub !== "string") {
         return { success: false, error: "JWT missing iss or sub claims" };
       }
 
@@ -928,7 +945,7 @@ export function createAuthAgent(
       }
 
       // 3. Verify JWT against the matched issuer's JWKS
-      let payload: any;
+      let payload: Awaited<ReturnType<typeof verifyJwtFromIssuer>>;
       try {
         payload = await verifyJwtFromIssuer(input.token, issuer);
       } catch {

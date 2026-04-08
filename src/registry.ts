@@ -707,7 +707,9 @@ export function createAgentRegistry(
               ),
             )
             .filter((t: ToolDefinition) =>
-              request.tools ? request.tools.includes(t.name) : true,
+              request.tools && request.tools.length > 0
+                ? request.tools.includes(t.name)
+                : true,
             )
             .map((t: ToolDefinition) => ({
               name: t.name,

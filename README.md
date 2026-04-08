@@ -318,7 +318,8 @@ import { createAgentServer } from '@slashfi/agents-sdk';
 const server = createAgentServer(registry, { port: 3000 });
 await server.start();
 // POST /call  — execute agent actions
-// GET  /list  — list agents
+// GET  /agents — list public agents (HTTP discovery)
+// MCP JSON-RPC (POST /) — list_agents, call_agent, etc.
 ```
 
 ### `SerializedAgentDefinition`

@@ -90,11 +90,22 @@ export type {
   SecurityScheme,
   AgentResource,
   SecuritySchemeSummary,
+  AuthClientCredentialsTokenResult,
+  AuthSecretValue,
+  ExchangeTokenLinkedSuccess,
+  ExchangeTokenNeedsIdentity,
+  ExchangeTokenRejected,
+  ExchangeTokenToolResult,
   IntegrationMethods,
   IntegrationMethodResult,
   IntegrationMethodContext,
   IntegrationHooks,
   Visibility,
+} from "./types.js";
+export {
+  isCallAgentErrorResponse,
+  isExchangeTokenLinkedSuccess,
+  isExchangeTokenNeedsIdentity,
 } from "./types.js";
 
 // Define functions
