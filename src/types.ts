@@ -646,6 +646,17 @@ export interface ToolSchema {
   outputSchema?: JsonSchema;
 }
 
+/**
+ * Slim tool summary for describe_tools when full=false (default).
+ * Omits verbose inputSchema/outputSchema to save context tokens.
+ */
+export interface ToolSchemaSummary {
+  name: string;
+  description: string;
+  /** Estimated token count if full schema were returned for this tool */
+  fullTokens: number;
+}
+
 // ============================================
 // Agent Definition
 // ============================================
@@ -749,13 +760,18 @@ export interface CallAgentExecuteToolResponse {
 /** Success response for describe_tools */
 export interface CallAgentDescribeToolsResponse {
   success: true;
-  tools: ToolSchema[];
+  /** Full tool schemas (when full=true) */
+  tools?: ToolSchema[];
+  /** Slim tool summaries (when full=false/omitted) */
+  toolSummaries?: ToolSchemaSummary[];
   /** Agent description */
   description?: string;
   /** Security scheme (if any) */
   security?: SecuritySchemeSummary;
   /** Available resources (e.g., AUTH.md) */
   resources?: Array<{ uri: string; name?: string; mimeType?: string }>;
+  /** Human-readable hint about full mode */
+  context?: string;
 }
 
 /** A resolved agent ref with its discovered tools */
