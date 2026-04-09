@@ -171,7 +171,7 @@ export interface ListAgentsResult {
     integration?: unknown;
     security?: { type: string };
     resources?: Array<{ uri: string; name?: string; mimeType?: string }>;
-    tools: string[];
+    toolCount: number;
   }>;
 }
 

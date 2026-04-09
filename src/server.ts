@@ -764,9 +764,9 @@ export function createAgentServer(
                   name: r.name,
                   mimeType: r.mimeType,
                 })),
-                tools: agent.tools
+                toolCount: agent.tools
                   .filter((t) => canSeeTool(t, auth, (agent.visibility ?? agent.config?.visibility ?? 'internal') as Visibility))
-                  .map((t) => t.name),
+                  .length,
               })),
             };
           },
