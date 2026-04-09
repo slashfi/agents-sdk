@@ -224,6 +224,8 @@ export interface AgentListing {
   }>;
   /** Context hint from describe_tools (e.g., "Use full: true for complete schemas") */
   context?: string;
+  /** Upstream MCP/API URL for direct connections */
+  upstream?: string;
   /** Integration config if applicable */
   integration?: {
     provider: string;
@@ -928,6 +930,7 @@ export async function createRegistryConsumer(
             security?: SecuritySchemeSummary;
             resources?: Array<{ uri: string; name?: string; mimeType?: string }>;
             context?: string;
+            upstream?: string;
           } | null;
           if (!data) return null;
           return {
@@ -939,6 +942,7 @@ export async function createRegistryConsumer(
             security: data.security,
             resources: data.resources,
             context: data.context,
+            ...(data.upstream && { upstream: data.upstream }),
           } as AgentListing;
         }),
       );

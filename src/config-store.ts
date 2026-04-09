@@ -547,21 +547,26 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
   const ref: AdkRefApi = {
     async add(entry: RefEntry): Promise<{ security: SecuritySchemeSummary | null }> {
+      // Enrich ref with upstream info from the registry
+      let security: SecuritySchemeSummary | null = null;
+      try {
+        const consumer = await buildConsumer();
+        const info = await consumer.inspect(entry.ref);
+        if (info?.security) security = info.security;
+        if (info?.upstream && !entry.url) {
+          entry.url = info.upstream as string;
+          entry.scheme = entry.scheme ?? "mcp";
+        }
+      } catch {
+        // Non-fatal — registry might be unreachable
+      }
+
       const config = await readConfig();
       const name = refName(entry);
       const refs = (config.refs ?? []).filter((r) => refName(r) !== name);
       refs.push(entry);
       await writeConfig({ ...config, refs });
 
-      // Check security requirements
-      let security: SecuritySchemeSummary | null = null;
-      try {
-        const consumer = await buildConsumer();
-        const info = await consumer.inspect(entry.ref);
-        if (info?.security) security = info.security;
-      } catch {
-        // Non-fatal — registry might be unreachable
-      }
       return { security };
     },
 
@@ -623,18 +628,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
       // If we have a direct access_token from OAuth, call the agent's MCP server
       // directly instead of going through the registry
-      if (accessToken) {
-        const info = await ref.inspect(name);
-        // Use upstream URL from registry if available, fall back to deriving from OAuth URL
-        const upstream = (info as { upstream?: string } | null)?.upstream;
-        const security = info?.security as { type: string; flows?: { authorizationCode?: { authorizationUrl?: string } } } | undefined;
-        const mcpUrl = upstream
-          ?? (security?.flows?.authorizationCode?.authorizationUrl
-            ? `${new URL(security.flows.authorizationCode.authorizationUrl).origin}/mcp`
-            : null);
-        if (mcpUrl) {
-          return callMcpDirect(mcpUrl, tool, params ?? {}, accessToken);
-        }
+      if (accessToken && entry.url) {
+        return callMcpDirect(entry.url, tool, params ?? {}, accessToken);
       }
 
       const consumer = await buildConsumer();
