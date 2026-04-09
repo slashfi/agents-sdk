@@ -2,31 +2,23 @@
 /**
  * ADK CLI — Agent Development Kit
  *
- * Unified CLI for building, testing, and publishing agent definitions.
- *
  * Commands:
- *   codegen     Generate agent definitions from an MCP server (full codegen)
- *   introspect  Introspect an MCP server → agent.json (lightweight)
- *   pack        Generate publishable @agentdef/* package from agent.json
- *   publish     Pack + npm publish to @agentdef/*
- *   use         Execute a tool on a generated agent
- *   list        List all generated agents
+ *   codegen          Generate agent definitions from an MCP server
+ *   introspect       Introspect an MCP server → agent.json
+ *   pack             Generate publishable @agentdef/* package
+ *   publish          Pack + npm publish to @agentdef/*
+ *   use              Execute a tool on a generated agent
+ *   list             List all generated agents
+ *   registry <op>    Manage registry connections (add, remove, list, browse, inspect, test)
+ *   ref <op>         Manage agent refs (add, remove, list, get, inspect, call, resources, read)
  *
  * @example
  * ```bash
- * # Full codegen from MCP server
- * adk codegen --server 'npx @mcp/notion' --name notion --out ./agents/@notion
- *
- * # Lightweight introspect → agent.json
- * adk introspect --server 'npx @notionhq/notion-mcp-server' --name notion
- *
- * # Build + publish
- * adk pack
- * adk publish
- *
- * # Use a tool
- * adk use notion search_pages '{"query": "hello"}'
- * adk use notion --list
+ * adk registry add https://registry.slash.com --name slash
+ * adk registry browse slash
+ * adk ref add notion --registry slash
+ * adk ref inspect notion
+ * adk ref call notion notion-search '{"query":"hello"}'
  * ```
  */
 
@@ -35,6 +27,9 @@ import { join, resolve } from "node:path";
 import { codegen, listAgentTools, useAgent } from "./codegen.js";
 import type { CodegenManifest } from "./codegen.js";
 import { pack, publish } from "./pack.js";
+import { createAdk } from "./config-store.js";
+import { createLocalFsStore, getLocalEncryptionKey } from "./local-fs.js";
+import type { Adk } from "./config-store.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -72,51 +67,57 @@ function findAgentDir(name: string): string | null {
   return null;
 }
 
+function getAdk(): Adk {
+  const token = process.env.ADK_TOKEN ?? undefined;
+  const encryptionKey = getLocalEncryptionKey();
+  return createAdk(createLocalFsStore(), { token, encryptionKey });
+}
+
 function printUsage() {
   console.log(`
 adk — Agent Development Kit
 
 Usage:
-  adk codegen [options]              Generate agent from MCP server (full codegen)
+  adk registry <op> [options]        Manage registry connections
+  adk ref <op> [options]             Manage agent refs
+  adk codegen [options]              Generate agent from MCP server
   adk introspect [options]           Introspect MCP server → agent.json
   adk pack [options]                 Generate publishable package from agent.json
   adk publish [options]              Pack + npm publish to @agentdef/*
   adk use <agent> [options]          Execute a tool on a generated agent
   adk list                           List all generated agents
 
-Codegen options:
-  --server <source>     MCP server (command string or URL)
-  --name <name>         Agent name (default: derived from server)
-  --out <dir>           Output directory (default: ./agents/@<name>)
-  --path <path>         Agent path override
-  --no-cli              Skip CLI generation
-  --no-types            Skip TypeScript interface generation
-  --visibility <level>  Agent visibility (public|internal|private)
+Registry operations:
+  adk registry add <url> --name <name> [--auth-type bearer|api-key|none]
+  adk registry remove <name>
+  adk registry list
+  adk registry browse <name> [--query <q>]
+  adk registry inspect <name>
+  adk registry test [name]
 
-Introspect options:
-  --server <cmd>        MCP server command to introspect
-  --name <name>         Agent name for output
-  --out <path>          Output path (default: ./<name>.json)
+Ref operations:
+  adk ref add <ref> [--registry <name>] [--as <alias>] [--url <url>] [--scheme mcp|https|registry]
+  adk ref remove <name>
+  adk ref list
+  adk ref get <name>
+  adk ref inspect <name> [--full]
+  adk ref call <name> <tool> [params_json]
+  adk ref resources <name>
+  adk ref read <name> <uri> [uri...]
+  adk ref auth <name> [--api-key <key>]
+  adk ref auth-status <name>
 
-Pack / Publish options:
-  --agent <path>        Path to agent.json (default: ./agent.json)
-  --out <dir>           Output directory (default: ./dist)
-  --scope <scope>       npm scope (default: @agentdef)
-  --previous <path>     Previous agent.json for diff
-  --dry-run             Don't actually publish (publish only)
-  --tag <tag>           npm dist-tag (default: latest)
-  --access <level>      npm access: public | restricted (default: public)
-
-Use options:
-  adk use <agent> <tool> [params_json]
-  adk use <agent> --list              List tools on the agent
+Environment:
+  ADK_CONFIG_DIR        Config directory (default: ~/.adk)
+  ADK_TOKEN             Bearer token for authenticated registries
+  ADK_ENCRYPTION_KEY    Override encryption key (default: auto from ~/.adk/.encryption-key)
 
 Examples:
-  adk codegen --server 'npx @mcp/notion' --name notion
-  adk introspect --server 'npx @notionhq/notion-mcp-server' --name notion
-  adk pack --agent ./agent.json
-  adk publish --dry-run
-  adk use notion search_pages '{"query": "hello"}'
+  adk registry add https://registry.slash.com --name slash
+  adk registry browse slash
+  adk ref add notion --registry slash
+  adk ref inspect notion --full
+  adk ref call notion notion-search '{"query":"hello"}'
 `);
 }
 
@@ -364,10 +365,269 @@ function runList() {
 }
 
 // ============================================
+// Registry CLI
+// ============================================
+
+async function runRegistry() {
+  const op = args[1];
+  const adk = getAdk();
+
+  switch (op) {
+    case "add": {
+      const url = args[2];
+      const name = getArg("--name");
+      if (!url) {
+        console.error("Usage: adk registry add <url> --name <name>");
+        process.exit(1);
+      }
+      const authType = getArg("--auth-type") as "bearer" | "api-key" | "none" | undefined;
+      const auth = authType && authType !== "none"
+        ? { type: authType as "bearer" | "api-key" }
+        : undefined;
+      await adk.registry.add({ url, name: name ?? new URL(url).hostname, ...(auth && { auth }) });
+      console.log(`Added registry: ${name ?? url}`);
+      break;
+    }
+    case "remove": {
+      const name = args[2];
+      if (!name) { console.error("Usage: adk registry remove <name>"); process.exit(1); }
+      const removed = await adk.registry.remove(name);
+      console.log(removed ? `Removed: ${name}` : `Not found: ${name}`);
+      break;
+    }
+    case "list": {
+      const registries = await adk.registry.list();
+      if (registries.length === 0) {
+        console.log("No registries configured. Run: adk registry add <url> --name <name>");
+        break;
+      }
+      console.log(`\n${registries.length} registry(s)\n`);
+      for (const r of registries) {
+        console.log(`  ${r.name ?? r.url}`);
+        console.log(`    ${r.url}`);
+        if (r.auth) console.log(`    auth: ${r.auth.type}`);
+        console.log();
+      }
+      break;
+    }
+    case "browse": {
+      const name = args[2];
+      if (!name) { console.error("Usage: adk registry browse <name> [--query <q>]"); process.exit(1); }
+      const query = getArg("--query");
+      const agents = await adk.registry.browse(name, query);
+      console.log(`\n${agents.length} agent(s)${query ? ` matching "${query}"` : ""}\n`);
+      for (const a of agents) {
+        const toolCount = a.tools?.length ?? 0;
+        console.log(`  ${a.path} (${toolCount} tools)`);
+        if (a.description) console.log(`    ${a.description.slice(0, 120)}`);
+        console.log();
+      }
+      break;
+    }
+    case "inspect": {
+      const name = args[2];
+      if (!name) { console.error("Usage: adk registry inspect <name>"); process.exit(1); }
+      const config = await adk.registry.inspect(name);
+      console.log(`\nRegistry: ${name}\n`);
+      console.log(`  issuer:       ${config.issuer}`);
+      console.log(`  jwks_uri:     ${config.jwks_uri}`);
+      console.log(`  token:        ${config.token_endpoint}`);
+      console.log(`  grant_types:  ${config.supported_grant_types?.join(", ")}`);
+      console.log();
+      break;
+    }
+    case "test": {
+      const name = args[2];
+      const results = await adk.registry.test(name);
+      for (const r of results) {
+        const icon = r.status === "active" ? "\x1b[32m\u2713\x1b[0m" : "\x1b[31m\u2717\x1b[0m";
+        console.log(`${icon} ${r.name} (${r.url})`);
+        if (r.issuer) console.log(`  issuer: ${r.issuer}`);
+        if (r.error) console.log(`  error: ${r.error}`);
+      }
+      break;
+    }
+    default:
+      console.error(`Unknown registry operation: ${op}`);
+      console.error("Operations: add, remove, list, browse, inspect, test");
+      process.exit(1);
+  }
+}
+
+// ============================================
+// Ref CLI
+// ============================================
+
+async function runRef() {
+  const op = args[1];
+  const adk = getAdk();
+
+  switch (op) {
+    case "add": {
+      const refArg = args[2];
+      if (!refArg) { console.error("Usage: adk ref add <ref> [--registry <name>] [--as <alias>]"); process.exit(1); }
+      const entry: Record<string, unknown> = { ref: refArg };
+      const alias = getArg("--as");
+      const url = getArg("--url");
+      const scheme = getArg("--scheme");
+      const registryName = getArg("--registry");
+      if (alias) entry.as = alias;
+      if (url) entry.url = url;
+      if (scheme) entry.scheme = scheme;
+      if (registryName) {
+        const reg = await adk.registry.get(registryName);
+        if (reg) {
+          entry.sourceRegistry = { url: reg.url, agentPath: refArg };
+        }
+      }
+      const { security } = await adk.ref.add(entry as import("./define-config.js").RefEntry);
+      console.log(`Added ref: ${alias ?? refArg}`);
+      if (security && security.type !== "none") {
+        console.log(`\n  Auth required: ${security.type}`);
+        console.log(`  Run: adk ref auth ${alias ?? refArg}`);
+      }
+      break;
+    }
+    case "remove": {
+      const name = args[2];
+      if (!name) { console.error("Usage: adk ref remove <name>"); process.exit(1); }
+      const removed = await adk.ref.remove(name);
+      console.log(removed ? `Removed: ${name}` : `Not found: ${name}`);
+      break;
+    }
+    case "list": {
+      const refs = await adk.ref.list();
+      if (refs.length === 0) {
+        console.log("No refs configured. Run: adk ref add <ref> --registry <name>");
+        break;
+      }
+      console.log(`\n${refs.length} ref(s)\n`);
+      for (const r of refs) {
+        console.log(`  ${r.name}`);
+        if (r.url) console.log(`    url: ${r.url}`);
+        if (r.scheme) console.log(`    scheme: ${r.scheme}`);
+        if (r.sourceRegistry) console.log(`    registry: ${r.sourceRegistry.url}`);
+        console.log();
+      }
+      break;
+    }
+    case "get": {
+      const name = args[2];
+      if (!name) { console.error("Usage: adk ref get <name>"); process.exit(1); }
+      const entry = await adk.ref.get(name);
+      if (!entry) { console.error(`Not found: ${name}`); process.exit(1); }
+      console.log(JSON.stringify(entry, null, 2));
+      break;
+    }
+    case "inspect": {
+      const name = args[2];
+      if (!name) { console.error("Usage: adk ref inspect <name> [--full]"); process.exit(1); }
+      const full = hasFlag("--full");
+      const info = await adk.ref.inspect(name, { full });
+      if (!info) { console.error(`Could not inspect: ${name}`); process.exit(1); }
+      console.log(JSON.stringify(info, null, 2));
+      break;
+    }
+    case "call": {
+      const name = args[2];
+      const tool = args[3];
+      const paramsStr = args[4];
+      if (!name || !tool) { console.error("Usage: adk ref call <name> <tool> [params_json]"); process.exit(1); }
+      const params = paramsStr ? JSON.parse(paramsStr) : {};
+      const result = await adk.ref.call(name, tool, params);
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+    case "resources": {
+      const name = args[2];
+      if (!name) { console.error("Usage: adk ref resources <name>"); process.exit(1); }
+      const result = await adk.ref.resources(name);
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+    case "read": {
+      const name = args[2];
+      const uris = args.slice(3);
+      if (!name || uris.length === 0) { console.error("Usage: adk ref read <name> <uri> [uri...]"); process.exit(1); }
+      const result = await adk.ref.read(name, uris);
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+    case "auth-status": {
+      const name = args[2];
+      if (!name) { console.error("Usage: adk ref auth-status <name>"); process.exit(1); }
+      const status = await adk.ref.authStatus(name);
+      const icon = status.complete ? "\x1b[32m\u2713\x1b[0m" : "\x1b[33m!\x1b[0m";
+      console.log(`\n${icon} ${status.name}`);
+      console.log(`  auth type: ${status.security?.type ?? "none"}`);
+      console.log(`  complete:  ${status.complete}`);
+      if (status.present.length > 0) console.log(`  stored:    ${status.present.join(", ")}`);
+      if (status.missing.length > 0) console.log(`  missing:   ${status.missing.join(", ")}`);
+      console.log();
+      break;
+    }
+    case "auth": {
+      const name = args[2];
+      if (!name) { console.error("Usage: adk ref auth <name> [--api-key <key>]"); process.exit(1); }
+      const apiKey = getArg("--api-key");
+
+      if (apiKey) {
+        const result = await adk.ref.auth(name, { apiKey });
+        if (result.complete) {
+          console.log(`\x1b[32m\u2713\x1b[0m Auth complete for ${name} (${result.type})`);
+        }
+        break;
+      }
+
+      // Check what type of auth is needed
+      const status = await adk.ref.authStatus(name);
+      if (status.complete) {
+        console.log(`\x1b[32m\u2713\x1b[0m ${name} is already authenticated`);
+        break;
+      }
+
+      if (status.security?.type === "apiKey" || status.security?.type === "http") {
+        console.error(`Provide a key: adk ref auth ${name} --api-key <your-key>`);
+        process.exit(1);
+      }
+
+      // OAuth — run locally with browser open
+      try {
+        const result = await adk.ref.authLocal(name, {
+          onAuthorizeUrl: (url) => {
+            console.log(`\nOpen this URL to authorize:\n\n  ${url}\n`);
+            const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+            import("node:child_process").then(({ exec }) => exec(`${opener} "${url}"`)).catch(() => {});
+            console.log("Waiting for callback ...");
+          },
+        });
+        if (result.complete) {
+          console.log(`\x1b[32m\u2713\x1b[0m Auth complete for ${name}`);
+        }
+      } catch (err) {
+        console.error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+      break;
+    }
+    default:
+      console.error(`Unknown ref operation: ${op}`);
+      console.error("Operations: add, remove, list, get, inspect, call, resources, read, auth, auth-status");
+      process.exit(1);
+  }
+}
+
+// ============================================
 // Main
 // ============================================
 
 switch (command) {
+  case "registry":
+    await runRegistry();
+    break;
+  case "ref":
+    await runRef();
+    break;
   case "codegen":
     await runCodegen();
     break;

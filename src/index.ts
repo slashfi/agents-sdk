@@ -447,3 +447,17 @@ export type {
   ConfigAgentOptions,
   FsStore,
 } from "./agent-definitions/config.js";
+
+// ADK Config Store
+export { createAdk } from "./config-store.js";
+export type {
+  Adk,
+  AdkOptions,
+  AdkRegistryApi,
+  AdkRefApi,
+  RefAuthStatus,
+  AuthStartResult,
+  OAuthResult,
+  RegistryTestResult,
+} from "./config-store.js";
+export { createLocalFsStore, getLocalEncryptionKey } from "./local-fs.js";
