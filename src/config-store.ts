@@ -625,11 +625,14 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       // directly instead of going through the registry
       if (accessToken) {
         const info = await ref.inspect(name);
+        // Use upstream URL from registry if available, fall back to deriving from OAuth URL
+        const upstream = (info as { upstream?: string } | null)?.upstream;
         const security = info?.security as { type: string; flows?: { authorizationCode?: { authorizationUrl?: string } } } | undefined;
-        const authUrl = security?.flows?.authorizationCode?.authorizationUrl;
-        if (authUrl) {
-          // MCP endpoint is at /mcp under the OAuth origin
-          const mcpUrl = `${new URL(authUrl).origin}/mcp`;
+        const mcpUrl = upstream
+          ?? (security?.flows?.authorizationCode?.authorizationUrl
+            ? `${new URL(security.flows.authorizationCode.authorizationUrl).origin}/mcp`
+            : null);
+        if (mcpUrl) {
           return callMcpDirect(mcpUrl, tool, params ?? {}, accessToken);
         }
       }

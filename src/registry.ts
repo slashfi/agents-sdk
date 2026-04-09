@@ -817,6 +817,7 @@ export function createAgentRegistry(
               tools: toolSchemas,
               description: agent.config?.description,
               security: agent.config?.security,
+              ...(agent.config?.upstream && { upstream: agent.config.upstream }),
               resources: agent.config?.resources?.map((r) => ({
                 uri: r.uri,
                 name: r.name,
@@ -843,6 +844,7 @@ export function createAgentRegistry(
             toolSummaries,
             description: agent.config?.description,
             security: agent.config?.security,
+            ...(agent.config?.upstream && { upstream: agent.config.upstream }),
             resources: agent.config?.resources?.map((r) => ({
               uri: r.uri,
               name: r.name,
