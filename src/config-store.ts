@@ -34,6 +34,7 @@ import type {
 } from "./registry-consumer.js";
 import type { CallAgentResponse, SecuritySchemeSummary } from "./types.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
+import { AdkError } from "./adk-error.js";
 import {
   discoverOAuthMetadata,
   dynamicClientRegistration,
@@ -594,29 +595,42 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
   const ref: AdkRefApi = {
     async add(entry: RefEntry): Promise<{ security: SecuritySchemeSummary | null }> {
       let security: SecuritySchemeSummary | null = null;
-      try {
-        const consumer = await buildConsumer();
-        const info = await consumer.inspect(entry.ref);
-
-        // If sourceRegistry is set, validate the agent exists
-        if (entry.sourceRegistry && !info) {
-          throw new Error(
-            `Agent "${entry.ref}" not found on registry ${entry.sourceRegistry.url}`,
-          );
-        }
-
-        if (info?.security) security = info.security;
-        if (info?.upstream && !entry.url) {
-          entry.url = info.upstream as string;
-          entry.scheme = entry.scheme ?? "mcp";
-        }
-      } catch (err) {
-        // If we were validating against a sourceRegistry, propagate the error
-        if (entry.sourceRegistry) throw err;
-        // Otherwise non-fatal — registry might be unreachable
-      }
 
       const config = await readConfig();
+      const hasRegistries = (config.registries ?? []).length > 0;
+
+      if (hasRegistries) {
+        try {
+          const consumer = await buildConsumer();
+          const info = await consumer.inspect(entry.ref);
+
+          const agentExists = info && (info.description || info.tools?.length || info.toolSummaries?.length);
+          if (!agentExists && entry.sourceRegistry) {
+            throw new AdkError({
+              code: "REF_NOT_FOUND",
+              message: `Agent "${entry.ref}" not found on registry ${entry.sourceRegistry.url}`,
+              hint: `Check available agents with: adk registry browse ${entry.sourceRegistry.url}`,
+              details: { ref: entry.ref, sourceRegistry: entry.sourceRegistry },
+            });
+          }
+
+          if (info?.security) security = info.security;
+          if (info?.upstream && !entry.url) {
+            entry.url = info.upstream as string;
+            entry.scheme = entry.scheme ?? "mcp";
+          }
+        } catch (err) {
+          if (err instanceof AdkError) throw err;
+          throw new AdkError({
+            code: "REGISTRY_UNREACHABLE",
+            message: `Could not reach registry to validate "${entry.ref}"`,
+            hint: "Check your registry connection with: adk registry test",
+            details: { ref: entry.ref, error: err instanceof Error ? err.message : String(err) },
+            cause: err,
+          });
+        }
+      }
+
       const name = refName(entry);
       const refs = (config.refs ?? []).filter((r) => refName(r) !== name);
       refs.push(entry);

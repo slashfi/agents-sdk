@@ -30,6 +30,7 @@ import { pack, publish } from "./pack.js";
 import { createAdk } from "./config-store.js";
 import { createLocalFsStore, getLocalEncryptionKey } from "./local-fs.js";
 import type { Adk } from "./config-store.js";
+import { AdkError, getError, getRecentErrors } from "./adk-error.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -539,11 +540,19 @@ async function runRef() {
           entry.sourceRegistry = { url: reg.url, agentPath: refArg };
         }
       }
-      const { security } = await adk.ref.add(entry as import("./define-config.js").RefEntry);
-      console.log(`Added ref: ${alias ?? refArg}`);
-      if (security && security.type !== "none") {
-        console.log(`\n  Auth required: ${security.type}`);
-        console.log(`  Run: adk ref auth ${alias ?? refArg}`);
+      try {
+        const { security } = await adk.ref.add(entry as import("./define-config.js").RefEntry);
+        console.log(`Added ref: ${alias ?? refArg}`);
+        if (security && security.type !== "none") {
+          console.log(`\n  Auth required: ${security.type}`);
+          console.log(`  Run: adk ref auth ${alias ?? refArg}`);
+        }
+      } catch (err) {
+        if (err instanceof AdkError) {
+          console.error(err.toAgentString());
+          process.exit(1);
+        }
+        throw err;
       }
       break;
     }
@@ -690,6 +699,23 @@ async function runRef() {
 // ============================================
 
 switch (command) {
+  case "error": {
+    const errorId = args[1];
+    if (!errorId) {
+      const errors = getRecentErrors();
+      if (errors.length === 0) { console.log("No recent errors."); break; }
+      console.log(`\n${errors.length} recent error(s)\n`);
+      for (const e of errors.slice(-10)) {
+        console.log(`  ${e.errorId} [${e.code}] ${e.message}`);
+      }
+      console.log();
+    } else {
+      const err = getError(errorId);
+      if (!err) { console.error(`Error not found: ${errorId}`); process.exit(1); }
+      console.log(err.toDebugString());
+    }
+    break;
+  }
   case "proxy":
     await runProxy();
     break;
