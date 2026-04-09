@@ -216,6 +216,14 @@ export interface AgentListing {
     name?: string;
     mimeType?: string;
   }>;
+  /** Slim tool summaries (when describe_tools called without full: true) */
+  toolSummaries?: Array<{
+    name: string;
+    description: string;
+    fullTokens: number;
+  }>;
+  /** Context hint from describe_tools (e.g., "Use full: true for complete schemas") */
+  context?: string;
   /** Integration config if applicable */
   integration?: {
     provider: string;
@@ -592,6 +600,7 @@ export interface RegistryConsumer {
   inspect(
     agentPath: string,
     registryUrl?: string,
+    options?: { full?: boolean },
   ): Promise<AgentListing | null>;
 
   /** Resolve a secret URL to its value */
@@ -890,6 +899,7 @@ export async function createRegistryConsumer(
     async inspect(
       agentPath: string,
       registryUrl?: string,
+      options?: { full?: boolean },
     ): Promise<AgentListing | null> {
       const targetRegistries = registryUrl
         ? resolvedRegistries.filter((r) => r.url === registryUrl || r.name === registryUrl)
@@ -902,20 +912,25 @@ export async function createRegistryConsumer(
             action: "describe_tools",
             path: agentPath,
             tools: undefined,
+            ...(options?.full != null && { full: options.full }),
           })) as {
             tools?: unknown[];
+            toolSummaries?: Array<{ name: string; description: string; fullTokens: number }>;
             description?: string;
             security?: SecuritySchemeSummary;
             resources?: Array<{ uri: string; name?: string; mimeType?: string }>;
+            context?: string;
           } | null;
           if (!data) return null;
           return {
             path: agentPath,
             publisher: registry.publisher,
             tools: data.tools,
+            toolSummaries: data.toolSummaries,
             description: data.description,
             security: data.security,
             resources: data.resources,
+            context: data.context,
           } as AgentListing;
         }),
       );
