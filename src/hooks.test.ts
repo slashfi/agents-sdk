@@ -330,7 +330,7 @@ describe("tools/call/list_agents hook", () => {
             path: "@custom-only",
             name: "Custom",
             description: "Only this one",
-            tools: ["do_stuff"],
+            toolCount: 1,
           },
         ],
       });
