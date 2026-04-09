@@ -601,7 +601,10 @@ export function createAgentRegistry(
   return registryObj;
 
   async function callInternal(request: CallAgentRequest): Promise<CallAgentResponse> {
-      const agent = agents.get(request.path);
+      // Normalize path: try exact, then with @, then without @
+      const agent = agents.get(request.path)
+        ?? agents.get(`@${request.path}`)
+        ?? agents.get(request.path.replace(/^@/, ""));
 
       if (!agent) {
         return {

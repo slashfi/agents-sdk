@@ -26,6 +26,7 @@
  */
 
 import type { AuthStore } from "./agent-definitions/auth.js";
+import type { Visibility } from "./types.js";
 import {
   type SecretStore,
   processSecretParams,
@@ -697,7 +698,7 @@ export function createAgentServer(
                   agent.config?.name ?? "",
                   agent.config?.description ?? "",
                   ...agent.tools
-                    .filter((t) => canSeeTool(t, auth))
+                    .filter((t) => canSeeTool(t, auth, (agent.visibility ?? agent.config?.visibility ?? 'internal') as Visibility))
                     .map((t) => `${t.name} ${t.description}`),
                 ].join(" "),
               }));
@@ -764,7 +765,7 @@ export function createAgentServer(
                   mimeType: r.mimeType,
                 })),
                 tools: agent.tools
-                  .filter((t) => canSeeTool(t, auth))
+                  .filter((t) => canSeeTool(t, auth, (agent.visibility ?? agent.config?.visibility ?? 'internal') as Visibility))
                   .map((t) => t.name),
               })),
             };
