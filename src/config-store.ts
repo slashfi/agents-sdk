@@ -593,18 +593,27 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
   const ref: AdkRefApi = {
     async add(entry: RefEntry): Promise<{ security: SecuritySchemeSummary | null }> {
-      // Enrich ref with upstream info from the registry
       let security: SecuritySchemeSummary | null = null;
       try {
         const consumer = await buildConsumer();
         const info = await consumer.inspect(entry.ref);
+
+        // If sourceRegistry is set, validate the agent exists
+        if (entry.sourceRegistry && !info) {
+          throw new Error(
+            `Agent "${entry.ref}" not found on registry ${entry.sourceRegistry.url}`,
+          );
+        }
+
         if (info?.security) security = info.security;
         if (info?.upstream && !entry.url) {
           entry.url = info.upstream as string;
           entry.scheme = entry.scheme ?? "mcp";
         }
-      } catch {
-        // Non-fatal — registry might be unreachable
+      } catch (err) {
+        // If we were validating against a sourceRegistry, propagate the error
+        if (entry.sourceRegistry) throw err;
+        // Otherwise non-fatal — registry might be unreachable
       }
 
       const config = await readConfig();
