@@ -1153,7 +1153,7 @@ export interface CodegenManifest {
   agentPath: string;
   serverSource: ServerSource;
   serverInfo: McpServerInfo;
-  tools: { name: string; description?: string }[];
+  tools: { name: string; description?: string; inputSchema?: Record<string, unknown> }[];
   /** How to connect to and authenticate with this MCP server */
   connection?: ConnectionSpec;
   /** Raw OAuth server metadata (from .well-known discovery) */
@@ -1191,7 +1191,7 @@ function generateManifest(
     agentPath,
     serverSource,
     serverInfo,
-    tools: tools.map((t) => ({ name: t.name, description: t.description })),
+    tools: tools.map((t) => ({ name: t.name, description: t.description, ...(t.inputSchema ? { inputSchema: t.inputSchema } : {}) })),
     ...(connection ? { connection } : {}),
     ...(oauth ? { oauth } : {}),
     generatedAt: new Date().toISOString(),
