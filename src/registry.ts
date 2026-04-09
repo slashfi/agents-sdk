@@ -24,6 +24,7 @@ import type {
   ToolContext,
   ToolDefinition,
   ToolSchema,
+  ToolSchemaSummary,
   Visibility,
 } from "./types.js";
 import { assertValidDefinition } from "./validate.js";
@@ -36,6 +37,21 @@ const DEFAULT_SUPPORTED_ACTIONS: AgentAction[] = [
   "list_resources",
   "read_resources",
 ];
+
+/**
+ * Estimate the token count for a tool schema when serialized to JSON.
+ * Uses a rough heuristic: ~4 characters per token (conservative estimate
+ * that accounts for JSON structure, property names, and schema verbosity).
+ */
+function estimateToolTokens(tool: ToolSchema): number {
+  const json = JSON.stringify({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    ...(tool.outputSchema && { outputSchema: tool.outputSchema }),
+  });
+  return Math.ceil(json.length / 4);
+}
 
 // ============================================
 // Agent Registry Interface
@@ -794,17 +810,45 @@ export function createAgentRegistry(
               ...(t.outputSchema && { outputSchema: t.outputSchema }),
             }));
 
+          // Full mode: return complete schemas (backward-compatible)
+          if (request.full) {
+            return {
+              success: true,
+              tools: toolSchemas,
+              description: agent.config?.description,
+              security: agent.config?.security,
+              resources: agent.config?.resources?.map((r) => ({
+                uri: r.uri,
+                name: r.name,
+                mimeType: r.mimeType,
+                content: r.content,
+              })),
+            } as CallAgentDescribeToolsResponse;
+          }
+
+          // Slim mode (default): summaries with token estimates
+          const toolSummaries: ToolSchemaSummary[] = toolSchemas.map((t) => ({
+            name: t.name,
+            description: t.description,
+            fullTokens: estimateToolTokens(t),
+          }));
+
+          const totalFullTokens = toolSummaries.reduce(
+            (sum, t) => sum + t.fullTokens,
+            0,
+          );
+
           return {
             success: true,
-            tools: toolSchemas,
+            toolSummaries,
             description: agent.config?.description,
             security: agent.config?.security,
             resources: agent.config?.resources?.map((r) => ({
               uri: r.uri,
               name: r.name,
               mimeType: r.mimeType,
-              content: r.content,
             })),
+            context: `Use full: true to get complete tool schemas (~${(totalFullTokens / 1000).toFixed(1)}k tokens total)`,
           } as CallAgentDescribeToolsResponse;
         }
 

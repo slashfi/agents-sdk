@@ -81,6 +81,7 @@ export type {
   ToolContext,
   ToolDefinition,
   ToolSchema,
+  ToolSchemaSummary,
   ToolSelectionContext,
   IntegrationConfig,
   ApiKeySecurityScheme,

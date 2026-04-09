@@ -172,6 +172,14 @@ export const describeToolsActionSchema = callAgentBaseSchema.extend({
     .describe(
       "Optional filter: specific tool names. Use undefined / omit for all tools; do not use [] (empty array is not 'all tools').",
     ),
+  full: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, returns complete tool schemas with full descriptions, inputSchema, and outputSchema. " +
+      "Default (false/omitted) returns slim summaries with tool names, brief descriptions, and token estimates. " +
+      "Use slim mode to discover tools cheaply, then full mode for the ones you need.",
+    ),
 });
 
 /** Load: get agent definition */
