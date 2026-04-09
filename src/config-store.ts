@@ -47,6 +47,29 @@ const SECRET_PREFIX = "secret:";
 // Types
 // ============================================
 
+/** Context passed to the resolveCredentials callback */
+export interface ResolveCredentialsContext {
+  /** Ref name */
+  ref: string;
+  /** Credential field being resolved (e.g. "client_id", "client_secret", "api_key") */
+  field: string;
+  /** The full ref entry from config */
+  entry: RefEntry;
+  /** Security scheme from the registry */
+  security: SecuritySchemeSummary | null;
+  /** OAuth metadata if available (from discovery) */
+  oauthMetadata?: import("./mcp-client.js").OAuthServerMetadata | null;
+}
+
+/**
+ * Resolve a credential field for a ref.
+ * Called during auth() when the adk needs a credential it can't auto-obtain.
+ * Return the value, or null to indicate it's not available.
+ */
+export type ResolveCredentials = (
+  ctx: ResolveCredentialsContext,
+) => Promise<string | null>;
+
 export interface AdkOptions {
   /** Passphrase for encrypting/decrypting secret: values */
   encryptionKey?: string;
@@ -60,8 +83,14 @@ export interface AdkOptions {
   oauthCallbackUrl?: string;
   /** Port for local OAuth callback server (default 8919) */
   oauthCallbackPort?: number;
-  /** Client name for OAuth dynamic client registration (default: "Claude Code") */
+  /** Client name for OAuth dynamic client registration (default: "adk") */
   oauthClientName?: string;
+  /**
+   * Resolve preconfigured credentials for a ref.
+   * Used by atlas to inject platform-level or tenant-level credentials
+   * (e.g. client_id/client_secret) before the user auth flow runs.
+   */
+  resolveCredentials?: ResolveCredentials;
 }
 
 export interface RegistryTestResult {
@@ -83,16 +112,25 @@ export interface AdkRegistryApi {
   test(name?: string): Promise<RegistryTestResult[]>;
 }
 
+/** Describes a single credential field requirement */
+export interface CredentialField {
+  required: boolean;
+  /** Can be obtained automatically (dynamic registration, OAuth flow) */
+  automated: boolean;
+  /** Already present in the ref's config */
+  present: boolean;
+  /** Available via resolveCredentials callback */
+  resolvable: boolean;
+}
+
 /** Describes what auth a ref needs and what's already provided */
 export interface RefAuthStatus {
   name: string;
   security: SecuritySchemeSummary | null;
-  /** All required secret fields are present (may be untested) */
+  /** All required fields are either present, resolvable, or automated */
   complete: boolean;
-  /** Fields that still need to be provided */
-  missing: string[];
-  /** Fields already stored */
-  present: string[];
+  /** Per-field breakdown */
+  fields: Record<string, CredentialField>;
 }
 
 export interface OAuthResult {
@@ -689,46 +727,112 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         // Can't reach registry
       }
 
-      const configKeys = Object.keys(entry.config ?? {});
-
       if (!security || security.type === "none") {
-        return { name, security, complete: true, missing: [], present: configKeys };
+        return { name, security, complete: true, fields: {} };
       }
 
-      const requiredFields = (() => {
-        switch (security.type) {
-          case "oauth2": return ["access_token"];
-          case "apiKey": return ["api_key"];
-          case "http": return ["token"];
-          default: return [];
+      const configKeys = Object.keys(entry.config ?? {});
+      const resolve = options.resolveCredentials;
+
+      async function canResolve(field: string, oauthMetadata?: import("./mcp-client.js").OAuthServerMetadata | null): Promise<boolean> {
+        if (!resolve || !entry) return false;
+        const val = await resolve({ ref: name, field, entry, security, oauthMetadata });
+        return val !== null;
+      }
+
+      const fields: Record<string, CredentialField> = {};
+
+      if (security.type === "oauth2") {
+        const securityExt = security as {
+          dynamicRegistration?: boolean;
+          discoveryUrl?: string;
+        };
+        const hasRegistration = !!securityExt.dynamicRegistration;
+
+        let oauthMetadata: import("./mcp-client.js").OAuthServerMetadata | null = null;
+        let needsSecret = false;
+        if (securityExt.discoveryUrl) {
+          oauthMetadata = await tryFetchOAuthMetadata(securityExt.discoveryUrl);
+          if (oauthMetadata) {
+            const authMethods = oauthMetadata.token_endpoint_auth_methods_supported ?? [];
+            needsSecret = !authMethods.includes("none");
+          }
         }
-      })();
 
-      const missing = requiredFields.filter((f) => !configKeys.includes(f));
-      const present = requiredFields.filter((f) => configKeys.includes(f));
+        fields.client_id = {
+          required: true,
+          automated: hasRegistration,
+          present: configKeys.includes("client_id"),
+          resolvable: await canResolve("client_id", oauthMetadata),
+        };
+        if (needsSecret) {
+          fields.client_secret = {
+            required: true,
+            automated: hasRegistration,
+            present: configKeys.includes("client_secret"),
+            resolvable: await canResolve("client_secret", oauthMetadata),
+          };
+        }
+        fields.access_token = {
+          required: true,
+          automated: true,
+          present: configKeys.includes("access_token"),
+          resolvable: false,
+        };
+      } else if (security.type === "apiKey") {
+        fields.api_key = {
+          required: true,
+          automated: false,
+          present: configKeys.includes("api_key"),
+          resolvable: await canResolve("api_key"),
+        };
+      } else if (security.type === "http") {
+        fields.token = {
+          required: true,
+          automated: false,
+          present: configKeys.includes("token"),
+          resolvable: await canResolve("token"),
+        };
+      }
 
-      return { name, security, complete: missing.length === 0, missing, present };
+      const complete = Object.values(fields).every(
+        (f) => !f.required || f.present || f.resolvable || f.automated,
+      );
+
+      return { name, security, complete, fields };
     },
 
     async auth(name: string, opts?: {
       apiKey?: string;
     }): Promise<AuthStartResult> {
+      const config = await readConfig();
+      const entry = (config.refs ?? []).find((r) => refName(r) === name);
+      if (!entry) throw new Error(`Ref "${name}" not found`);
+
       const status = await ref.authStatus(name);
       const security = status.security;
+      const resolve = options.resolveCredentials;
+
+      async function tryResolve(field: string, oauthMetadata?: import("./mcp-client.js").OAuthServerMetadata | null): Promise<string | null> {
+        if (!resolve) return null;
+        return resolve({ ref: name, field, entry: entry!, security, oauthMetadata });
+      }
 
       if (!security || security.type === "none") {
         return { type: "none", complete: true };
       }
 
       if (security.type === "apiKey") {
-        if (!opts?.apiKey) return { type: "apiKey", complete: false };
-        await storeRefSecret(name, "api_key", opts.apiKey);
+        const key = opts?.apiKey ?? await tryResolve("api_key");
+        if (!key) return { type: "apiKey", complete: false };
+        await storeRefSecret(name, "api_key", key);
         return { type: "apiKey", complete: true };
       }
 
       if (security.type === "http") {
-        if (!opts?.apiKey) return { type: "http", complete: false };
-        await storeRefSecret(name, "token", opts.apiKey);
+        const token = opts?.apiKey ?? await tryResolve("token");
+        if (!token) return { type: "http", complete: false };
+        await storeRefSecret(name, "token", token);
         return { type: "http", complete: true };
       }
 
@@ -739,11 +843,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           return { type: "oauth2", complete: false };
         }
 
-        // The authorizationUrl might be the discovery URL itself or a base URL
         const authUrl = authCodeFlow.authorizationUrl;
         let metadata = await tryFetchOAuthMetadata(authUrl);
         if (!metadata) {
-          // Try base origin
           const origin = new URL(authUrl).origin;
           metadata = await discoverOAuthMetadata(origin);
         }
@@ -753,10 +855,14 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
         const redirectUri = callbackUrl();
 
-        // Dynamic client registration if supported
-        let clientId: string;
-        let clientSecret: string | undefined;
-        if (metadata.registration_endpoint) {
+        // Resolve client credentials: callback → stored → dynamic registration
+        let clientId = await tryResolve("client_id", metadata)
+          ?? await readRefSecret(name, "client_id");
+        let clientSecret = await tryResolve("client_secret", metadata)
+          ?? await readRefSecret(name, "client_secret")
+          ?? undefined;
+
+        if (!clientId && metadata.registration_endpoint) {
           const supportedAuthMethods = metadata.token_endpoint_auth_methods_supported ?? ["none"];
           const preferredMethod = supportedAuthMethods.includes("none")
             ? "none"
@@ -775,15 +881,12 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           if (clientSecret) {
             await storeRefSecret(name, "client_secret", clientSecret);
           }
-        } else {
-          const stored = await readRefSecret(name, "client_id");
-          if (!stored) {
-            throw new Error(
-              "OAuth server doesn't support dynamic client registration. " +
-              "Store a client_id first.",
-            );
-          }
-          clientId = stored;
+        }
+
+        if (!clientId) {
+          throw new Error(
+            "Could not obtain client_id. Provide via resolveCredentials callback or store manually.",
+          );
         }
 
         // State ties the callback back to this ref

@@ -456,8 +456,11 @@ export type {
   AdkRegistryApi,
   AdkRefApi,
   RefAuthStatus,
+  CredentialField,
   AuthStartResult,
   OAuthResult,
+  ResolveCredentials,
+  ResolveCredentialsContext,
   RegistryTestResult,
 } from "./config-store.js";
 export { createLocalFsStore, getLocalEncryptionKey } from "./local-fs.js";

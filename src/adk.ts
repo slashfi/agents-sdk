@@ -561,8 +561,17 @@ async function runRef() {
       console.log(`\n${icon} ${status.name}`);
       console.log(`  auth type: ${status.security?.type ?? "none"}`);
       console.log(`  complete:  ${status.complete}`);
-      if (status.present.length > 0) console.log(`  stored:    ${status.present.join(", ")}`);
-      if (status.missing.length > 0) console.log(`  missing:   ${status.missing.join(", ")}`);
+      for (const [field, info] of Object.entries(status.fields)) {
+        const fieldIcon = info.present ? "\x1b[32m\u2713\x1b[0m"
+          : info.resolvable ? "\x1b[36m\u2192\x1b[0m"
+          : info.automated ? "\x1b[33m~\x1b[0m"
+          : "\x1b[31m\u2717\x1b[0m";
+        const source = info.present ? "stored"
+          : info.resolvable ? "resolvable"
+          : info.automated ? "automated"
+          : "missing";
+        console.log(`  ${fieldIcon} ${field}: ${source}${info.required ? "" : " (optional)"}`);
+      }
       console.log();
       break;
     }
