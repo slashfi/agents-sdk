@@ -771,8 +771,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             ? "none"
             : supportedAuthMethods[0] ?? "client_secret_post";
 
+          const securityClientName = (security as { clientName?: string }).clientName;
           const reg = await dynamicClientRegistration(metadata.registration_endpoint, {
-            clientName: options.oauthClientName ?? "Claude Code",
+            clientName: securityClientName ?? options.oauthClientName ?? "adk",
             redirectUris: [redirectUri],
             grantTypes: ["authorization_code"],
             tokenEndpointAuthMethod: preferredMethod,
