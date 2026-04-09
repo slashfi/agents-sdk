@@ -249,13 +249,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     return value;
   }
 
-  function listRefSecretKeys(entry: RefEntry): string[] {
-    if (!entry.config) return [];
-    return Object.keys(entry.config).filter((k) => {
-      const v = entry.config![k];
-      return typeof v === "string" && v.startsWith(SECRET_PREFIX);
-    });
-  }
+
 
   const PENDING_OAUTH_PATH = "pending-oauth.json";
 
@@ -698,7 +692,6 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       }
 
       const configKeys = Object.keys(entry.config ?? {});
-      const secretKeys = listRefSecretKeys(entry);
 
       if (!security || security.type === "none") {
         return { name, security, complete: true, missing: [], present: configKeys };
