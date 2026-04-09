@@ -810,6 +810,8 @@ export interface CallAgentListResourcesResponse {
     uri: string;
     name?: string;
     mimeType?: string;
+    /** Number of characters in the resource content */
+    contentLength?: number;
   }>;
 }
 

@@ -868,6 +868,7 @@ export function createAgentRegistry(
             uri: r.uri,
             name: r.name,
             mimeType: r.mimeType,
+            contentLength: r.content?.length,
           }));
           return {
             success: true,
