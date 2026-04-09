@@ -22,14 +22,17 @@ import type { ToolDefinition, ToolContext } from "./types.js";
 import type { Adk } from "./config-store.js";
 import type { RefEntry, RegistryEntry } from "./define-config.js";
 
-export interface CreateAdkToolsOptions {
-  /** Resolve an Adk instance from the scope string. Called per-operation. */
-  resolveScope: (scope: string | undefined) => Adk | Promise<Adk>;
+export interface CreateAdkToolsOptions<TCtx extends ToolContext = ToolContext> {
+  /**
+   * Resolve an Adk instance from the scope string and tool context.
+   * Called per-operation. TCtx is your environment's context type.
+   */
+  resolveScope: (scope: string | undefined, ctx: TCtx) => Adk | Promise<Adk>;
   /** Allowed scope values. If set, added as enum to the JSON schema. */
   scopes?: string[];
 }
 
-export function createAdkTools(opts: CreateAdkToolsOptions): ToolDefinition<ToolContext>[] {
+export function createAdkTools<TCtx extends ToolContext = ToolContext>(opts: CreateAdkToolsOptions<TCtx>): ToolDefinition<TCtx>[] {
   const { resolveScope, scopes } = opts;
 
   const scopeSchema = scopes
@@ -63,8 +66,8 @@ export function createAdkTools(opts: CreateAdkToolsOptions): ToolDefinition<Tool
       },
       required: ["operation"],
     },
-    execute: async (input: Record<string, unknown>) => {
-      const adk = await resolveScope(input.scope as string | undefined);
+    execute: async (input: Record<string, unknown>, ctx) => {
+      const adk = await resolveScope(input.scope as string | undefined, ctx as TCtx);
       const op = input.operation as string;
 
       switch (op) {
@@ -101,7 +104,7 @@ export function createAdkTools(opts: CreateAdkToolsOptions): ToolDefinition<Tool
           throw new Error(`Unknown ref operation: ${op}`);
       }
     },
-  });
+  }) as ToolDefinition<TCtx>;
 
   const registryTool = defineTool({
     name: "registry",
@@ -122,8 +125,8 @@ export function createAdkTools(opts: CreateAdkToolsOptions): ToolDefinition<Tool
       },
       required: ["operation"],
     },
-    execute: async (input: Record<string, unknown>) => {
-      const adk = await resolveScope(input.scope as string | undefined);
+    execute: async (input: Record<string, unknown>, ctx) => {
+      const adk = await resolveScope(input.scope as string | undefined, ctx as TCtx);
       const op = input.operation as string;
 
       switch (op) {
@@ -149,5 +152,5 @@ export function createAdkTools(opts: CreateAdkToolsOptions): ToolDefinition<Tool
     },
   });
 
-  return [refTool, registryTool] as ToolDefinition<ToolContext>[];
+  return [refTool, registryTool as unknown as ToolDefinition<TCtx>];
 }
