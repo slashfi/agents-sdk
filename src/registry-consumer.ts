@@ -39,7 +39,7 @@ import type {
   ResolvedRegistry,
 } from "./define-config.js";
 import type { CallAgentRequest } from "./call-agent-schema.js";
-import type { SecuritySchemeSummary } from "./types.js";
+import type { SecuritySchemeSummary, CallAgentResponse } from "./types.js";
 import {
   isSecretUri,
   normalizeRef,
@@ -606,6 +606,12 @@ export interface RegistryConsumer {
   /** Resolve a secret URL to its value */
   resolveSecret(url: string): Promise<string>;
 
+  /** Send a raw call_agent request through a specific registry's MCP endpoint */
+  callRegistry(
+    registry: ResolvedRegistry,
+    request: CallAgentRequest,
+  ): Promise<CallAgentResponse>;
+
   /** Resolve {{secret-uri}} templates in a config object (recursive) */
   resolveConfig(
     config: RefConfig,
@@ -695,7 +701,7 @@ export async function createRegistryConsumer(
   async function callRegistry(
     registry: ResolvedRegistry,
     request: CallAgentRequest,
-  ): Promise<unknown> {
+  ): Promise<CallAgentResponse> {
     const mcpUrl = registry.url.replace(/\/$/, "");
 
     const headers: Record<string, string> = {
@@ -752,13 +758,13 @@ export async function createRegistryConsumer(
     const textContent = mcpResult?.content?.find((c) => c.type === "text");
     if (textContent?.text) {
       try {
-        return JSON.parse(textContent.text);
+        return JSON.parse(textContent.text) as CallAgentResponse;
       } catch {
-        return textContent.text;
+        return { success: false, error: "parse_error", message: textContent.text } as CallAgentResponse;
       }
     }
 
-    return mcpResult;
+    return { success: false, error: "empty_response" } as CallAgentResponse;
   }
 
   // Call a tool via a registry (convenience wrapper)
@@ -818,6 +824,8 @@ export async function createRegistryConsumer(
     registries(): ResolvedRegistry[] {
       return resolvedRegistries;
     },
+
+    callRegistry,
 
     async call(
       refName: string,
