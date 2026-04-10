@@ -1022,6 +1022,16 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           const origin = new URL(authUrl).origin;
           metadata = await discoverOAuthMetadata(origin);
         }
+        // Fallback: construct metadata from the security scheme's explicit URLs
+        if (!metadata && authCodeFlow.tokenUrl) {
+          const flowScopes = (authCodeFlow as Record<string, unknown>).scopes as Record<string, string> | undefined;
+          metadata = {
+            issuer: new URL(authUrl).origin,
+            authorization_endpoint: authUrl,
+            token_endpoint: authCodeFlow.tokenUrl,
+            scopes_supported: flowScopes ? Object.keys(flowScopes) : undefined,
+          } as import("./mcp-client.js").OAuthServerMetadata;
+        }
         if (!metadata) {
           throw new Error(`Could not discover OAuth metadata from ${authUrl}`);
         }
