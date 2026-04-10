@@ -24,6 +24,7 @@ import type {
   RefEntry,
   RegistryEntry,
   ResolvedRef,
+  ResolvedRegistry,
 } from "./define-config.js";
 import { normalizeRef } from "./define-config.js";
 import { createRegistryConsumer } from "./registry-consumer.js";
@@ -503,6 +504,59 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     );
   }
 
+  /**
+   * Build a consumer that includes the ref's sourceRegistry if present.
+   * This ensures calls/inspect route to the correct registry endpoint.
+   */
+  async function buildConsumerForRef(entry: RefEntry): Promise<RegistryConsumer> {
+    const config = await readConfig();
+    let registries = config.registries ?? [];
+
+    // If the ref has a sourceRegistry, ensure it's included in the consumer's registries
+    if (entry.sourceRegistry?.url) {
+      const sourceUrl = entry.sourceRegistry.url;
+      const alreadyIncluded = registries.some((r) =>
+        typeof r === "string" ? r === sourceUrl : r.url === sourceUrl,
+      );
+      if (!alreadyIncluded) {
+        registries = [...registries, { url: sourceUrl, name: sourceUrl }];
+      }
+    }
+
+    const resolved = options.encryptionKey
+      ? await Promise.all(
+          registries.map(async (r) => {
+            if (typeof r === "string") return r;
+            const decrypted = await decryptConfigSecrets(
+              r as unknown as Record<string, unknown>,
+              options.encryptionKey!,
+            );
+            return decrypted as unknown as RegistryEntry;
+          }),
+        )
+      : registries;
+
+    return createRegistryConsumer(
+      { registries: resolved, refs: config.refs ?? [] },
+      { token: options.token },
+    );
+  }
+
+  /**
+   * Resolve the correct registry for a ref.
+   * If the ref has a sourceRegistry, use that; otherwise fall back to the first registry.
+   */
+  function resolveRegistryForRef(consumer: RegistryConsumer, entry: RefEntry): ResolvedRegistry {
+    const regs = consumer.registries();
+    if (entry.sourceRegistry?.url) {
+      const match = regs.find((r) => r.url === entry.sourceRegistry!.url);
+      if (match) return match;
+    }
+    const fallback = regs[0];
+    if (!fallback) throw new Error("No registry available");
+    return fallback;
+  }
+
   // ==========================================
   // Registry API
   // ==========================================
@@ -732,8 +786,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
-      const consumer = await buildConsumer();
-      return consumer.inspect(entry.ref, undefined, opts);
+      const consumer = await buildConsumerForRef(entry);
+      return consumer.inspect(entry.sourceRegistry?.agentPath ?? entry.ref, undefined, opts);
     },
 
     async call(name: string, tool: string, params?: Record<string, unknown>): Promise<CallAgentResponse> {
@@ -749,13 +803,12 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         return callMcpDirect(entry.url, tool, params ?? {}, accessToken);
       }
 
-      const consumer = await buildConsumer();
-      const reg = consumer.registries()[0];
-      if (!reg) throw new Error("No registry available");
+      const consumer = await buildConsumerForRef(entry);
+      const reg = resolveRegistryForRef(consumer, entry);
 
       return consumer.callRegistry(reg, {
         action: "execute_tool",
-        path: entry.ref,
+        path: entry.sourceRegistry?.agentPath ?? entry.ref,
         tool,
         params: params ?? {},
       });
@@ -766,13 +819,12 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
-      const consumer = await buildConsumer();
-      const reg = consumer.registries()[0];
-      if (!reg) throw new Error("No registry available");
+      const consumer = await buildConsumerForRef(entry);
+      const reg = resolveRegistryForRef(consumer, entry);
 
       return consumer.callRegistry(reg, {
         action: "list_resources",
-        path: entry.ref,
+        path: entry.sourceRegistry?.agentPath ?? entry.ref,
       });
     },
 
@@ -781,13 +833,12 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
-      const consumer = await buildConsumer();
-      const reg = consumer.registries()[0];
-      if (!reg) throw new Error("No registry available");
+      const consumer = await buildConsumerForRef(entry);
+      const reg = resolveRegistryForRef(consumer, entry);
 
       return consumer.callRegistry(reg, {
         action: "read_resources",
-        path: entry.ref,
+        path: entry.sourceRegistry?.agentPath ?? entry.ref,
         uris,
       });
     },
@@ -799,8 +850,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
       let security: SecuritySchemeSummary | null = null;
       try {
-        const consumer = await buildConsumer();
-        const info = await consumer.inspect(entry.ref);
+        const consumer = await buildConsumerForRef(entry);
+        const info = await consumer.inspect(entry.sourceRegistry?.agentPath ?? entry.ref);
         if (info?.security) security = info.security;
       } catch {
         // Can't reach registry
