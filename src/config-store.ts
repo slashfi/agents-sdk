@@ -675,6 +675,17 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const config = await readConfig();
       const hasRegistries = (config.registries ?? []).length > 0;
 
+      // Validate that the ref has at least one routing mechanism
+      const hasRouting = entry.sourceRegistry?.url || entry.url || entry.scheme;
+      if (!hasRouting && !hasRegistries) {
+        throw new AdkError({
+          code: "REF_INVALID",
+          message: `Cannot add ref "${entry.ref}": no routing mechanism configured`,
+          hint: "Provide sourceRegistry, url, or scheme — or add a registry first with: adk registry add",
+          details: { ref: entry.ref },
+        });
+      }
+
       if (hasRegistries) {
         try {
           const consumer = await buildConsumer();
