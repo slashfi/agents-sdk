@@ -612,13 +612,30 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
               (info.toolSummaries && info.toolSummaries.length > 0)
             );
             if (!hasContent) {
-              const registryHint = entry.sourceRegistry?.url ?? "your configured registry";
-              throw new AdkError({
-                code: "REF_NOT_FOUND",
-                message: `Agent "${entry.ref}" not found on ${registryHint}`,
-                hint: "Check available agents with: adk registry browse",
-                details: { ref: entry.ref, sourceRegistry: entry.sourceRegistry, scheme: entry.scheme },
-              });
+              // Inspect returned empty — fall back to browse to check if agent exists
+              const registryUrl = entry.sourceRegistry?.url;
+              let foundInBrowse = false;
+              if (registryUrl) {
+                try {
+                  const agents = await consumer.browse(registryUrl);
+                  const stripAt = (s: string) => s.replace(/^@/, "");
+                  const refKey = stripAt(entry.ref);
+                  foundInBrowse = agents.some(
+                    (a) => a.path === entry.ref || stripAt(a.path) === refKey,
+                  );
+                } catch {
+                  // browse failed too
+                }
+              }
+              if (!foundInBrowse) {
+                const registryHint = registryUrl ?? "your configured registry";
+                throw new AdkError({
+                  code: "REF_NOT_FOUND",
+                  message: `Agent "${entry.ref}" not found on ${registryHint}`,
+                  hint: "Check available agents with: adk registry browse",
+                  details: { ref: entry.ref, sourceRegistry: entry.sourceRegistry, scheme: entry.scheme },
+                });
+              }
             }
           }
 
