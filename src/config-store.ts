@@ -973,6 +973,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
     async auth(name: string, opts?: {
       apiKey?: string;
+      /** Extra context to encode in the OAuth state (e.g., tenant/user IDs for multi-tenant callbacks) */
+      stateContext?: Record<string, unknown>;
     }): Promise<AuthStartResult> {
       const config = await readConfig();
       const entry = findRef(config.refs ?? [], name);
@@ -1058,8 +1060,14 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           );
         }
 
-        // State ties the callback back to this ref
-        const state = `${name}:${Date.now()}`;
+        // State ties the callback back to this ref. Encode as base64 JSON
+        // so callers can include extra context (tenant/user IDs).
+        const statePayload = {
+          ...opts?.stateContext,
+          ref: name,
+          ts: Date.now(),
+        };
+        const state = btoa(JSON.stringify(statePayload));
 
         const { url: authorizeUrl, codeVerifier } = await buildOAuthAuthorizeUrl({
           authorizationEndpoint: metadata.authorization_endpoint,
@@ -1151,7 +1159,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
   // Top-level callback handler
   // ==========================================
 
-  async function handleCallback(params: { code: string; state: string }): Promise<{ refName: string; complete: boolean }> {
+  async function handleCallback(params: { code: string; state: string }): Promise<{ refName: string; complete: boolean; stateContext?: Record<string, unknown> }> {
     const pending = await consumePendingOAuth(params.state);
     if (!pending) {
       throw new Error(`No pending OAuth flow for state "${params.state}".`);
@@ -1170,7 +1178,12 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       await storeRefSecret(pending.refName, "refresh_token", tokens.refreshToken);
     }
 
-    return { refName: pending.refName, complete: true };
+    let stateContext: Record<string, unknown> | undefined;
+    try {
+      stateContext = JSON.parse(atob(params.state));
+    } catch { /* state wasn't base64 JSON — legacy format */ }
+
+    return { refName: pending.refName, complete: true, stateContext };
   }
 
   // ==========================================
