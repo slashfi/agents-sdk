@@ -605,7 +605,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           const agentToInspect = entry.sourceRegistry?.agentPath ?? entry.ref;
           const info = await consumer.inspect(agentToInspect);
 
-          const requiresValidation = entry.sourceRegistry || entry.scheme === "registry" || !entry.url;
+          const requiresValidation = !!entry.sourceRegistry;
           if (requiresValidation) {
             const hasContent = info && (
               info.description ||
