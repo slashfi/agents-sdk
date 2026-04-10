@@ -78,7 +78,8 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(opts: Cre
           if (input.as) entry.as = input.as;
           if (input.sourceRegistry) entry.sourceRegistry = input.sourceRegistry;
           if (input.config) entry.config = input.config;
-          return adk.ref.add(entry as unknown as RefEntry);
+          const { security } = await adk.ref.add(entry as unknown as RefEntry);
+          return { added: true, ref: input.ref, name: (input.as ?? input.ref) as string, security };
         }
         case "remove":
           return { removed: await adk.ref.remove(input.name as string) };
