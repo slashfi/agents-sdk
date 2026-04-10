@@ -211,6 +211,28 @@ function refName(entry: RefEntry): string {
   return normalizeRef(entry).name;
 }
 
+/**
+ * Find a ref by name, trying both with and without `@` prefix.
+ * Refs may be stored as `@foo` or `foo` depending on how they were added;
+ * this ensures lookups work regardless of which form the caller uses.
+ */
+function findRef(refs: RefEntry[], name: string): RefEntry | undefined {
+  const match = refs.find((r) => refName(r) === name);
+  if (match) return match;
+  const alt = name.startsWith("@") ? name.slice(1) : `@${name}`;
+  return refs.find((r) => refName(r) === alt);
+}
+
+/**
+ * Match a ref name with @ normalization (for filter/map operations).
+ */
+function refNameMatches(entry: RefEntry, name: string): boolean {
+  const n = refName(entry);
+  if (n === name) return true;
+  const alt = name.startsWith("@") ? name.slice(1) : `@${name}`;
+  return n === alt;
+}
+
 function registryDisplayName(r: string | RegistryEntry): string {
   return typeof r === "string" ? r : (r.name ?? r.url);
 }
@@ -287,7 +309,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
   async function readRefSecret(name: string, key: string): Promise<string | null> {
     const config = await readConfig();
-    const entry = (config.refs ?? []).find((r) => refName(r) === name);
+    const entry = findRef(config.refs ?? [], name);
     const value = entry?.config?.[key];
     if (typeof value !== "string") return null;
     if (value.startsWith(SECRET_PREFIX) && options.encryptionKey) {
@@ -669,7 +691,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const config = await readConfig();
       if (!config.refs?.length) return false;
       const before = config.refs.length;
-      const refs = config.refs.filter((r) => refName(r) !== name);
+      const refs = config.refs.filter((r) => !refNameMatches(r, name));
       if (refs.length === before) return false;
       await writeConfig({ ...config, refs });
       return true;
@@ -682,7 +704,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
     async get(name: string): Promise<RefEntry | null> {
       const config = await readConfig();
-      return (config.refs ?? []).find((r) => refName(r) === name) ?? null;
+      return findRef(config.refs ?? [], name) ?? null;
     },
 
     async update(name: string, updates: Partial<RefEntry>): Promise<boolean> {
@@ -690,7 +712,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       if (!config.refs?.length) return false;
       let found = false;
       const refs = config.refs.map((r): RefEntry => {
-        if (refName(r) !== name) return r;
+        if (!refNameMatches(r, name)) return r;
         found = true;
         const updated = { ...r };
         if (updates.url) updated.url = updates.url;
@@ -707,7 +729,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
     async inspect(name: string, opts?: { full?: boolean }): Promise<AgentListing | null> {
       const config = await readConfig();
-      const entry = (config.refs ?? []).find((r) => refName(r) === name);
+      const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
       const consumer = await buildConsumer();
@@ -716,7 +738,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
     async call(name: string, tool: string, params?: Record<string, unknown>): Promise<CallAgentResponse> {
       const config = await readConfig();
-      const entry = (config.refs ?? []).find((r) => refName(r) === name);
+      const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
       const accessToken = await readRefSecret(name, "access_token");
@@ -741,7 +763,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
     async resources(name: string): Promise<CallAgentResponse> {
       const config = await readConfig();
-      const entry = (config.refs ?? []).find((r) => refName(r) === name);
+      const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
       const consumer = await buildConsumer();
@@ -756,7 +778,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
     async read(name: string, uris: string[]): Promise<CallAgentResponse> {
       const config = await readConfig();
-      const entry = (config.refs ?? []).find((r) => refName(r) === name);
+      const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
       const consumer = await buildConsumer();
@@ -772,7 +794,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
     async authStatus(name: string): Promise<RefAuthStatus> {
       const config = await readConfig();
-      const entry = (config.refs ?? []).find((r) => refName(r) === name);
+      const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
       let security: SecuritySchemeSummary | null = null;
@@ -863,7 +885,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       apiKey?: string;
     }): Promise<AuthStartResult> {
       const config = await readConfig();
-      const entry = (config.refs ?? []).find((r) => refName(r) === name);
+      const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
       const status = await ref.authStatus(name);
