@@ -790,6 +790,7 @@ export function createAgentRegistry(
 
         case "describe_tools": {
           const configUpstream = (agent.config as Record<string, unknown> | undefined)?.upstream as string | undefined;
+          const configMode = (agent.config as Record<string, unknown> | undefined)?.mode as string | undefined;
           const toolSchemas: ToolSchema[] = agent.tools
             .filter((t: ToolDefinition) =>
               checkToolAccess(
@@ -818,6 +819,7 @@ export function createAgentRegistry(
               tools: toolSchemas,
               description: agent.config?.description,
               security: agent.config?.security,
+              ...(configMode ? { mode: configMode } : {}),
               ...(configUpstream ? { upstream: configUpstream } : {}),
               resources: agent.config?.resources?.map((r) => ({
                 uri: r.uri,
@@ -845,6 +847,7 @@ export function createAgentRegistry(
             toolSummaries,
             description: agent.config?.description,
             security: agent.config?.security,
+            ...(configMode ? { mode: configMode } : {}),
             ...(configUpstream ? { upstream: configUpstream } : {}),
             resources: agent.config?.resources?.map((r) => ({
               uri: r.uri,

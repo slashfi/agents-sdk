@@ -746,7 +746,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           }
 
           if (info?.security) security = info.security;
-          if (info?.upstream && !entry.url) {
+          const agentMode = (info as any)?.mode;
+          if (agentMode) (entry as any).mode = agentMode;
+          if (info?.upstream && !entry.url && agentMode !== 'api') {
             entry.url = info.upstream as string;
             entry.scheme = entry.scheme ?? "mcp";
           }
@@ -830,9 +832,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
       const accessToken = await readRefSecret(name, "access_token");
 
-      // If we have a direct access_token from OAuth, call the agent's MCP server
-      // directly instead of going through the registry
-      if (accessToken && entry.url) {
+      // Direct MCP only for redirect/proxy agents with an MCP upstream.
+      // API-mode agents must go through the registry (it does REST translation).
+      const agentMode = (entry as any).mode ?? 'redirect';
+      if (accessToken && entry.url && agentMode !== 'api') {
         return callMcpDirect(entry.url, tool, params ?? {}, accessToken);
       }
 
@@ -843,7 +846,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         action: "execute_tool",
         path: entry.sourceRegistry?.agentPath ?? entry.ref,
         tool,
-        params: params ?? {},
+        params: {
+          ...(params ?? {}),
+          ...(accessToken && { accessToken }),
+        },
       });
     },
 
