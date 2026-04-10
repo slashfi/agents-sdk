@@ -931,6 +931,7 @@ export async function createRegistryConsumer(
             resources?: Array<{ uri: string; name?: string; mimeType?: string }>;
             context?: string;
             upstream?: string;
+            mode?: string;
           } | null;
           if (!data) return null;
           return {
@@ -943,6 +944,7 @@ export async function createRegistryConsumer(
             resources: data.resources,
             context: data.context,
             ...(data.upstream && { upstream: data.upstream }),
+            ...(data.mode && { mode: data.mode }),
           } as AgentListing;
         }),
       );

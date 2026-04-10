@@ -167,7 +167,7 @@ export async function exchangeCodeForTokens(
 
   const res = await fetchFn(tokenEndpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
     body: body.toString(),
   });
   if (!res.ok) {
@@ -214,7 +214,7 @@ export async function refreshAccessToken(
 
   const res = await fetchFn(tokenEndpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
     body: body.toString(),
   });
   if (!res.ok) {
