@@ -675,14 +675,32 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const config = await readConfig();
       const hasRegistries = (config.registries ?? []).length > 0;
 
-      // Validate that the ref has at least one routing mechanism
-      const hasRouting = entry.sourceRegistry?.url || entry.url || entry.scheme;
-      if (!hasRouting && !hasRegistries) {
+      // Validate scheme is always specified
+      if (!entry.scheme) {
         throw new AdkError({
           code: "REF_INVALID",
-          message: `Cannot add ref "${entry.ref}": no routing mechanism configured`,
-          hint: "Provide sourceRegistry, url, or scheme — or add a registry first with: adk registry add",
+          message: `Cannot add ref "${entry.ref}": scheme is required`,
+          hint: "Specify scheme: 'registry' (with sourceRegistry), 'mcp' (with url), or 'https' (with url)",
           details: { ref: entry.ref },
+        });
+      }
+
+      // Validate scheme-specific requirements
+      if (entry.scheme === "registry" && !entry.sourceRegistry?.url) {
+        throw new AdkError({
+          code: "REF_INVALID",
+          message: `Cannot add ref "${entry.ref}": scheme 'registry' requires sourceRegistry`,
+          hint: "Provide sourceRegistry: { url: '...', agentPath: '...' }",
+          details: { ref: entry.ref, scheme: entry.scheme },
+        });
+      }
+
+      if ((entry.scheme === "mcp" || entry.scheme === "https") && !entry.url) {
+        throw new AdkError({
+          code: "REF_INVALID",
+          message: `Cannot add ref "${entry.ref}": scheme '${entry.scheme}' requires url`,
+          hint: "Provide the direct agent URL with: url: 'https://...'",
+          details: { ref: entry.ref, scheme: entry.scheme },
         });
       }
 

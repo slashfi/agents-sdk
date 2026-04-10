@@ -105,6 +105,7 @@ describe("ADK ref sourceRegistry routing", () => {
     // Add ref with sourceRegistry pointing to the source server (which has @math)
     await adk.ref.add({
       ref: "@math",
+      scheme: "registry",
       sourceRegistry: {
         url: `http://localhost:${SOURCE_PORT}`,
         agentPath: "@math",
@@ -132,6 +133,7 @@ describe("ADK ref sourceRegistry routing", () => {
     config.refs = [
       {
         ref: "@math",
+        scheme: "registry",
         sourceRegistry: {
           url: `http://localhost:${SOURCE_PORT}`,
           agentPath: "@math",
@@ -151,40 +153,65 @@ describe("ADK ref sourceRegistry routing", () => {
 // ─── ADK Config Store: ref.add validation ────────────────────────
 
 describe("ADK ref.add validation", () => {
-  test("throws when no routing mechanism and no registries", async () => {
+  test("throws when no scheme specified", async () => {
     const fs = createMemoryFs();
     const adk = createAdk(fs);
 
-    // No registries configured, no sourceRegistry/url/scheme on the ref
     await expect(
-      adk.ref.add({ ref: "@nonexistent" }),
-    ).rejects.toThrow("no routing mechanism");
+      adk.ref.add({ ref: "@something" }),
+    ).rejects.toThrow("scheme is required");
   });
 
-  test("allows add with sourceRegistry even without configured registries", async () => {
+  test("throws when scheme is 'registry' without sourceRegistry", async () => {
     const fs = createMemoryFs();
     const adk = createAdk(fs);
 
-    // No registries configured, but sourceRegistry provides routing
-    // Should NOT throw REF_INVALID (has routing via sourceRegistry)
-    // Note: uses an unreachable server, so add may throw REGISTRY_UNREACHABLE or REF_NOT_FOUND
-    // — but it should NOT throw REF_INVALID
+    await expect(
+      adk.ref.add({ ref: "@something", scheme: "registry" }),
+    ).rejects.toThrow("requires sourceRegistry");
+  });
+
+  test("throws when scheme is 'mcp' without url", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+
+    await expect(
+      adk.ref.add({ ref: "@something", scheme: "mcp" }),
+    ).rejects.toThrow("requires url");
+  });
+
+  test("throws when scheme is 'https' without url", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+
+    await expect(
+      adk.ref.add({ ref: "@something", scheme: "https" }),
+    ).rejects.toThrow("requires url");
+  });
+
+  test("allows scheme 'registry' with sourceRegistry", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+
+    // sourceRegistry + scheme: registry — should pass validation
+    // (may fail at inspect time if unreachable, but that's fine)
     try {
       await adk.ref.add({
         ref: "@something",
+        scheme: "registry",
         sourceRegistry: {
           url: "http://localhost:59999",
           agentPath: "@something",
         },
       });
     } catch (e: any) {
-      // REF_NOT_FOUND or REGISTRY_UNREACHABLE are fine — these mean validation
-      // passed the routing check but couldn't reach the registry
+      // REF_NOT_FOUND or REGISTRY_UNREACHABLE are fine
+      // REF_INVALID would mean our validation is wrong
       expect(e.code).not.toBe("REF_INVALID");
     }
   });
 
-  test("allows add with url even without registries", async () => {
+  test("allows scheme 'mcp' with url", async () => {
     const fs = createMemoryFs();
     const adk = createAdk(fs);
 
@@ -196,23 +223,15 @@ describe("ADK ref.add validation", () => {
     expect(result).toBeDefined();
   });
 
-  test("allows add with just ref when registries are configured", async () => {
+  test("allows scheme 'https' with url", async () => {
     const fs = createMemoryFs();
     const adk = createAdk(fs);
 
-    // Add a registry first (unreachable, but that's fine for this test)
-    await adk.registry.add({
+    const result = await adk.ref.add({
+      ref: "@direct-https",
       url: "http://localhost:59999",
-      name: "test",
+      scheme: "https",
     });
-
-    // Should be allowed since there's a registry to resolve through
-    // (will fail at inspect time since registry is unreachable)
-    try {
-      await adk.ref.add({ ref: "@something" });
-    } catch (e: any) {
-      // REGISTRY_UNREACHABLE is expected — validation passed, just can't reach the registry
-      expect(e.code ?? e.message).toMatch(/REGISTRY_UNREACHABLE|ECONNREFUSED/);
-    }
+    expect(result).toBeDefined();
   });
 });
