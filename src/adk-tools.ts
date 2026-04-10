@@ -110,19 +110,20 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(opts: Cre
   const registryTool = defineTool({
     name: "registry",
     description:
-      "Manage registry connections. Operations: add, remove, list, browse, inspect, test.",
+      "Manage registry connections. Operations: add, remove, list, update, browse, inspect, test.",
     inputSchema: {
       type: "object" as const,
       properties: {
         operation: {
           type: "string",
-          enum: ["add", "remove", "list", "browse", "inspect", "test"],
+          enum: ["add", "remove", "list", "update", "browse", "inspect", "test"],
         },
         scope: scopeSchema,
         url: { type: "string" },
         name: { type: "string" },
         query: { type: "string" },
         auth: { type: "object" },
+        headers: { type: "object" },
       },
       required: ["operation"],
     },
@@ -134,6 +135,7 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(opts: Cre
         case "add": {
           const entry: Record<string, unknown> = { url: input.url, name: input.name };
           if (input.auth) entry.auth = input.auth;
+          if (input.headers) entry.headers = input.headers;
           await adk.registry.add(entry as unknown as RegistryEntry);
           return { added: true, name: input.name, url: input.url };
         }
@@ -141,6 +143,14 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(opts: Cre
           return { removed: await adk.registry.remove(input.name as string) };
         case "list":
           return { registries: await adk.registry.list() };
+        case "update": {
+          const updates: Record<string, unknown> = {};
+          if (input.url) updates.url = input.url;
+          if (input.name !== undefined) updates.name = input.name;
+          if (input.auth) updates.auth = input.auth;
+          if (input.headers) updates.headers = input.headers;
+          return { updated: await adk.registry.update(input.name as string, updates as unknown as Partial<RegistryEntry>) };
+        }
         case "browse":
           return { agents: await adk.registry.browse(input.name as string, input.query as string) };
         case "inspect":
