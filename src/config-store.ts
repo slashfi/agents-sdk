@@ -604,14 +604,22 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           const consumer = await buildConsumer();
           const info = await consumer.inspect(entry.ref);
 
-          const agentExists = info && (info.description || info.tools?.length || info.toolSummaries?.length);
-          if (!agentExists && entry.sourceRegistry) {
-            throw new AdkError({
-              code: "REF_NOT_FOUND",
-              message: `Agent "${entry.ref}" not found on registry ${entry.sourceRegistry.url}`,
-              hint: `Check available agents with: adk registry browse ${entry.sourceRegistry.url}`,
-              details: { ref: entry.ref, sourceRegistry: entry.sourceRegistry },
-            });
+          const requiresValidation = entry.sourceRegistry || entry.scheme === "registry" || !entry.url;
+          if (requiresValidation) {
+            const hasContent = info && (
+              info.description ||
+              (info.tools && info.tools.length > 0) ||
+              (info.toolSummaries && info.toolSummaries.length > 0)
+            );
+            if (!hasContent) {
+              const registryHint = entry.sourceRegistry?.url ?? "your configured registry";
+              throw new AdkError({
+                code: "REF_NOT_FOUND",
+                message: `Agent "${entry.ref}" not found on ${registryHint}`,
+                hint: "Check available agents with: adk registry browse",
+                details: { ref: entry.ref, sourceRegistry: entry.sourceRegistry, scheme: entry.scheme },
+              });
+            }
           }
 
           if (info?.security) security = info.security;
