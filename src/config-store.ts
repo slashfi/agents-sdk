@@ -686,9 +686,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         });
       }
 
-      if (hasRegistries) {
+      if (hasRegistries || entry.sourceRegistry?.url) {
         try {
-          const consumer = await buildConsumer();
+          const consumer = await buildConsumerForRef(entry);
           const agentToInspect = entry.sourceRegistry?.agentPath ?? entry.ref;
           const info = await consumer.inspect(agentToInspect);
 
@@ -798,7 +798,11 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
       const consumer = await buildConsumerForRef(entry);
-      return consumer.inspect(entry.sourceRegistry?.agentPath ?? entry.ref, undefined, opts);
+      return consumer.inspect(
+        entry.sourceRegistry?.agentPath ?? entry.ref,
+        entry.sourceRegistry?.url,
+        opts,
+      );
     },
 
     async call(name: string, tool: string, params?: Record<string, unknown>): Promise<CallAgentResponse> {
