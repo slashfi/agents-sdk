@@ -170,6 +170,8 @@ export interface AdkRefApi {
   auth(name: string, opts?: {
     /** For API key / bearer auth: the key/token value */
     apiKey?: string;
+    /** Extra context to encode in the OAuth state (e.g., tenant/user IDs for multi-tenant callbacks) */
+    stateContext?: Record<string, unknown>;
   }): Promise<AuthStartResult>;
   /**
    * Run the full OAuth flow locally: start auth, spin up a callback
@@ -201,7 +203,7 @@ export interface Adk {
    * Parse the callback query params and pass them here.
    * @returns the ref name and whether auth is complete
    */
-  handleCallback(params: { code: string; state: string }): Promise<{ refName: string; complete: boolean }>;
+  handleCallback(params: { code: string; state: string }): Promise<{ refName: string; complete: boolean; stateContext?: Record<string, unknown> }>;
 }
 
 // ============================================
