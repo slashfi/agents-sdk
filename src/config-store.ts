@@ -602,7 +602,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       if (hasRegistries) {
         try {
           const consumer = await buildConsumer();
-          const info = await consumer.inspect(entry.ref);
+          const agentToInspect = entry.sourceRegistry?.agentPath ?? entry.ref;
+          const info = await consumer.inspect(agentToInspect);
 
           const requiresValidation = entry.sourceRegistry || entry.scheme === "registry" || !entry.url;
           if (requiresValidation) {
@@ -619,7 +620,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
                 try {
                   const agents = await consumer.browse(registryUrl);
                   const stripAt = (s: string) => s.replace(/^@/, "");
-                  const refKey = stripAt(entry.ref);
+                  const refKey = stripAt(entry.sourceRegistry?.agentPath ?? entry.ref);
                   foundInBrowse = agents.some(
                     (a) => a.path === entry.ref || stripAt(a.path) === refKey,
                   );
