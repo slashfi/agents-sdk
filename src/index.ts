@@ -102,6 +102,7 @@ export type {
   IntegrationMethodContext,
   IntegrationHooks,
   Visibility,
+  ServerSource,
 } from "./types.js";
 export {
   isCallAgentErrorResponse,
@@ -333,18 +334,6 @@ export type {
   OAuthServerMetadata,
 } from "./mcp-client.js";
 
-// Codegen
-export { codegen, useAgent, listAgentTools } from "./codegen.js";
-export type {
-  CodegenOptions,
-  CodegenResult,
-  CodegenManifest,
-  ConnectionSpec,
-  McpToolDefinition,
-  McpServerInfo,
-  McpTransport,
-  ServerSource,
-} from "./codegen.js";
 
 // ============================================
 // Serialized Agent Definitions
@@ -356,41 +345,9 @@ export type {
   SerializedTool,
 } from "./serialized.js";
 
-// ============================================
-// Agent Client
-// ============================================
 
-export { createClient } from "./client.js";
-export type {
-  AgentClient,
-  CreateClientOptions,
-} from "./client.js";
 
-// ============================================
-// JSONC Parser
-// ============================================
 
-export { parseJsonc, readJsoncFile } from "./jsonc.js";
-
-// ============================================
-// Pack & Publish
-// ============================================
-
-export { pack, publish } from "./pack.js";
-export type {
-  PackOptions,
-  PackResult,
-  PublishOptions,
-  VersionMeta,
-  VersionChanges,
-} from "./pack.js";
-
-// ============================================
-// Introspect
-// ============================================
-
-export { introspectMcp } from "./introspect.js";
-export type { IntrospectOptions } from "./introspect.js";
 
 // ============================================
 // call_agent Schema (shared source of truth)

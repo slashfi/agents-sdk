@@ -912,3 +912,11 @@ export interface AuthSecretValue {
   $agent_type: "secret";
   value: string;
 }
+
+// Server Source (moved from codegen.ts)
+export type ServerSource =
+  | string
+  | { command: string; args?: string[]; env?: Record<string, string> }
+  | { url: string; headers?: Record<string, string> }
+  | { spawn: string; args?: string[]; env?: Record<string, string>; port?: number; endpoint?: string };
+
