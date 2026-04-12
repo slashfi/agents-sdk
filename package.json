@@ -1,6 +1,6 @@
 {
   "name": "@slashfi/agents-sdk",
-  "version": "0.60.0",
+  "version": "0.60.1",
   "author": "Slash Financial",
   "repository": {
     "type": "git",
@@ -37,7 +37,8 @@
   "description": "SDK for building AI agents with tool definitions and JSON-RPC servers",
   "files": [
     "dist",
-    "src"
+    "src",
+    "install.sh"
   ],
   "keywords": [
     "ai",
