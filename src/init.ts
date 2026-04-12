@@ -1,0 +1,211 @@
+/**
+ * ADK Init — Setup + skill injection for coding agents.
+ *
+ * Uses a preset-based system for scalability:
+ * - Presets are JSON files in src/presets/ (one per coding agent)
+ * - All use the agentskills.io SKILL.md standard
+ * - Adding a new coding agent = adding one JSON file
+ *
+ * Non-interactive by design. The coding agent is the UX layer.
+ */
+
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import type { Adk } from "./config-store.js";
+
+// ============================================
+// Types
+// ============================================
+
+export interface Preset {
+  name: string;
+  defaultPath: string;
+  filename: string;
+}
+
+export interface SkillTarget {
+  preset: Preset;
+  path: string;
+}
+
+// ============================================
+// Preset Loading
+// ============================================
+
+let _presets: Map<string, Preset> | null = null;
+
+export function loadPresets(): Map<string, Preset> {
+  if (_presets) return _presets;
+  _presets = new Map();
+
+  const presetsDir = join(import.meta.dir, "presets");
+  if (!existsSync(presetsDir)) return _presets;
+
+  for (const file of readdirSync(presetsDir)) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      const raw = readFileSync(join(presetsDir, file), "utf-8");
+      const preset: Preset = JSON.parse(raw);
+      _presets.set(preset.name, preset);
+    } catch {
+      // Skip invalid presets
+    }
+  }
+  return _presets;
+}
+
+export function getPreset(name: string): Preset | undefined {
+  return loadPresets().get(name);
+}
+
+export function listPresets(): Preset[] {
+  return Array.from(loadPresets().values());
+}
+
+// ============================================
+// Skill Content Templates
+// ============================================
+
+const ADK_SKILL_CONTENT = `adk is the Agent Development Kit CLI.
+
+Config location: run \`adk config-path\` to find the config directory.
+Installed refs: run \`adk ref list\` to see configured agents.
+
+Each installed ref has local docs at the config path under refs/<name>/:
+  - tools/*.tool.json — full tool schemas (inputSchema, description)
+  - skills/ — usage guides and patterns from the agent
+  - types/*.d.ts — TypeScript type definitions
+
+## Commands
+
+To call a tool: \`adk ref call <name> <tool> '{"param": "value"}'\`
+To browse available agents: \`adk registry browse slash\`
+To install an agent: \`adk ref add <name>\`
+To authenticate: \`adk ref auth <name>\`
+To check auth status: \`adk ref auth-status <name>\`
+To inspect an agent: \`adk ref inspect <name>\`
+To view tool schemas: \`adk ref inspect <name> --full\`
+To list resources: \`adk ref resources <name>\`
+To read a resource: \`adk ref read <name> <uri>\`
+`;
+
+export function renderContent(
+  content: string,
+  meta: { name: string; description: string },
+): string {
+  return `---
+name: ${meta.name}
+description: ${meta.description}
+---
+${content}`;
+}
+
+// ============================================
+// Target Parsing
+// ============================================
+
+function expandHome(p: string): string {
+  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+  return p;
+}
+
+export function parseTarget(value: string): SkillTarget {
+  const colonIdx = value.indexOf(":");
+
+  if (colonIdx === -1) {
+    // Just a preset name
+    const preset = getPreset(value);
+    if (!preset) {
+      const presetNames = Array.from(loadPresets().keys()).join(", ");
+      throw new Error(`Unknown preset: ${value}. Available: ${presetNames}`);
+    }
+    return { preset, path: expandHome(preset.defaultPath) };
+  }
+
+  const key = value.slice(0, colonIdx);
+  const path = value.slice(colonIdx + 1);
+
+  // Check if key is a preset name (with custom path)
+  const preset = getPreset(key);
+  if (preset) {
+    return { preset, path: expandHome(path || preset.defaultPath) };
+  }
+
+  const presetNames = Array.from(loadPresets().keys()).join(", ");
+  throw new Error(`Unknown target: ${key}. Available presets: ${presetNames}`);
+}
+
+// ============================================
+// Skill Installation
+// ============================================
+
+function ensureWrite(path: string, content: string): void {
+  const dir = dirname(path);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeFileSync(path, content, "utf-8");
+}
+
+export function installSkill(target: SkillTarget): string {
+  const outputPath = join(resolve(target.path), target.preset.filename);
+  const content = renderContent(ADK_SKILL_CONTENT, {
+    name: "adk",
+    description: "When connecting to APIs, calling remote tools, managing integrations, or the user asks about adk",
+  });
+  ensureWrite(outputPath, content);
+  return outputPath;
+}
+
+
+// ============================================
+// Init Command
+// ============================================
+
+const DEFAULT_REGISTRY_URL = "https://registry.slash.com";
+const DEFAULT_REGISTRY_NAME = "public";
+
+export async function runInit(adk: Adk, targets: SkillTarget[]): Promise<void> {
+  // 1. Ensure default registry
+  const registries = await adk.registry.list();
+  const hasDefault = registries.some(
+    (r) => r.url === DEFAULT_REGISTRY_URL || r.name === DEFAULT_REGISTRY_NAME,
+  );
+  if (!hasDefault) {
+    await adk.registry.add({ url: DEFAULT_REGISTRY_URL, name: DEFAULT_REGISTRY_NAME });
+    console.log(`\x1b[32m\u2713\x1b[0m Set default registry: ${DEFAULT_REGISTRY_URL}`);
+  } else {
+    console.log(`\x1b[32m\u2713\x1b[0m Default registry already configured: ${DEFAULT_REGISTRY_URL}`);
+  }
+
+  // 2. Install skills to targets
+  if (targets.length === 0) {
+    console.log(`\nTo install skills, re-run with targets:\n`);
+    const presets = listPresets();
+    for (const preset of presets) {
+      console.log(`  adk init --target ${preset.name}`);
+    }
+    console.log(`\nCustom path: adk init --target <preset>:<path>`);
+    console.log(`\nAsk the user which coding agents they use,`);
+    console.log(`then run: adk init --target <preset> [--target <preset> ...]`);
+    return;
+  }
+
+  for (const target of targets) {
+    const outputPath = installSkill(target);
+    console.log(`\x1b[32m\u2713\x1b[0m Installed adk skill \u2192 ${outputPath}`);
+  }
+
+  // 3. Save targets to config
+  const config = await adk.readConfig();
+  const targetStrings = targets.map((t) => {
+    return t.path === expandHome(t.preset.defaultPath) ? t.preset.name : `${t.preset.name}:${t.path}`;
+  });
+  (config as any).targets = targetStrings;
+  await adk.writeConfig(config);
+  console.log(`\x1b[32m\u2713\x1b[0m Saved targets to config`);
+
+  console.log(`\nDone! Your coding agents now know how to use adk.`);
+  console.log(`Run \`adk init\` again anytime to refresh skills or add targets.`);
+}

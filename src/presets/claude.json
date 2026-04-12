@@ -1,0 +1,5 @@
+{
+  "name": "claude",
+  "defaultPath": "~/.claude/skills",
+  "filename": "adk/SKILL.md"
+}
