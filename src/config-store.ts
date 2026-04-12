@@ -1086,10 +1086,12 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         const state = btoa(JSON.stringify(statePayload));
 
         const securityExt2 = security as { requiredScopes?: string[]; optionalScopes?: string[] };
+        const flowScopes = (authCodeFlow as Record<string, unknown>).scopes as Record<string, string> | undefined;
         const agentScopes = [
           ...(securityExt2.requiredScopes ?? []),
+          ...(flowScopes ? Object.keys(flowScopes) : []),
           ...(opts?.scopes ?? []),
-        ];
+        ].filter((v, i, a) => a.indexOf(v) === i);
         const scopes = agentScopes.length > 0
           ? [
               ...agentScopes,
