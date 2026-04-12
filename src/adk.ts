@@ -43,6 +43,43 @@ function hasFlag(flag: string): boolean {
   return args.includes(flag);
 }
 
+function wantsHelp(): boolean {
+  return args.includes("--help") || args.includes("-h");
+}
+
+const HELP_SECTIONS: Record<string, string> = {
+  proxy: `Proxy operations:
+  adk proxy add <url> --name <name> [--type mcp|registry] [--agent @config] [--default]
+  adk proxy remove <name>
+  adk proxy list`,
+  registry: `Registry operations:
+  adk registry add <url> --name <name> [--auth-type bearer|api-key|none]
+  adk registry remove <name>
+  adk registry list
+  adk registry browse <name> [--query <q>]
+  adk registry inspect <name>
+  adk registry test [name]`,
+  ref: `Ref operations:
+  adk ref add <name>                     Install from default (public) registry
+  adk ref add <name> --registry <reg>    Install from a specific registry
+  adk ref add <name> --url <url>         Install from a direct URL
+  adk ref remove <name>
+  adk ref list
+  adk ref get <name>
+  adk ref inspect <name> [--full]
+  adk ref call <name> <tool> [params_json]
+  adk ref resources <name>
+  adk ref read <name> <uri> [uri...]
+  adk ref auth <name> [--api-key <key>]
+  adk ref auth-status <name>
+
+Examples:
+  adk ref add notion                     # Install from public registry
+  adk ref add notion --registry internal # Install from "internal" registry
+  adk ref add myapi --url https://api.example.com/mcp
+  adk ref call notion notion-search '{"query":"hello"}'`,
+};
+
 function getAdk(): Adk {
   const token = process.env.ADK_TOKEN ?? undefined;
   const encryptionKey = getLocalEncryptionKey();
@@ -116,6 +153,7 @@ Examples:
 // ============================================
 
 async function runProxy() {
+  if (wantsHelp()) { console.log(HELP_SECTIONS.proxy); process.exit(0); }
   const op = args[1];
   const adk = getAdk();
 
@@ -165,6 +203,7 @@ async function runProxy() {
 // ============================================
 
 async function runRegistry() {
+  if (wantsHelp()) { console.log(HELP_SECTIONS.registry); process.exit(0); }
   const op = args[1];
   const adk = getAdk();
 
@@ -255,6 +294,7 @@ async function runRegistry() {
 // ============================================
 
 async function runRef() {
+  if (wantsHelp()) { console.log(HELP_SECTIONS.ref); process.exit(0); }
   const op = args[1];
   const adk = getAdk();
 
@@ -265,13 +305,15 @@ async function runRef() {
       const entry: Record<string, unknown> = { ref: refArg };
       const alias = getArg("--as");
       const url = getArg("--url");
-      const scheme = getArg("--scheme");
       const registryName = getArg("--registry");
+      // Auto-detect: if no --registry and no --url, try default registry
+      const effectiveRegistry = registryName ?? (url ? undefined : "public");
+      const scheme = getArg("--scheme") ?? (effectiveRegistry ? "registry" : undefined);
       if (alias) entry.as = alias;
       if (url) entry.url = url;
       if (scheme) entry.scheme = scheme;
-      if (registryName) {
-        const reg = await adk.registry.get(registryName);
+      if (effectiveRegistry) {
+        const reg = await adk.registry.get(effectiveRegistry);
         if (reg) {
           entry.sourceRegistry = { url: reg.url, agentPath: refArg };
         }

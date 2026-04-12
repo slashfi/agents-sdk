@@ -67,27 +67,25 @@ export function listPresets(): Preset[] {
 // Skill Content Templates
 // ============================================
 
-const ADK_SKILL_CONTENT = `adk is the Agent Development Kit CLI.
+const ADK_SKILL_CONTENT = `adk is the Agent Development Kit CLI for connecting to remote APIs and tools.
 
-Config location: run \`adk config-path\` to find the config directory.
-Installed refs: run \`adk ref list\` to see configured agents.
+Run \`adk --help\` for full usage. Run \`adk <command> --help\` for command-specific help.
 
-Each installed ref has local docs at the config path under refs/<name>/:
-  - tools/*.tool.json — full tool schemas (inputSchema, description)
-  - skills/ — usage guides and patterns from the agent
-  - types/*.d.ts — TypeScript type definitions
+## Quick Reference
 
-## Commands
+\`adk ref add <name>\`           Install an agent (auto-resolves from public registry)
+\`adk ref call <name> <tool>\`   Call a remote tool
+\`adk ref auth <name>\`          Authenticate to a service
+\`adk ref list\`                  List installed agents
+\`adk ref inspect <name>\`       See available tools and resources
+\`adk registry browse public\`   Browse all available agents
 
-To call a tool: \`adk ref call <name> <tool> '{"param": "value"}'\`
-To browse available agents: \`adk registry browse slash\`
-To install an agent: \`adk ref add <name>\`
-To authenticate: \`adk ref auth <name>\`
-To check auth status: \`adk ref auth-status <name>\`
-To inspect an agent: \`adk ref inspect <name>\`
-To view tool schemas: \`adk ref inspect <name> --full\`
-To list resources: \`adk ref resources <name>\`
-To read a resource: \`adk ref read <name> <uri>\`
+## Local Docs
+
+Each installed agent has local docs at \`~/.adk/refs/<name>/\`:
+  - \`tools/*.tool.json\` — full tool schemas (inputSchema, description)
+  - \`skills/\` — usage guides and patterns
+  - \`types/*.d.ts\` — TypeScript type definitions
 `;
 
 export function renderContent(

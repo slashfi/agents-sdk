@@ -11,8 +11,8 @@
  *
  * const adk = createAdk(createLocalFsStore());
  * await adk.registry.add({ url: 'https://registry.slash.com', name: 'slash' });
- * await adk.registry.browse('slash');
- * await adk.ref.add({ ref: 'notion', registry: 'slash' });
+ * await adk.registry.browse('public');
+ * await adk.ref.add({ ref: 'notion', registry: 'public' });
  * await adk.ref.call('notion', 'notion-search', { query: 'hello' });
  * ```
  */
@@ -679,22 +679,28 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const config = await readConfig();
       const hasRegistries = (config.registries ?? []).length > 0;
 
-      // Validate scheme is always specified
+      // Auto-infer scheme from context
       if (!entry.scheme) {
-        throw new AdkError({
-          code: "REF_INVALID",
-          message: `Cannot add ref "${entry.ref}": scheme is required`,
-          hint: "Specify scheme: 'registry' (with sourceRegistry), 'mcp' (with url), or 'https' (with url)",
-          details: { ref: entry.ref },
-        });
+        if (entry.sourceRegistry?.url) {
+          entry = { ...entry, scheme: "registry" };
+        } else if (entry.url) {
+          entry = { ...entry, scheme: entry.url.startsWith("http") ? "https" : "mcp" };
+        } else {
+          throw new AdkError({
+            code: "REF_INVALID",
+            message: `Cannot add ref "${entry.ref}": could not determine connection type`,
+            hint: "Use --registry <name> to install from a registry, or --url <url> for a direct connection",
+            details: { ref: entry.ref },
+          });
+        }
       }
 
       // Validate scheme-specific requirements
       if (entry.scheme === "registry" && !entry.sourceRegistry?.url) {
         throw new AdkError({
           code: "REF_INVALID",
-          message: `Cannot add ref "${entry.ref}": scheme 'registry' requires sourceRegistry`,
-          hint: "Provide sourceRegistry: { url: '...', agentPath: '...' }",
+          message: `Cannot add ref "${entry.ref}": registry scheme requires a source registry`,
+          hint: "Use --registry <name> (e.g. adk ref add notion --registry public)",
           details: { ref: entry.ref, scheme: entry.scheme },
         });
       }

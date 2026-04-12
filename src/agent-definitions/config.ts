@@ -124,7 +124,7 @@ export function createConfigAgent(
         registry: {
           type: "string",
           description:
-            'Registry to resolve from (e.g. "slash", "mcp", "https")',
+            'Registry to resolve from (e.g. "public", "mcp", "https")',
         },
       },
       required: ["ref"],
@@ -241,7 +241,7 @@ export function createConfigAgent(
       properties: {
         name: {
           type: "string",
-          description: 'Human-readable name (e.g. "slash", "internal")',
+          description: 'Human-readable name (e.g. "public", "internal")',
         },
         url: {
           type: "string",

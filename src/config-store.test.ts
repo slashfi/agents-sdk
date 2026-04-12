@@ -159,7 +159,7 @@ describe("ADK ref.add validation", () => {
 
     await expect(
       adk.ref.add({ ref: "@something" }),
-    ).rejects.toThrow("scheme is required");
+    ).rejects.toThrow("could not determine connection type");
   });
 
   test("throws when scheme is 'registry' without sourceRegistry", async () => {
@@ -168,7 +168,7 @@ describe("ADK ref.add validation", () => {
 
     await expect(
       adk.ref.add({ ref: "@something", scheme: "registry" }),
-    ).rejects.toThrow("requires sourceRegistry");
+    ).rejects.toThrow("requires a source registry");
   });
 
   test("throws when scheme is 'mcp' without url", async () => {

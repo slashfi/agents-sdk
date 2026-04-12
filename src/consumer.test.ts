@@ -211,7 +211,7 @@ describe("Registry Consumer E2E", () => {
     const config = {
       registries: [
         `http://localhost:${PORT}`,
-        { url: "https://twin.slash.com/tenants/test", publisher: "slash" },
+        { url: "https://twin.slash.com/tenants/test", publisher: "public" },
       ],
     };
 
@@ -222,7 +222,7 @@ describe("Registry Consumer E2E", () => {
     expect(registries[0].url).toBe(`http://localhost:${PORT}`);
     expect(registries[0].publisher).toBe("localhost");
     expect(registries[1].url).toBe("https://twin.slash.com/tenants/test");
-    expect(registries[1].publisher).toBe("slash");
+    expect(registries[1].publisher).toBe("public");
   });
 });
 
@@ -271,10 +271,10 @@ describe("normalizeRegistry", () => {
   test("object with custom publisher", () => {
     const result = normalizeRegistry({
       url: "https://twin.slash.com",
-      publisher: "slash",
+      publisher: "public",
       name: "Slash Private",
     });
-    expect(result.publisher).toBe("slash");
+    expect(result.publisher).toBe("public");
     expect(result.name).toBe("Slash Private");
   });
 
