@@ -190,6 +190,10 @@ export interface OAuth2SecurityScheme {
       clientAuth?: "client_secret_post" | "client_secret_basic";
     };
   };
+  /** Scopes the agent requires — always included in the authorize URL */
+  requiredScopes?: string[];
+  /** Scopes the agent can use but doesn't require — only included if the caller explicitly requests them */
+  optionalScopes?: string[];
 }
 
 /**

@@ -172,6 +172,8 @@ export interface AdkRefApi {
     apiKey?: string;
     /** Extra context to encode in the OAuth state (e.g., tenant/user IDs for multi-tenant callbacks) */
     stateContext?: Record<string, unknown>;
+    /** Additional scopes to request (e.g., optional scopes declared by the agent) */
+    scopes?: string[];
   }): Promise<AuthStartResult>;
   /**
    * Run the full OAuth flow locally: start auth, spin up a callback
@@ -977,6 +979,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       apiKey?: string;
       /** Extra context to encode in the OAuth state (e.g., tenant/user IDs for multi-tenant callbacks) */
       stateContext?: Record<string, unknown>;
+      /** Additional scopes to request (e.g., optional scopes declared by the agent) */
+      scopes?: string[];
     }): Promise<AuthStartResult> {
       const config = await readConfig();
       const entry = findRef(config.refs ?? [], name);
@@ -1081,11 +1085,23 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         };
         const state = btoa(JSON.stringify(statePayload));
 
+        const securityExt2 = security as { requiredScopes?: string[]; optionalScopes?: string[] };
+        const agentScopes = [
+          ...(securityExt2.requiredScopes ?? []),
+          ...(opts?.scopes ?? []),
+        ];
+        const scopes = agentScopes.length > 0
+          ? [
+              ...agentScopes,
+              ...(metadata.scopes_supported?.includes('openid') ? ['openid'] : []),
+            ]
+          : metadata.scopes_supported;
+
         const { url: authorizeUrl, codeVerifier } = await buildOAuthAuthorizeUrl({
           authorizationEndpoint: metadata.authorization_endpoint,
           clientId,
           redirectUri,
-          scopes: metadata.scopes_supported,
+          scopes,
           state,
         });
 
