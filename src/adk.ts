@@ -3,34 +3,28 @@
  * ADK CLI — Agent Development Kit
  *
  * Commands:
- *   codegen          Generate agent definitions from an MCP server
- *   introspect       Introspect an MCP server → agent.json
- *   pack             Generate publishable @agentdef/* package
- *   publish          Pack + npm publish to @agentdef/*
- *   use              Execute a tool on a generated agent
- *   list             List all generated agents
+ *   init             Setup + skill injection for coding agents
  *   registry <op>    Manage registry connections (add, remove, list, browse, inspect, test)
  *   ref <op>         Manage agent refs (add, remove, list, get, inspect, call, resources, read)
  *
  * @example
  * ```bash
- * adk registry add https://registry.slash.com --name slash
- * adk registry browse slash
- * adk ref add notion --registry slash
+ * adk registry add https://registry.slash.com --name public
+ * adk registry browse public
+ * adk ref add notion --registry public
  * adk ref inspect notion
  * adk ref call notion notion-search '{"query":"hello"}'
  * ```
  */
 
-import { existsSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { codegen, listAgentTools, useAgent } from "./codegen.js";
-import type { CodegenManifest } from "./codegen.js";
-import { pack, publish } from "./pack.js";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { createAdk } from "./config-store.js";
 import { createLocalFsStore, getLocalEncryptionKey } from "./local-fs.js";
 import type { Adk } from "./config-store.js";
 import { AdkError, getError, getRecentErrors } from "./adk-error.js";
+import { runInit, parseTarget } from "./init.js";
+import { materializeRef } from "./materialize.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -49,25 +43,6 @@ function hasFlag(flag: string): boolean {
   return args.includes(flag);
 }
 
-function getAgentsDir(): string {
-  return resolve(process.env.AGENTS_SDK_DIR ?? "./agents");
-}
-
-function findAgentDir(name: string): string | null {
-  const agentsDir = getAgentsDir();
-
-  const exactPath = resolve(name);
-  if (existsSync(join(exactPath, ".codegen-manifest.json"))) return exactPath;
-
-  const withAt = join(agentsDir, `@${name}`);
-  if (existsSync(join(withAt, ".codegen-manifest.json"))) return withAt;
-
-  const withoutAt = join(agentsDir, name);
-  if (existsSync(join(withoutAt, ".codegen-manifest.json"))) return withoutAt;
-
-  return null;
-}
-
 function getAdk(): Adk {
   const token = process.env.ADK_TOKEN ?? undefined;
   const encryptionKey = getLocalEncryptionKey();
@@ -79,15 +54,12 @@ function printUsage() {
 adk — Agent Development Kit
 
 Usage:
+  adk init [--target <agent>:<path>]  Setup + install skills for coding agents
   adk proxy <op> [options]           Manage remote adk proxies
   adk registry <op> [options]        Manage registry connections
   adk ref <op> [options]             Manage agent refs
-  adk codegen [options]              Generate agent from MCP server
-  adk introspect [options]           Introspect MCP server → agent.json
-  adk pack [options]                 Generate publishable package from agent.json
-  adk publish [options]              Pack + npm publish to @agentdef/*
-  adk use <agent> [options]          Execute a tool on a generated agent
-  adk list                           List all generated agents
+  adk config-path                    Print config directory path
+  adk error [id]                     View recent errors or a specific error
 
 Proxy operations:
   adk proxy add <url> --name <name> [--type mcp|registry] [--agent @config] [--default]
@@ -114,15 +86,26 @@ Ref operations:
   adk ref auth <name> [--api-key <key>]
   adk ref auth-status <name>
 
+Init targets (presets):
+  claude            Claude Code skills (default: ~/.claude/skills)
+  cursor            Cursor rules (default: .cursor/rules)
+  copilot           GitHub Copilot instructions (default: .github)
+  windsurf          Windsurf rules (default: .)
+  codex             OpenAI Codex (default: .)
+  hermes            Hermes skills (default: ~/.hermes/skills)
+
+  Custom path: adk init --target <preset>:<path>
+
 Environment:
   ADK_CONFIG_DIR        Config directory (default: ~/.adk)
   ADK_TOKEN             Bearer token for authenticated registries
   ADK_ENCRYPTION_KEY    Override encryption key (default: auto from ~/.adk/.encryption-key)
 
 Examples:
-  adk registry add https://registry.slash.com --name slash
-  adk registry browse slash
-  adk ref add notion --registry slash
+  adk init --target claude --target cursor --target codex
+  adk registry add https://registry.slash.com --name public
+  adk registry browse public
+  adk ref add notion --registry public
   adk ref inspect notion --full
   adk ref call notion notion-search '{"query":"hello"}'
 `);
@@ -130,253 +113,6 @@ Examples:
 
 // ============================================
 // Commands
-// ============================================
-
-async function runCodegen() {
-  const server = getArg("--server");
-  const name = getArg("--name");
-  const outDir = getArg("--out");
-  const agentPath = getArg("--path");
-  const visibility = getArg("--visibility") as
-    | "public"
-    | "internal"
-    | "private"
-    | undefined;
-  const noCli = hasFlag("--no-cli");
-  const noTypes = hasFlag("--no-types");
-
-  if (!server) {
-    console.error(
-      "Error: --server is required.\n" +
-        "  Example: adk codegen --server 'npx @mcp/notion' --name notion",
-    );
-    process.exit(1);
-  }
-
-  const resolvedOutDir =
-    outDir ??
-    join(
-      getAgentsDir(),
-      `@${(name ?? "mcp-agent").toLowerCase().replace(/[^a-z0-9-]/g, "-")}`,
-    );
-
-  console.log(`Connecting to MCP server: ${server}`);
-  console.log(`Output: ${resolvedOutDir}\n`);
-
-  try {
-    const result = await codegen({
-      server,
-      outDir: resolvedOutDir,
-      agentPath,
-      name,
-      cli: !noCli,
-      types: !noTypes,
-      visibility,
-    });
-
-    console.log(
-      `\x1b[32m\u2713\x1b[0m Generated ${result.toolCount} tools from ${result.serverInfo.name ?? "MCP server"}`,
-    );
-    console.log("\nFiles:");
-    for (const f of result.files) {
-      console.log(`  ${f}`);
-    }
-    console.log(
-      `\nUse: adk use ${name ?? result.serverInfo.name ?? "<agent>"} --list`,
-    );
-  } catch (err) {
-    console.error(
-      `\x1b[31mError:\x1b[0m ${err instanceof Error ? err.message : String(err)}`,
-    );
-    process.exit(1);
-  }
-}
-
-async function runIntrospect() {
-  const server = getArg("--server");
-  const name = getArg("--name");
-  const out = getArg("--out") || (name ? `./${name}.json` : undefined);
-
-  if (!server || !name) {
-    console.error(
-      "Usage: adk introspect --server <cmd> --name <name> [--out <path>]",
-    );
-    process.exit(1);
-  }
-
-  const { introspectMcp } = await import("./introspect.js");
-  await introspectMcp({ server, name, out });
-}
-
-function runPack() {
-  const agentFile = getArg("--agent") || "./agent.json";
-  const outDir = getArg("--out") || "./dist";
-  const scope = getArg("--scope") || "@agentdef";
-  const previousAgentFile = getArg("--previous");
-
-  if (!existsSync(resolve(agentFile))) {
-    console.error(`agent.json not found at ${resolve(agentFile)}`);
-    console.error("Run 'adk introspect' first, or specify --agent <path>");
-    process.exit(1);
-  }
-
-  const result = pack({ agentFile, outDir, scope, previousAgentFile });
-  console.log(`\n\u2705 Packed ${result.packageName}@${result.version}`);
-  console.log(`   Hash: ${result.hash}`);
-  console.log(`   Tools: ${result.meta.toolCount}`);
-  console.log(`   Size: ${(result.meta.sizeBytes / 1024).toFixed(1)}KB`);
-  console.log(`   Output: ${result.packageDir}`);
-  if (result.meta.changes) {
-    const c = result.meta.changes;
-    if (c.toolsAdded.length > 0)
-      console.log(`   Added: ${c.toolsAdded.join(", ")}`);
-    if (c.toolsRemoved.length > 0)
-      console.log(`   Removed: ${c.toolsRemoved.join(", ")}`);
-    if (c.toolsModified.length > 0)
-      console.log(`   Modified: ${c.toolsModified.join(", ")}`);
-  }
-}
-
-function runPublish() {
-  const agentFile = getArg("--agent") || "./agent.json";
-  const outDir = getArg("--out") || "./dist";
-  const scope = getArg("--scope") || "@agentdef";
-  const previousAgentFile = getArg("--previous");
-  const dryRun = hasFlag("--dry-run");
-  const tag = getArg("--tag");
-  const access = getArg("--access") as "public" | "restricted" | undefined;
-  const registry = getArg("--registry");
-
-  if (!existsSync(resolve(agentFile))) {
-    console.error(`agent.json not found at ${resolve(agentFile)}`);
-    console.error("Run 'adk introspect' first, or specify --agent <path>");
-    process.exit(1);
-  }
-
-  try {
-    const result = publish({
-      agentFile,
-      outDir,
-      scope,
-      previousAgentFile,
-      dryRun,
-      tag,
-      access,
-      registry,
-    });
-    console.log(
-      `\n\u2705 Published ${result.packageName}@${result.version} (hash: ${result.hash})`,
-    );
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
-  }
-}
-
-async function runUse() {
-  const agentName = args[1];
-
-  if (!agentName) {
-    console.error(
-      "Error: agent name required.\n" +
-        "  Example: adk use notion search_pages '{...}'",
-    );
-    process.exit(1);
-  }
-
-  const agentDir = findAgentDir(agentName);
-  if (!agentDir) {
-    console.error(
-      `Error: agent '${agentName}' not found.\n` +
-        `  Looked in: ${getAgentsDir()}\n` +
-        `  Generate first: adk codegen --server '...' --name ${agentName}`,
-    );
-    process.exit(1);
-  }
-
-  if (hasFlag("--list")) {
-    const tools = listAgentTools(agentDir);
-    console.log(`Tools for ${agentName}:\n`);
-    for (const t of tools) {
-      console.log(`  ${t.name.padEnd(30)} ${t.description ?? ""}`);
-    }
-    return;
-  }
-
-  const toolName = args[2];
-  if (!toolName) {
-    console.error(
-      `Error: tool name required.\n  Example: adk use ${agentName} <tool> [params]\n  List tools: adk use ${agentName} --list`,
-    );
-    process.exit(1);
-  }
-
-  const paramsStr = args[3];
-  const params = paramsStr ? JSON.parse(paramsStr) : {};
-
-  try {
-    const result = await useAgent({
-      agentDir,
-      tool: toolName,
-      params,
-    });
-    console.log(JSON.stringify(result, null, 2));
-  } catch (err) {
-    console.error(
-      `\x1b[31mError:\x1b[0m ${err instanceof Error ? err.message : String(err)}`,
-    );
-    process.exit(1);
-  }
-}
-
-function runList() {
-  const agentsDir = getAgentsDir();
-
-  if (!existsSync(agentsDir)) {
-    console.log("No generated agents found.");
-    return;
-  }
-
-  const entries = readdirSync(agentsDir);
-  const agents: { name: string; tools: number; server?: string }[] = [];
-
-  for (const entry of entries) {
-    const manifestPath = join(agentsDir, entry, ".codegen-manifest.json");
-    if (existsSync(manifestPath)) {
-      try {
-        const manifest: CodegenManifest = JSON.parse(
-          require("node:fs").readFileSync(manifestPath, "utf-8"),
-        );
-        agents.push({
-          name: manifest.agentPath,
-          tools: manifest.tools.length,
-          server: manifest.serverInfo.name,
-        });
-      } catch {
-        agents.push({ name: entry, tools: 0 });
-      }
-    }
-  }
-
-  if (agents.length === 0) {
-    console.log("No generated agents found.");
-    return;
-  }
-
-  console.log("Generated agents:\n");
-  for (const a of agents) {
-    console.log(
-      `  ${a.name.padEnd(25)} ${String(a.tools).padEnd(5)} tools${a.server ? `  (${a.server})` : ""}`,
-    );
-  }
-}
-
-// ============================================
-// Registry CLI
-// ============================================
-
-// ============================================
-// Proxy CLI
 // ============================================
 
 async function runProxy() {
@@ -547,6 +283,31 @@ async function runRef() {
           console.log(`\n  Auth required: ${security.type}`);
           console.log(`  Run: adk ref auth ${alias ?? refArg}`);
         }
+
+        // Materialize local docs
+        const configDir = process.env.ADK_CONFIG_DIR ?? join(homedir(), ".adk");
+        const refDisplayName = alias ?? refArg;
+        try {
+          const result = await materializeRef(adk, refDisplayName, configDir);
+          if (result.toolCount > 0) {
+            console.log(`\x1b[32m\u2713\x1b[0m Materialized ${result.toolCount} tool schemas`);
+          }
+          if (result.skillCount > 0) {
+            console.log(`\x1b[32m\u2713\x1b[0m Downloaded ${result.skillCount} skill files`);
+          }
+          if (result.typesGenerated) {
+            console.log(`\x1b[32m\u2713\x1b[0m Generated TypeScript types`);
+          }
+
+          // Per-ref skills removed — refs are discovered via refs/<name>/ in config dir
+          const config = await adk.readConfig();
+          const targets = (config as any).targets as string[] | undefined;
+          if (!targets || targets.length === 0) {
+            console.log(`\nRun \`adk init\` to install skills for your coding agents.`);
+          }
+        } catch {
+          // Materialization is best-effort, don't fail the ref add
+        }
       } catch (err) {
         if (err instanceof AdkError) {
           console.error(err.toAgentString());
@@ -699,6 +460,29 @@ async function runRef() {
 // ============================================
 
 switch (command) {
+  case "init": {
+    const adk = getAdk();
+    const targets = args
+      .slice(1)
+      .filter((_, i, arr) => i > 0 && arr[i - 1] === "--target")
+      .concat(
+        // Also grab positional --target values
+        args.reduce<string[]>((acc, arg, i) => {
+          if (arg === "--target" && args[i + 1]) acc.push(args[i + 1]);
+          return acc;
+        }, []),
+      )
+      // Deduplicate
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .map(parseTarget);
+    await runInit(adk, targets);
+    break;
+  }
+  case "config-path": {
+    const dir = process.env.ADK_CONFIG_DIR ?? join(homedir(), ".adk");
+    console.log(dir);
+    break;
+  }
   case "error": {
     const errorId = args[1];
     if (!errorId) {
@@ -724,24 +508,6 @@ switch (command) {
     break;
   case "ref":
     await runRef();
-    break;
-  case "codegen":
-    await runCodegen();
-    break;
-  case "introspect":
-    await runIntrospect();
-    break;
-  case "pack":
-    runPack();
-    break;
-  case "publish":
-    runPublish();
-    break;
-  case "use":
-    await runUse();
-    break;
-  case "list":
-    runList();
     break;
   case "--help":
   case "-h":
