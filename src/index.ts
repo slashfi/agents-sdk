@@ -424,5 +424,4 @@ export type {
 } from "./config-store.js";
 export { createLocalFsStore, getLocalEncryptionKey } from "./local-fs.js";
 export { AdkError, getError, getRecentErrors } from "./adk-error.js";
-export { createAdkTools } from "./adk-tools.js";
-export type { CreateAdkToolsOptions } from "./adk-tools.js";
+export { createAdkTools, type AdkToolsHooks, type CreateAdkToolsOptions } from "./adk-tools.js";

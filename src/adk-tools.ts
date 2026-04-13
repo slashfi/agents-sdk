@@ -22,6 +22,20 @@ import type { ToolDefinition, ToolContext } from "./types.js";
 import type { Adk } from "./config-store.js";
 import type { RefEntry, RegistryEntry } from "./define-config.js";
 
+export interface AdkToolsHooks<TCtx extends ToolContext = ToolContext> {
+  /**
+   * Return extra context to embed in the OAuth state parameter.
+   * Typically used to include tenant/user IDs so the callback handler
+   * can resolve the right VCS scope.
+   *
+   * @example
+   * ```ts
+   * getAuthStateContext: async (ctx) => ({ tid: ctx.tenantId, uid: ctx.userId })
+   * ```
+   */
+  getAuthStateContext?: (ctx: TCtx) => Record<string, unknown> | Promise<Record<string, unknown>>;
+}
+
 export interface CreateAdkToolsOptions<TCtx extends ToolContext = ToolContext> {
   /**
    * Resolve an Adk instance from the scope string and tool context.
@@ -30,6 +44,8 @@ export interface CreateAdkToolsOptions<TCtx extends ToolContext = ToolContext> {
   resolveScope: (scope: string | undefined, ctx: TCtx) => Adk | Promise<Adk>;
   /** Allowed scope values. If set, added as enum to the JSON schema. */
   scopes?: string[];
+  /** Optional hooks to augment tool behavior with caller-specific context. */
+  hooks?: AdkToolsHooks<TCtx>;
 }
 
 export function createAdkTools<TCtx extends ToolContext = ToolContext>(opts: CreateAdkToolsOptions<TCtx>): ToolDefinition<TCtx>[] {
@@ -93,8 +109,14 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(opts: Cre
           return await adk.ref.inspect(input.name as string, { full: input.full as boolean });
         case "call":
           return await adk.ref.call(input.name as string, input.tool as string, input.params as Record<string, unknown>);
-        case "auth":
-          return await adk.ref.auth(input.name as string, { apiKey: input.apiKey as string });
+        case "auth": {
+          const authOpts: { apiKey?: string; stateContext?: Record<string, unknown> } = {};
+          if (input.apiKey) authOpts.apiKey = input.apiKey as string;
+          if (opts.hooks?.getAuthStateContext) {
+            authOpts.stateContext = await opts.hooks.getAuthStateContext(ctx as TCtx);
+          }
+          return await adk.ref.auth(input.name as string, authOpts);
+        }
         case "auth-status":
           return await adk.ref.authStatus(input.name as string);
         case "resources":
