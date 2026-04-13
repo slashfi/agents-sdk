@@ -179,6 +179,23 @@ export async function runInit(adk: Adk, targets: SkillTarget[]): Promise<void> {
 
   // 2. Install skills to targets
   if (targets.length === 0) {
+    // Show available agents from the default registry
+    try {
+      const agents = await adk.registry.browse(DEFAULT_REGISTRY_NAME);
+      if (agents.length > 0) {
+        console.log(`\n${agents.length} agent(s) available on ${DEFAULT_REGISTRY_URL}:\n`);
+        for (const a of agents) {
+          const toolCount = a.tools?.length ?? 0;
+          console.log(`  ${a.path} (${toolCount} tools)`);
+          if (a.description) console.log(`    ${a.description.slice(0, 120)}`);
+          console.log();
+        }
+        console.log(`Connect one: adk ref add <name>`);
+      }
+    } catch {
+      // Registry unreachable — skip browse
+    }
+
     console.log(`\nTo install skills, re-run with targets:\n`);
     const presets = listPresets();
     for (const preset of presets) {

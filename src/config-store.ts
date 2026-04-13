@@ -975,7 +975,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       }
 
       const complete = Object.values(fields).every(
-        (f) => !f.required || f.present || f.resolvable || f.automated,
+        (f) => !f.required || f.present || f.resolvable,
       );
 
       return { name, security, complete, fields };
