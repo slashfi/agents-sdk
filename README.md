@@ -9,7 +9,7 @@ Help me install the Agent Development Kit (adk) — a CLI that connects coding a
 APIs and MCPs. It also installs skill files so you know how to use them.
 
 Run this to install it:
-curl -fsSL https://registry.slash.com/adk/install | sh
+curl -fsSL https://registry.slash.com/adk/install.sh | sh
 
 Then follow the printed instructions to set up skills and connect to agents.
 ```
@@ -20,7 +20,7 @@ Then follow the printed instructions to set up skills and connect to agents.
 
 ```bash
 # Install via curl
-curl -fsSL https://registry.slash.com/adk/install | sh
+curl -fsSL https://registry.slash.com/adk/install.sh | sh
 
 # Or via npm
 npm install -g @slashfi/agents-sdk
