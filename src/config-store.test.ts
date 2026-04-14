@@ -235,3 +235,226 @@ describe("ADK ref.add validation", () => {
     expect(result).toBeDefined();
   });
 });
+
+// ─── ADK ref.call() 401 → refresh → retry ────────────────────────
+
+describe("ADK ref.call() auto-refresh on 401", () => {
+  let server: AgentServer;
+  const PORT = 19910;
+  let callCount = 0;
+
+  beforeAll(async () => {
+    callCount = 0;
+
+    const failOnceTool = defineTool({
+      name: "get_data",
+      description: "Returns 401 on first call, succeeds on retry",
+      inputSchema: { type: "object" as const, properties: {} },
+      execute: async () => {
+        callCount++;
+        if (callCount === 1) {
+          return { content: [{ type: "text", text: '{"error":"401 Unauthorized"}' }], _httpStatus: 401 };
+        }
+        return { data: "success", callNumber: callCount };
+      },
+    });
+
+    const agent = defineAgent({
+      path: "test-api",
+      entrypoint: "Test API agent",
+      tools: [failOnceTool],
+      visibility: "public",
+    });
+
+    const registry = createAgentRegistry();
+    registry.register(agent);
+    server = createAgentServer(registry, { port: PORT });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  test("server forwards _httpStatus as HTTP 401", async () => {
+    callCount = 0;
+    const res = await fetch(`http://localhost:${PORT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "test-401",
+        method: "tools/call",
+        params: {
+          name: "call_agent",
+          arguments: {
+            request: {
+              action: "execute_tool",
+              path: "test-api",
+              tool: "get_data",
+              params: {},
+            },
+          },
+        },
+      }),
+    });
+
+    // Server should forward the 401 HTTP status from the tool result
+    expect(res.status).toBe(401);
+
+    // Body should still be valid JSON-RPC
+    const body = await res.json();
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.id).toBe("test-401");
+  });
+
+  test("second call succeeds with 200", async () => {
+    const res = await fetch(`http://localhost:${PORT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "test-200",
+        method: "tools/call",
+        params: {
+          name: "call_agent",
+          arguments: {
+            request: {
+              action: "execute_tool",
+              path: "test-api",
+              tool: "get_data",
+              params: {},
+            },
+          },
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("ADK ref.call() full auto-refresh flow", () => {
+  let registryServer: AgentServer;
+  let tokenServer: ReturnType<typeof Bun.serve>;
+  const REG_PORT = 19920;
+  const TOKEN_PORT = 19921;
+  let toolCallCount = 0;
+  let tokenRefreshCount = 0;
+
+  beforeAll(async () => {
+    // Mock token endpoint that validates refresh_token
+    tokenServer = Bun.serve({
+      port: TOKEN_PORT,
+      async fetch(req) {
+        tokenRefreshCount++;
+        const body = await req.text();
+        const params = new URLSearchParams(body);
+        if (params.get("grant_type") !== "refresh_token") {
+          return new Response(JSON.stringify({ error: "unsupported_grant_type" }), { status: 400 });
+        }
+        if (params.get("refresh_token") !== "my-refresh-token") {
+          return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+        }
+        if (params.get("client_id") !== "my-client-id") {
+          return new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 });
+        }
+        return new Response(JSON.stringify({
+          access_token: "refreshed-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+        }), { headers: { "Content-Type": "application/json" } });
+      },
+    });
+
+    // Agent that validates the access token
+    const apiTool = defineTool({
+      name: "get_data",
+      description: "Validates token and returns 401 if expired",
+      inputSchema: { type: "object" as const, properties: {} },
+      execute: async (input: any) => {
+        toolCallCount++;
+        const token = input?.accessToken;
+        if (token === "expired-token" || !token) {
+          return { content: [{ type: "text", text: '{"error":"401 Unauthorized"}' }], _httpStatus: 401 };
+        }
+        if (token === "refreshed-token") {
+          return { message: "success", token };
+        }
+        return { content: [{ type: "text", text: '{"error":"403 Forbidden"}' }], _httpStatus: 403 };
+      },
+    });
+
+    const agent = defineAgent({
+      path: "oauth-api",
+      entrypoint: "OAuth API agent",
+      tools: [apiTool],
+      visibility: "public",
+      config: {
+        security: {
+          type: "oauth2",
+          flows: {
+            authorizationCode: {
+              authorizationUrl: "http://localhost/authorize",
+              tokenUrl: `http://localhost:${TOKEN_PORT}`,
+            },
+          },
+        },
+      },
+    });
+
+    const registry = createAgentRegistry();
+    registry.register(agent);
+    registryServer = createAgentServer(registry, { port: REG_PORT });
+    await registryServer.start();
+  });
+
+  afterAll(async () => {
+    await registryServer.stop();
+    tokenServer.stop();
+  });
+
+  test("ref.call() detects 401, refreshes token, retries, and succeeds", async () => {
+    toolCallCount = 0;
+    tokenRefreshCount = 0;
+
+    const fs = createMemoryFs();
+    const adk = createAdk(fs, { encryptionKey: "test-key-32-chars-long-enough!!" });
+
+    await adk.registry.add({ name: "oauth-reg", url: `http://localhost:${REG_PORT}` });
+    await adk.ref.add({
+      ref: "oauth-api",
+      sourceRegistry: { url: `http://localhost:${REG_PORT}`, agentPath: "oauth-api" },
+    });
+
+    // Store credentials directly
+    const config = await adk.readConfig();
+    await adk.writeConfig({
+      ...config,
+      refs: config.refs?.map((r: any) => {
+        if (r.ref === "oauth-api" || r.name === "oauth-api") {
+          return {
+            ...r,
+            config: {
+              ...r.config,
+              access_token: "expired-token",
+              refresh_token: "my-refresh-token",
+              client_id: "my-client-id",
+            },
+          };
+        }
+        return r;
+      }),
+    });
+
+    const result = await adk.ref.call("oauth-api", "get_data");
+
+    // Tool called twice: first with expired token (401), then with refreshed token (success)
+    expect(toolCallCount).toBe(2);
+    // Token endpoint called once with correct refresh_token + client_id
+    expect(tokenRefreshCount).toBe(1);
+    // Final result should be success, proving the refreshed token was used
+    expect((result as any)?.result?.message).toBe("success");
+    expect((result as any)?.result?.token).toBe("refreshed-token");
+  });
+});

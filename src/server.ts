@@ -554,6 +554,19 @@ export function createAgentServer(
   async function handleJsonRpc(
     request: JsonRpcRequest,
     auth: ResolvedAuth | null,
+  ): Promise<{ rpc: JsonRpcResponse; httpResponse?: { status: number } }> {
+    const rpc = await handleJsonRpcInner(request, auth);
+    // Extract upstream HTTP status from tool results (set by REST proxy handlers)
+    const httpStatus = (rpc as any)?.result?._httpStatus as number | undefined;
+    return {
+      rpc,
+      ...(httpStatus ? { httpResponse: { status: httpStatus } } : {}),
+    };
+  }
+
+  async function handleJsonRpcInner(
+    request: JsonRpcRequest,
+    auth: ResolvedAuth | null,
   ): Promise<JsonRpcResponse> {
     switch (request.method) {
       case "initialize":
@@ -662,7 +675,11 @@ export function createAgentServer(
         }
 
         const result = await registry.call(req);
-        return mcpResult(result);
+        const mcp = mcpResult(result);
+        // Preserve upstream HTTP status from tool execution (e.g. REST proxy 401)
+        const upstreamStatus = (result as any)?.result?._httpStatus;
+        if (upstreamStatus) (mcp as any)._httpStatus = upstreamStatus;
+        return mcp;
       }
 
       case "list_agents": {
@@ -1109,8 +1126,10 @@ export function createAgentServer(
       // ── POST / → MCP JSON-RPC ──
       if (path === "/" && req.method === "POST") {
         const body = (await req.json()) as JsonRpcRequest;
-        const result = await handleJsonRpc(body, effectiveAuth);
-        return cors ? addCors(jsonResponse(result)) : jsonResponse(result);
+        const { rpc, httpResponse } = await handleJsonRpc(body, effectiveAuth);
+        const status = httpResponse?.status ?? 200;
+        const res = jsonResponse(rpc, status);
+        return cors ? addCors(res) : res;
       }
 
       // ── POST /oauth/token → OAuth2 token exchange ──

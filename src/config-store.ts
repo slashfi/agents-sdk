@@ -290,20 +290,18 @@ async function decryptConfigSecrets(
 // ============================================
 
 /**
- * Heuristic: does a tool call response look like a 401 Unauthorized?
- * Checks both structured error fields and stringified response content.
+ * Check if a tool call response indicates a 401 Unauthorized from the upstream API.
+ * Primary: httpStatus set by consumer from HTTP res.status
+ * Fallback: _httpStatus from tool result body
  */
-function looksLike401(result: unknown): boolean {
+function isUnauthorized(result: unknown): boolean {
   if (!result || typeof result !== 'object') return false;
   const r = result as Record<string, unknown>;
-
-  // Structured: { success: true, result: { success: true, result: { content: [{ text: '{"error":"401 ..."} }] } } }
-  // Or: { error: "401 ..." }
-  const text = JSON.stringify(r).toLowerCase();
-  if (text.includes('"401') && (text.includes('unauthorized') || text.includes('unauthenticated') || text.includes('invalid credentials'))) {
-    return true;
-  }
-
+  // Primary: HTTP status forwarded by the registry and set by callRegistry
+  if (r.httpStatus === 401) return true;
+  // Fallback: _httpStatus in the nested tool result body
+  const inner = r.result as Record<string, unknown> | undefined;
+  if (inner?._httpStatus === 401) return true;
   return false;
 }
 
@@ -894,7 +892,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const result = await doCall(accessToken);
 
       // Check if the response indicates a 401 — try refreshing the token and retry once
-      if (accessToken && looksLike401(result)) {
+      if (accessToken && isUnauthorized(result)) {
         const refreshed = await ref.refreshToken(name);
         if (refreshed) {
           return doCall(refreshed.accessToken);
