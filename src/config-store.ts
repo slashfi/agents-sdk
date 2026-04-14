@@ -289,6 +289,24 @@ async function decryptConfigSecrets(
 // Factory
 // ============================================
 
+/**
+ * Heuristic: does a tool call response look like a 401 Unauthorized?
+ * Checks both structured error fields and stringified response content.
+ */
+function looksLike401(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false;
+  const r = result as Record<string, unknown>;
+
+  // Structured: { success: true, result: { success: true, result: { content: [{ text: '{"error":"401 ..."} }] } } }
+  // Or: { error: "401 ..." }
+  const text = JSON.stringify(r).toLowerCase();
+  if (text.includes('"401') && (text.includes('unauthorized') || text.includes('unauthenticated') || text.includes('invalid credentials'))) {
+    return true;
+  }
+
+  return false;
+}
+
 export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
   async function readConfig(): Promise<ConsumerConfig> {
@@ -849,27 +867,41 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
-      const accessToken = await readRefSecret(name, "access_token");
+      let accessToken = await readRefSecret(name, "access_token");
 
-      // Direct MCP only for redirect/proxy agents with an MCP upstream.
-      // API-mode agents must go through the registry (it does REST translation).
-      const agentMode = (entry as any).mode ?? 'redirect';
-      if (accessToken && entry.url && agentMode !== 'api') {
-        return callMcpDirect(entry.url, tool, params ?? {}, accessToken);
+      const doCall = async (token: string | null) => {
+        // Direct MCP only for redirect/proxy agents with an MCP upstream.
+        // API-mode agents must go through the registry (it does REST translation).
+        const agentMode = (entry as any).mode ?? 'redirect';
+        if (token && entry.url && agentMode !== 'api') {
+          return callMcpDirect(entry.url, tool, params ?? {}, token);
+        }
+
+        const consumer = await buildConsumerForRef(entry);
+        const reg = resolveRegistryForRef(consumer, entry);
+
+        return consumer.callRegistry(reg, {
+          action: "execute_tool",
+          path: entry.sourceRegistry?.agentPath ?? entry.ref,
+          tool,
+          params: {
+            ...(params ?? {}),
+            ...(token && { accessToken: token }),
+          },
+        });
+      };
+
+      const result = await doCall(accessToken);
+
+      // Check if the response indicates a 401 — try refreshing the token and retry once
+      if (accessToken && looksLike401(result)) {
+        const refreshed = await ref.refreshToken(name);
+        if (refreshed) {
+          return doCall(refreshed.accessToken);
+        }
       }
 
-      const consumer = await buildConsumerForRef(entry);
-      const reg = resolveRegistryForRef(consumer, entry);
-
-      return consumer.callRegistry(reg, {
-        action: "execute_tool",
-        path: entry.sourceRegistry?.agentPath ?? entry.ref,
-        tool,
-        params: {
-          ...(params ?? {}),
-          ...(accessToken && { accessToken }),
-        },
-      });
+      return result;
     },
 
     async resources(name: string): Promise<CallAgentResponse> {
