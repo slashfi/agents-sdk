@@ -417,6 +417,7 @@ export type {
   RefAuthStatus,
   CredentialField,
   AuthStartResult,
+  AuthChallengeField,
   OAuthResult,
   ResolveCredentials,
   ResolveCredentialsContext,

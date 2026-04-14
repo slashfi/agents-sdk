@@ -79,6 +79,7 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(opts: Cre
         full: { type: "boolean" },
         uris: { type: "array", items: { type: "string" } },
         apiKey: { type: "string" },
+        credentials: { type: "object", description: "Key-value map of credential fields (keys match field names from auth challenge)" },
       },
       required: ["operation"],
     },
@@ -110,8 +111,9 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(opts: Cre
         case "call":
           return await adk.ref.call(input.name as string, input.tool as string, input.params as Record<string, unknown>);
         case "auth": {
-          const authOpts: { apiKey?: string; stateContext?: Record<string, unknown> } = {};
+          const authOpts: { apiKey?: string; credentials?: Record<string, string>; stateContext?: Record<string, unknown> } = {};
           if (input.apiKey) authOpts.apiKey = input.apiKey as string;
+          if (input.credentials) authOpts.credentials = input.credentials as Record<string, string>;
           if (opts.hooks?.getAuthStateContext) {
             authOpts.stateContext = await opts.hooks.getAuthStateContext(ctx as TCtx);
           }
