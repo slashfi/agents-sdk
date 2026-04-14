@@ -111,6 +111,12 @@ export async function buildOAuthAuthorizeUrl(params: {
   redirectUri: string;
   scopes?: string[];
   state?: string;
+  /**
+   * Extra query parameters appended to the authorization URL.
+   * Used for provider-specific params not covered by the OIDC spec.
+   * @example { access_type: 'offline', prompt: 'consent' } // Google
+   */
+  extraParams?: Record<string, string>;
 }): Promise<{
   url: string;
   codeVerifier: string;
@@ -127,6 +133,11 @@ export async function buildOAuthAuthorizeUrl(params: {
   }
   if (params.state) {
     url.searchParams.set("state", params.state);
+  }
+  if (params.extraParams) {
+    for (const [k, v] of Object.entries(params.extraParams)) {
+      url.searchParams.set(k, v);
+    }
   }
   return { url: url.toString(), codeVerifier: pkce.codeVerifier };
 }

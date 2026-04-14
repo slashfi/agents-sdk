@@ -1091,7 +1091,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         };
         const state = btoa(JSON.stringify(statePayload));
 
-        const securityExt2 = security as { requiredScopes?: string[]; optionalScopes?: string[] };
+        const securityExt2 = security as { requiredScopes?: string[]; optionalScopes?: string[]; authorizationParams?: Record<string, string> };
         const flowScopes = (authCodeFlow as Record<string, unknown>).scopes as Record<string, string> | undefined;
         const agentScopes = [
           ...(securityExt2.requiredScopes ?? []),
@@ -1105,12 +1105,17 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             ]
           : metadata.scopes_supported;
 
+        // Read provider-specific authorization params from the agent's security section
+        // (e.g., { access_type: 'offline', prompt: 'consent' } for Google)
+        const authorizationParams = securityExt2.authorizationParams;
+
         const { url: authorizeUrl, codeVerifier } = await buildOAuthAuthorizeUrl({
           authorizationEndpoint: metadata.authorization_endpoint,
           clientId,
           redirectUri,
           scopes,
           state,
+          extraParams: authorizationParams,
         });
 
         // Persist pending state so handleCallback works across processes
