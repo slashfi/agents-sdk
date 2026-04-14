@@ -143,11 +143,29 @@ export interface OAuthResult {
   clientId: string;
 }
 
+/** A field the caller needs to collect from the user */
+export interface AuthChallengeField {
+  /** Field key (e.g. "api_key", "token") */
+  name: string;
+  /** Human-readable label (e.g. "API Key", "DD-API-KEY") */
+  label: string;
+  /** Whether this is a secret value (should be masked in UI) */
+  secret: boolean;
+  /** Optional description / help text */
+  description?: string;
+}
+
 export interface AuthStartResult {
   type: string;
   complete: boolean;
   /** For OAuth: the URL to open in the browser */
   authorizeUrl?: string;
+  /**
+   * When complete=false and type is "apiKey" or "http",
+   * these are the fields the caller should collect from the user.
+   * The caller can render these as a form (Slack blocks, web modal, CLI prompts).
+   */
+  fields?: AuthChallengeField[];
 }
 
 export interface AdkRefApi {
@@ -168,8 +186,14 @@ export interface AdkRefApi {
    * adk.ref.authLocal() to spin up a local server and block.
    */
   auth(name: string, opts?: {
-    /** For API key / bearer auth: the key/token value */
+    /** For API key / bearer auth: the key/token value (single-key shorthand) */
     apiKey?: string;
+    /**
+     * Credentials map for multi-field auth. Keys match the `name` field
+     * from AuthChallengeField (e.g. { "api_key": "xxx", "app_key": "yyy" }).
+     * For single-key apiKey or http bearer, `apiKey` shorthand also works.
+     */
+    credentials?: Record<string, string>;
     /** Extra context to encode in the OAuth state (e.g., tenant/user IDs for multi-tenant callbacks) */
     stateContext?: Record<string, unknown>;
     /** Additional scopes to request (e.g., optional scopes declared by the agent) */
@@ -998,12 +1022,32 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           resolvable: false,
         };
       } else if (security.type === "apiKey") {
-        fields.api_key = {
-          required: true,
-          automated: false,
-          present: configKeys.includes("api_key"),
-          resolvable: await canResolve("api_key"),
+        const apiKeySec = security as {
+          name?: string; headers?: Record<string, { description?: string }>;
         };
+        const toStorageKey = (headerName: string) =>
+          headerName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+
+        if (apiKeySec.headers && Object.keys(apiKeySec.headers).length > 0) {
+          // Multi-key mode
+          for (const headerName of Object.keys(apiKeySec.headers)) {
+            const storageKey = toStorageKey(headerName);
+            fields[storageKey] = {
+              required: true,
+              automated: false,
+              present: configKeys.includes(storageKey),
+              resolvable: await canResolve(storageKey),
+            };
+          }
+        } else {
+          // Single-key mode (backwards compat)
+          fields.api_key = {
+            required: true,
+            automated: false,
+            present: configKeys.includes("api_key"),
+            resolvable: await canResolve("api_key"),
+          };
+        }
       } else if (security.type === "http") {
         fields.token = {
           required: true,
@@ -1022,6 +1066,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
     async auth(name: string, opts?: {
       apiKey?: string;
+      credentials?: Record<string, string>;
       /** Extra context to encode in the OAuth state (e.g., tenant/user IDs for multi-tenant callbacks) */
       stateContext?: Record<string, unknown>;
       /** Additional scopes to request (e.g., optional scopes declared by the agent) */
@@ -1045,15 +1090,92 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       }
 
       if (security.type === "apiKey") {
-        const key = opts?.apiKey ?? await tryResolve("api_key");
-        if (!key) return { type: "apiKey", complete: false };
+        const apiKeySec = security as {
+          name?: string; prefix?: string;
+          headers?: Record<string, { description?: string }>;
+        };
+
+        const toStorageKey = (headerName: string) =>
+          headerName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+
+        if (apiKeySec.headers && Object.keys(apiKeySec.headers).length > 0) {
+          // Multi-key mode: iterate all declared headers
+          const missingFields: AuthChallengeField[] = [];
+          const resolvedKeys: Array<{ storageKey: string; value: string }> = [];
+
+          for (const [headerName, meta] of Object.entries(apiKeySec.headers)) {
+            const storageKey = toStorageKey(headerName);
+            const value = opts?.credentials?.[storageKey] ?? await tryResolve(storageKey);
+
+            if (value) {
+              resolvedKeys.push({ storageKey, value });
+            } else {
+              missingFields.push({
+                name: storageKey,
+                label: headerName,
+                secret: true,
+                description: meta.description,
+              });
+            }
+          }
+
+          if (missingFields.length > 0) {
+            return { type: "apiKey", complete: false, fields: missingFields };
+          }
+          for (const { storageKey, value } of resolvedKeys) {
+            await storeRefSecret(name, storageKey, value);
+          }
+          return { type: "apiKey", complete: true };
+        }
+
+        // Single-key mode (backwards compat)
+        const key = opts?.credentials?.["api_key"] ?? opts?.apiKey ?? await tryResolve("api_key");
+        if (!key) {
+          return {
+            type: "apiKey",
+            complete: false,
+            fields: [{
+              name: "api_key",
+              label: apiKeySec.name ?? "API Key",
+              secret: true,
+              description: apiKeySec.prefix
+                ? `Value sent as "${apiKeySec.prefix} <key>"`
+                : undefined,
+            }],
+          };
+        }
         await storeRefSecret(name, "api_key", key);
         return { type: "apiKey", complete: true };
       }
 
       if (security.type === "http") {
-        const token = opts?.apiKey ?? await tryResolve("token");
-        if (!token) return { type: "http", complete: false };
+        const httpSec = security as { scheme?: string };
+        const isBasic = httpSec.scheme === "basic";
+
+        if (isBasic) {
+          const username = opts?.credentials?.["username"] ?? await tryResolve("username");
+          const password = opts?.credentials?.["password"] ?? await tryResolve("password");
+          if (!username || !password) {
+            const missingFields: AuthChallengeField[] = [];
+            if (!username) missingFields.push({ name: "username", label: "Username", secret: false });
+            if (!password) missingFields.push({ name: "password", label: "Password", secret: true });
+            return { type: "http", complete: false, fields: missingFields };
+          }
+          // Store as base64 encoded basic auth token
+          const token = btoa(`${username}:${password}`);
+          await storeRefSecret(name, "token", token);
+          return { type: "http", complete: true };
+        }
+
+        // Bearer token
+        const token = opts?.credentials?.["token"] ?? opts?.apiKey ?? await tryResolve("token");
+        if (!token) {
+          return {
+            type: "http",
+            complete: false,
+            fields: [{ name: "token", label: "Bearer Token", secret: true }],
+          };
+        }
         await storeRefSecret(name, "token", token);
         return { type: "http", complete: true };
       }
@@ -1062,7 +1184,14 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         const flows = (security as { flows?: { authorizationCode?: { authorizationUrl?: string; tokenUrl?: string } } }).flows;
         const authCodeFlow = flows?.authorizationCode;
         if (!authCodeFlow?.authorizationUrl) {
-          return { type: "oauth2", complete: false };
+          return {
+            type: "oauth2",
+            complete: false,
+            fields: [
+              { name: "client_id", label: "Client ID", secret: false },
+              { name: "client_secret", label: "Client Secret", secret: true },
+            ],
+          };
         }
 
         const authUrl = authCodeFlow.authorizationUrl;
@@ -1116,9 +1245,14 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         }
 
         if (!clientId) {
-          throw new Error(
-            "Could not obtain client_id. Provide via resolveCredentials callback or store manually.",
-          );
+          // Return fields telling the caller what OAuth credentials to provide
+          const missingFields: AuthChallengeField[] = [];
+          if (!clientId) {
+            missingFields.push({ name: "client_id", label: "Client ID", secret: false });
+          }
+          // Always ask for client_secret alongside client_id — most providers need it
+          missingFields.push({ name: "client_secret", label: "Client Secret", secret: true });
+          return { type: "oauth2", complete: false, fields: missingFields };
         }
 
         // State ties the callback back to this ref. Encode as base64 JSON

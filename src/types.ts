@@ -204,17 +204,35 @@ export interface OAuth2SecurityScheme {
 
 /**
  * API key authentication.
- * Used by agents that wrap APIs using a single key
+ * Used by agents that wrap APIs using one or more keys
  * (e.g. OpenAI, Anthropic, Stripe, Datadog).
+ *
+ * @example
+ * // Single key (backwards-compatible)
+ * security: { type: 'apiKey', in: 'header', name: 'Authorization', prefix: 'Bearer' }
+ *
+ * // Multiple keys (e.g. Datadog)
+ * security: {
+ *   type: 'apiKey',
+ *   headers: {
+ *     'DD-API-KEY': { description: 'Your Datadog API key' },
+ *     'DD-APPLICATION-KEY': { description: 'Your Datadog application key' },
+ *   }
+ * }
  */
 export interface ApiKeySecurityScheme {
   type: "apiKey";
-  /** Where the key is sent */
-  in: "header" | "query";
-  /** Header or query parameter name (e.g. "X-API-Key", "Authorization") */
-  name: string;
-  /** Optional prefix (e.g. "Bearer" for Authorization header) */
+  /** Where the key is sent (single-key mode) */
+  in?: "header" | "query";
+  /** Header or query parameter name (single-key mode, e.g. "X-API-Key") */
+  name?: string;
+  /** Optional prefix (single-key mode, e.g. "Bearer") */
   prefix?: string;
+  /**
+   * Named headers the user must provide values for (multi-key mode).
+   * When present, this is the source of truth — `in`/`name`/`prefix` are ignored.
+   */
+  headers?: Record<string, { description?: string }>;
 }
 
 /**
