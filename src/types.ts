@@ -194,6 +194,12 @@ export interface OAuth2SecurityScheme {
   requiredScopes?: string[];
   /** Scopes the agent can use but doesn't require — only included if the caller explicitly requests them */
   optionalScopes?: string[];
+  /**
+   * Extra query parameters appended to the OAuth authorization URL.
+   * Used for provider-specific params not covered by the OIDC spec.
+   * @example { access_type: 'offline', prompt: 'consent' } // Google
+   */
+  authorizationParams?: Record<string, string>;
 }
 
 /**
