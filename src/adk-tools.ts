@@ -58,13 +58,13 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(opts: Cre
   const refTool = defineTool({
     name: "ref",
     description:
-      "Manage agent refs. Operations: add, remove, list, get, update, inspect, call, auth, auth-status, resources, read.",
+      "Manage agent refs. Operations: add, remove, list, get, update, inspect, call, auth, auth-status, refresh-token, resources, read.",
     inputSchema: {
       type: "object" as const,
       properties: {
         operation: {
           type: "string",
-          enum: ["add", "remove", "list", "get", "update", "inspect", "call", "auth", "auth-status", "resources", "read"],
+          enum: ["add", "remove", "list", "get", "update", "inspect", "call", "auth", "auth-status", "refresh-token", "resources", "read"],
         },
         scope: scopeSchema,
         ref: { type: "string" },
@@ -119,6 +119,8 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(opts: Cre
         }
         case "auth-status":
           return await adk.ref.authStatus(input.name as string);
+        case "refresh-token":
+          return await adk.ref.refreshToken(input.name as string);
         case "resources":
           return await adk.ref.resources(input.name as string);
         case "read":
