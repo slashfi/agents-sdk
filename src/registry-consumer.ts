@@ -727,6 +727,14 @@ export async function createRegistryConsumer(
     });
 
     if (!res.ok) {
+      // Upstream 401 — return structured response so ref.call() can refresh + retry
+      if (res.status === 401) {
+        // Still try to parse the body for context
+        const body = await res.text().catch(() => "");
+        let parsed: Record<string, unknown> = { success: false, error: "unauthorized" };
+        try { parsed = JSON.parse(body); } catch {}
+        return { ...parsed, success: false, httpStatus: 401 } as unknown as CallAgentResponse;
+      }
       const text = await res.text().catch(() => "unknown error");
       throw new Error(
         `Registry call failed (${registry.url}): ${res.status} ${text}`,
