@@ -186,6 +186,15 @@ export interface AdkRefApi {
     /** Timeout in ms (default 300_000 = 5 min) */
     timeoutMs?: number;
   }): Promise<{ complete: boolean }>;
+  /**
+   * Refresh an OAuth access token using a stored refresh_token.
+   * Returns the new access_token, or null if refresh is not possible
+   * (no refresh_token stored, no tokenUrl, etc.).
+   *
+   * Use this when a tool call returns 401 to transparently refresh
+   * and retry.
+   */
+  refreshToken(name: string): Promise<{ accessToken: string } | null>;
 }
 
 export interface AdkProxyApi {
@@ -1193,6 +1202,58 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         }, timeout);
         server.on("close", () => clearTimeout(timer));
       });
+    },
+
+    async refreshToken(name: string): Promise<{ accessToken: string } | null> {
+      // Read stored refresh_token
+      const refreshToken = await readRefSecret(name, "refresh_token");
+      if (!refreshToken) return null;
+
+      // Read client credentials
+      const clientId = await readRefSecret(name, "client_id");
+      if (!clientId) return null;
+      const clientSecret = await readRefSecret(name, "client_secret");
+
+      // Get the agent's token endpoint from its security metadata
+      const entry = await ref.get(name);
+      if (!entry) return null;
+
+      const info = await ref.inspect(name);
+      const security = (info as any)?.security as Record<string, unknown> | undefined;
+      const flows = (security?.flows as Record<string, Record<string, unknown>> | undefined);
+      const authCodeFlow = flows?.authorizationCode;
+      const tokenUrl = (authCodeFlow?.refreshUrl ?? authCodeFlow?.tokenUrl) as string | undefined;
+      if (!tokenUrl) return null;
+
+      // POST to the token endpoint with grant_type=refresh_token
+      const body = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: clientId,
+      });
+      if (clientSecret) {
+        body.set("client_secret", clientSecret);
+      }
+
+      const res = await globalThis.fetch(tokenUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+      });
+
+      if (!res.ok) return null;
+
+      const data = await res.json() as Record<string, unknown>;
+      const newAccessToken = data.access_token as string | undefined;
+      if (!newAccessToken) return null;
+
+      // Store the new tokens
+      await storeRefSecret(name, "access_token", newAccessToken);
+      if (data.refresh_token && typeof data.refresh_token === "string") {
+        await storeRefSecret(name, "refresh_token", data.refresh_token);
+      }
+
+      return { accessToken: newAccessToken };
     },
   };
 
