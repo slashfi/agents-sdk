@@ -24,7 +24,7 @@ import { createLocalFsStore, getLocalEncryptionKey } from "./local-fs.js";
 import type { Adk } from "./config-store.js";
 import { AdkError, getError, getRecentErrors } from "./adk-error.js";
 import { runInit, parseTarget } from "./init.js";
-import { materializeRef } from "./materialize.js";
+import { materializeRef, syncAllRefs } from "./materialize.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -92,6 +92,7 @@ adk — Agent Development Kit
 
 Usage:
   adk init [--target <agent>:<path>]  Setup + install skills for coding agents
+  adk sync [--ref <name>]             Materialize tool docs for all refs in config
   adk proxy <op> [options]           Manage remote adk proxies
   adk registry <op> [options]        Manage registry connections
   adk ref <op> [options]             Manage agent refs
@@ -518,6 +519,27 @@ switch (command) {
       .filter((v, i, a) => a.indexOf(v) === i)
       .map(parseTarget);
     await runInit(adk, targets);
+    break;
+  }
+  case "sync": {
+    const adk = getAdk();
+    const configDir = process.env.ADK_CONFIG_DIR ?? join(homedir(), ".adk");
+    const filter = getArg("--ref");
+    console.log(filter ? `Syncing ref: ${filter}` : "Syncing all refs from config...");
+    const syncResult = await syncAllRefs(adk, configDir, {
+      filter: filter ?? undefined,
+      onProgress(name, status) {
+        console.log(`  ${name}: ${status}`);
+      },
+    });
+    const ok = syncResult.refs.filter((r) => !r.error);
+    const failed = syncResult.refs.filter((r) => r.error);
+    console.log(`\n\x1b[32m✓\x1b[0m Synced ${ok.length} ref(s): ${syncResult.totalTools} tools, ${syncResult.totalSkills} skills`);
+    if (failed.length > 0) {
+      console.log(`\x1b[33m!\x1b[0m ${failed.length} ref(s) failed:`);
+      for (const f of failed) console.log(`    ${f.name}: ${f.error}`);
+    }
+    console.log(`\nDocs written to: ${configDir}/refs/`);
     break;
   }
   case "config-path": {
