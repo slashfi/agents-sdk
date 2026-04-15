@@ -931,7 +931,7 @@ export async function createRegistryConsumer(
             path: agentPath,
             tools: undefined,
             ...(options?.full != null && { full: options.full }),
-          })) as Record<string, unknown> | null;
+          })) as unknown as Record<string, unknown> | null;
           if (!raw) return null;
 
           // Some endpoints (e.g. twin MCP) wrap the response in { success, result },
@@ -949,7 +949,7 @@ export async function createRegistryConsumer(
             context?: string;
             upstream?: string;
             mode?: string;
-          } | null;
+          };
           return {
             path: agentPath,
             publisher: registry.publisher,
