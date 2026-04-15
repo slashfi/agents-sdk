@@ -307,41 +307,60 @@ export async function materializeRef(
 // Sync all refs from consumer config
 // ============================================
 
+const DEFAULT_CONCURRENCY = 3;
+
 export async function syncAllRefs(
   adk: Adk,
   configDir: string,
-  opts?: { filter?: string; onProgress?: (name: string, status: string) => void },
+  opts?: { filter?: string; concurrency?: number; onProgress?: (name: string, status: string) => void },
 ): Promise<SyncResult> {
   const config = await adk.readConfig();
   const refs = config.refs ?? [];
 
-  const results: SyncResult["refs"] = [];
-  let totalTools = 0;
-  let totalSkills = 0;
-
+  // Resolve ref names and filter
+  const names: string[] = [];
   for (const refEntry of refs) {
     const name = typeof refEntry === "string"
       ? refEntry
       : (refEntry as any).as ?? (refEntry as any).ref ?? (refEntry as any).name;
-
     if (!name) continue;
     if (opts?.filter && name !== opts.filter) continue;
+    names.push(name);
+  }
 
-    opts?.onProgress?.(name, "syncing");
+  const results: SyncResult["refs"] = [];
+  let totalTools = 0;
+  let totalSkills = 0;
+  const concurrency = opts?.concurrency ?? DEFAULT_CONCURRENCY;
 
-    try {
-      const result = await materializeRef(adk, name, configDir);
-      results.push({ name, result });
-      totalTools += result.toolCount;
-      totalSkills += result.skillCount;
-      opts?.onProgress?.(name, `done (${result.toolCount} tools)`);
-    } catch (err: any) {
-      results.push({
-        name,
-        result: { toolCount: 0, skillCount: 0, typesGenerated: false, docsGenerated: false },
-        error: err?.message ?? String(err),
-      });
-      opts?.onProgress?.(name, `error: ${err?.message ?? "unknown"}`);
+  // Process in batches of `concurrency`
+  for (let i = 0; i < names.length; i += concurrency) {
+    const batch = names.slice(i, i + concurrency);
+    const batchResults = await Promise.allSettled(
+      batch.map(async (name) => {
+        opts?.onProgress?.(name, "syncing");
+        try {
+          const result = await materializeRef(adk, name, configDir);
+          opts?.onProgress?.(name, `done (${result.toolCount} tools)`);
+          return { name, result };
+        } catch (err: any) {
+          const error = err?.message ?? String(err);
+          opts?.onProgress?.(name, `error: ${error}`);
+          return {
+            name,
+            result: { toolCount: 0, skillCount: 0, typesGenerated: false, docsGenerated: false } as MaterializeResult,
+            error,
+          };
+        }
+      }),
+    );
+
+    for (const settled of batchResults) {
+      if (settled.status === "fulfilled") {
+        results.push(settled.value);
+        totalTools += settled.value.result.toolCount;
+        totalSkills += settled.value.result.skillCount;
+      }
     }
   }
 
