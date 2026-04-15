@@ -204,11 +204,14 @@ function generateTypes(refName: string, tools: ToolSchema[]): string {
     `export interface ${pascalCase(refName)}Tools {`,
   ];
   for (const tool of tools) {
+    const paramsType = tool.inputSchema
+      ? jsonSchemaToTsType(tool.inputSchema)
+      : "Record<string, unknown>";
     lines.push(`  /** ${tool.description ?? tool.name} */`);
     lines.push(`  ${JSON.stringify(tool.name)}: {`);
     lines.push(`    name: ${JSON.stringify(tool.name)};`);
     if (tool.description) lines.push(`    description: ${JSON.stringify(tool.description)};`);
-    lines.push(`    params: Record<string, unknown>;`);
+    lines.push(`    params: ${paramsType};`);
     lines.push(`  };`);
   }
   lines.push(`}`);
