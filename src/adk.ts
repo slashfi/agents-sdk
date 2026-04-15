@@ -582,14 +582,15 @@ switch (command) {
   case "check":
   case "run": {
     const isRun = command === "run";
+    const noCheck = hasFlag("--no-check");
     const eFlag = args.indexOf("-e");
-    const file = eFlag === -1 ? args[1] : undefined;
+    const file = eFlag === -1 ? args.filter(a => a !== "--no-check")[1] : undefined;
     const code = eFlag !== -1 ? args[eFlag + 1] : undefined;
     if (!file && !code) {
       console.error(`Usage: adk ${command} <file> | adk ${command} -e "<code>"`);
       process.exit(1);
     }
-    const result = await adkCheck({ file, code, run: isRun });
+    const result = await adkCheck({ file, code, run: isRun, noCheck });
     process.exit(result.exitCode);
   }
   case "--help":
