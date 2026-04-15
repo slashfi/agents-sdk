@@ -4,6 +4,11 @@
  *
  * Commands:
  *   init             Setup + skill injection for coding agents
+ *   sync             Sync all refs and generate typed agent interfaces
+ *   check <file>     Type-check a file with agent types (auto-injected)
+ *   check -e "code"  Type-check inline code
+ *   run <file>       Type-check + execute a file
+ *   run -e "code"    Type-check + execute inline code
  *   registry <op>    Manage registry connections (add, remove, list, browse, inspect, test)
  *   ref <op>         Manage agent refs (add, remove, list, get, inspect, call, resources, read)
  *
@@ -25,6 +30,7 @@ import type { Adk } from "./config-store.js";
 import { AdkError, getError, getRecentErrors } from "./adk-error.js";
 import { runInit, parseTarget } from "./init.js";
 import { materializeRef, syncAllRefs } from "./materialize.js";
+import { adkCheck } from "./adk-check.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -573,6 +579,19 @@ switch (command) {
   case "ref":
     await runRef();
     break;
+  case "check":
+  case "run": {
+    const isRun = command === "run";
+    const eFlag = args.indexOf("-e");
+    const file = eFlag === -1 ? args[1] : undefined;
+    const code = eFlag !== -1 ? args[eFlag + 1] : undefined;
+    if (!file && !code) {
+      console.error(`Usage: adk ${command} <file> | adk ${command} -e "<code>"`);
+      process.exit(1);
+    }
+    const result = await adkCheck({ file, code, run: isRun });
+    process.exit(result.exitCode);
+  }
   case "--help":
   case "-h":
   case undefined:
