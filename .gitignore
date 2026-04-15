@@ -8,3 +8,6 @@ test-notion-client.ts
 
 # Internal smoke scripts (keep local only)
 scripts/test-slash-internal-mcp*.ts
+refs/
+consumer-config.json
+.encryption-key
