@@ -684,9 +684,15 @@ export async function createRegistryConsumer(
         headers: buildRegistryAuthHeaders(registry, options.token),
       },
       fetchFn,
-    ) as ListAgentsResponse;
+    ) as Record<string, unknown>;
 
-    const agents = response.agents ?? [];
+    // Unwrap { success, result } envelope from MCP endpoints if needed
+    const data = (
+      !response.agents && response.result && typeof response.result === "object"
+        ? response.result
+        : response
+    ) as ListAgentsResponse;
+    const agents = data.agents ?? [];
 
     return agents.map((agent) => ({
       ...agent,
