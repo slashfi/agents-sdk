@@ -402,6 +402,9 @@ export function generateRootTypes(
     `//`,
     `// Then adk.ref.call() gets typed agent paths, tool names, and params.`,
     ``,
+    `// Must be a module to enable augmentation (not ambient declaration)`,
+    `export {};`,
+    ``,
   ];
 
   // Collect all successful refs that generated types
