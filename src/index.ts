@@ -414,6 +414,7 @@ export type {
   AdkProxyApi,
   AdkRegistryApi,
   AdkRefApi,
+  AdkAgentRegistry,
   RefAuthStatus,
   CredentialField,
   AuthStartResult,

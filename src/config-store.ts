@@ -168,6 +168,30 @@ export interface AuthStartResult {
   fields?: AuthChallengeField[];
 }
 
+/**
+ * Type slot for adk.ref.call() type safety.
+ * Empty by default — populated by `adk sync` which generates `adk.d.ts`.
+ * When populated, call() rejects unknown agent paths and tool names at compile time.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface AdkAgentRegistry {}
+
+/** @internal Helper types for conditional call() signature */
+type AgentPath = keyof AdkAgentRegistry;
+type ToolsOf<A extends AgentPath> = keyof AdkAgentRegistry[A] & string;
+type ParamsOf<
+  A extends AgentPath,
+  T extends ToolsOf<A>,
+> = AdkAgentRegistry[A][T] extends { params: infer P }
+  ? P
+  : Record<string, unknown>;
+
+type AdkRefCallFn = keyof AdkAgentRegistry extends never
+  ? // No registry — loose fallback
+    (name: string, tool: string, params?: Record<string, unknown>) => Promise<CallAgentResponse>
+  : // Registry populated — strict typed overload
+    <A extends AgentPath, T extends ToolsOf<A>>(name: A, tool: T, params: ParamsOf<A, T>) => Promise<CallAgentResponse>;
+
 export interface AdkRefApi {
   add(entry: RefEntry): Promise<{ security: SecuritySchemeSummary | null }>;
   remove(name: string): Promise<boolean>;
@@ -175,7 +199,7 @@ export interface AdkRefApi {
   get(name: string): Promise<RefEntry | null>;
   update(name: string, updates: Partial<RefEntry>): Promise<boolean>;
   inspect(name: string, options?: { full?: boolean }): Promise<AgentListing | null>;
-  call(name: string, tool: string, params?: Record<string, unknown>): Promise<CallAgentResponse>;
+  call: AdkRefCallFn;
   resources(name: string): Promise<CallAgentResponse>;
   read(name: string, uris: string[]): Promise<CallAgentResponse>;
   /** Check auth status — what's needed vs what's stored */

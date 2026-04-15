@@ -382,9 +382,10 @@ export async function syncAllRefs(
 // ============================================
 
 /**
- * Generate a root `adk.d.ts` that augments `AdkRefApi.call()` with typed
- * overloads for all synced agents. After sync, `adk.ref.call()` gets
- * autocomplete on agent paths, tool names, and params.
+ * Generate a root `adk.d.ts` that populates `AdkAgentRegistry` via module
+ * augmentation. When the registry is populated, `adk.ref.call()` switches
+ * from the loose `(string, string)` fallback to a strict typed signature
+ * that rejects unknown agent paths and tool names at compile time.
  *
  * Include in tsconfig or add: /// <reference path="~/.adk/adk.d.ts" />
  */
@@ -425,30 +426,13 @@ export function generateRootTypes(
 
   if (typedRefs.length === 0) return;
 
-  // --- Agent registry type ---
-  lines.push(`/** All synced agents and their tool interfaces */`);
-  lines.push(`export interface AdkAgentRegistry {`);
+  // --- Module augmentation: populate AdkAgentRegistry ---
+  lines.push(`declare module "@slashfi/agents-sdk" {`);
+  lines.push(`  interface AdkAgentRegistry {`);
   for (const ref of typedRefs) {
     const relPath = `./refs/${ref.name}/types/${ref.name}`;
-    lines.push(`  ${JSON.stringify(ref.name)}: import(${JSON.stringify(relPath)}).${ref.interfaceName};`);
+    lines.push(`    ${JSON.stringify(ref.name)}: import(${JSON.stringify(relPath)}).${ref.interfaceName};`);
   }
-  lines.push(`}`);
-  lines.push(``);
-
-  // --- Utility types ---
-  lines.push(`export type AgentPath = keyof AdkAgentRegistry;`);
-  lines.push(`export type ToolsOf<A extends AgentPath> = keyof AdkAgentRegistry[A] & string;`);
-  lines.push(`export type ParamsOf<A extends AgentPath, T extends ToolsOf<A>> = AdkAgentRegistry[A][T] extends { params: infer P } ? P : Record<string, unknown>;`);
-  lines.push(``);
-
-  // --- Module augmentation: typed adk.ref.call() ---
-  lines.push(`declare module "@slashfi/agents-sdk" {`);
-  lines.push(`  interface AdkRefApi {`);
-  lines.push(`    call<A extends AgentPath, T extends ToolsOf<A>>(`);
-  lines.push(`      name: A,`);
-  lines.push(`      tool: T,`);
-  lines.push(`      params: ParamsOf<A, T>,`);
-  lines.push(`    ): Promise<import("@slashfi/agents-sdk").CallAgentResponse>;`);
   lines.push(`  }`);
   lines.push(`}`);
   lines.push(``);
