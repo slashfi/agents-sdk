@@ -926,12 +926,21 @@ export async function createRegistryConsumer(
       // Parallel O(1) lookups via describe_tools
       const results = await Promise.allSettled(
         targetRegistries.map(async (registry) => {
-          const data = (await callRegistry(registry, {
+          const raw = (await callRegistry(registry, {
             action: "describe_tools",
             path: agentPath,
             tools: undefined,
             ...(options?.full != null && { full: options.full }),
-          })) as {
+          })) as Record<string, unknown> | null;
+          if (!raw) return null;
+
+          // Some endpoints (e.g. twin MCP) wrap the response in { success, result },
+          // while registries return fields flat. Unwrap if needed.
+          const data = (
+            !raw.toolSummaries && !raw.tools && raw.result && typeof raw.result === "object"
+              ? raw.result
+              : raw
+          ) as {
             tools?: unknown[];
             toolSummaries?: Array<{ name: string; description: string; fullTokens: number }>;
             description?: string;
@@ -941,7 +950,6 @@ export async function createRegistryConsumer(
             upstream?: string;
             mode?: string;
           } | null;
-          if (!data) return null;
           return {
             path: agentPath,
             publisher: registry.publisher,
