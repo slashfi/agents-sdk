@@ -1,0 +1,9 @@
+{
+  "name": "/agents/@workspace",
+  "toolCount": 2,
+  "tools": [
+    "call_workspace_tool",
+    "run_command"
+  ],
+  "materializedAt": "2026-04-15T12:43:40.044Z"
+}

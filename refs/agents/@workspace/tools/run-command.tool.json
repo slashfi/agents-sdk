@@ -1,0 +1,4 @@
+{
+  "name": "run_command",
+  "description": "Execute a shell command in the branch's isolated microVM container.\n\nThe microVM has:\n- Ubuntu 24.04 with Node 22, Bun, git, jq, ripgrep\n- Pre-installed SDKs: @datadog/datadog-api-client, @temporalio/client, snowflake-sdk, pg, @slack/web-api\n- @slashfi/atlas-runtime SDK for calling back to Atlas\n- Working directory: /workspace/scripts/\n\nIMPORTANT:\n- Commands run in a non-interactive shell\n- Default timeout is 30 seconds\n- Use is_background: true for long-running commands\n- Use head/tail to limit large outputs"
+}

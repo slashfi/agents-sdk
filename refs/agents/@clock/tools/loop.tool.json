@@ -1,0 +1,4 @@
+{
+  "name": "loop",
+  "description": "Manage recurring loops that fire on a period.\n\nActions:\n- create: Create a new loop (requires operation, periodMs, prompt OR callback, branchId)\n- list: List loops (optional status filter)\n- get: Get loop by id\n- cancel: Cancel loop by id\n\nExample create:\n{\"operation\": \"create\", \"periodMs\": 300000, \"prompt\": \"Check system health\", \"branchId\": \"new\"}\n\nExample with callback:\n{\"operation\": \"create\", \"periodMs\": 3600000, \"callback\": {\"action\": \"execute_tool\", \"path\": \"/agents/@worker\", \"tool\": \"cleanup\"}, \"branchId\": \"new\"}"
+}

@@ -243,8 +243,12 @@ export async function materializeRef(
   // 1. Fetch tool schemas and generate docs
   try {
     const info = await adk.ref.inspect(refName, { full: true });
-    if (info?.tools && info.tools.length > 0) {
-      const tools: ToolSchema[] = info.tools.map((t: any) => ({
+    // Local agents return `tools` (with inputSchema); redirect agents
+    // may only return `toolSummaries` (name + description). Use whichever
+    // is available so redirect-mode refs still get docs materialized.
+    const rawTools = info?.tools ?? info?.toolSummaries;
+    if (rawTools && rawTools.length > 0) {
+      const tools: ToolSchema[] = rawTools.map((t: any) => ({
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema,
@@ -260,7 +264,7 @@ export async function materializeRef(
       toolCount = tools.length;
 
       // Write entrypoint.md
-      ensureWrite(join(refDir, "entrypoint.md"), generateEntrypoint(refName, info.description, tools));
+      ensureWrite(join(refDir, "entrypoint.md"), generateEntrypoint(refName, info?.description, tools));
       docsGenerated = true;
 
       // Write agent.json metadata
@@ -268,7 +272,7 @@ export async function materializeRef(
         join(refDir, "agent.json"),
         JSON.stringify({
           name: refName,
-          description: info.description,
+          description: info?.description,
           toolCount: tools.length,
           tools: tools.map((t) => t.name),
           materializedAt: new Date().toISOString(),
