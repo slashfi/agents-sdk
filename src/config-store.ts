@@ -436,18 +436,20 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     return data;
   }
 
-  /** Call an MCP server directly with a bearer token (bypasses registry). */
+  /** Call an MCP server directly (bypasses registry). */
   async function callMcpDirect(
     serverUrl: string,
     toolName: string,
     params: Record<string, unknown>,
     token: string,
+    extraHeaders?: Record<string, string>,
   ): Promise<CallAgentResponse> {
     const url = serverUrl.replace(/\/$/, "");
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
-      Authorization: `Bearer ${token}`,
+      ...(token && !extraHeaders && { Authorization: `Bearer ${token}` }),
+      ...extraHeaders,
     };
 
     let reqId = 0;
@@ -917,12 +919,27 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         ?? await readRefSecret(name, "api_key")
         ?? await readRefSecret(name, "token");
 
+      // Resolve custom headers from config (e.g. { "X-API-Key": "secret:..." })
+      const refConfig = (entry.config ?? {}) as Record<string, unknown>;
+      const rawHeaders = refConfig.headers as Record<string, string> | undefined;
+      let resolvedHeaders: Record<string, string> | undefined;
+      if (rawHeaders && typeof rawHeaders === 'object') {
+        resolvedHeaders = {};
+        for (const [k, v] of Object.entries(rawHeaders)) {
+          if (typeof v === 'string' && v.startsWith(SECRET_PREFIX) && options.encryptionKey) {
+            resolvedHeaders[k] = await decryptSecret(v.slice(SECRET_PREFIX.length), options.encryptionKey);
+          } else if (typeof v === 'string') {
+            resolvedHeaders[k] = v;
+          }
+        }
+      }
+
       const doCall = async (token: string | null) => {
         // Direct MCP only for redirect/proxy agents with an MCP upstream.
         // API-mode agents must go through the registry (it does REST translation).
         const agentMode = (entry as any).mode ?? 'redirect';
         if (token && entry.url && agentMode !== 'api') {
-          return callMcpDirect(entry.url, tool, params ?? {}, token);
+          return callMcpDirect(entry.url, tool, params ?? {}, token, resolvedHeaders);
         }
 
         const consumer = await buildConsumerForRef(entry);
@@ -935,6 +952,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           params: {
             ...(params ?? {}),
             ...(token && { accessToken: token }),
+            ...(resolvedHeaders && { _headers: resolvedHeaders }),
           },
         });
       };
