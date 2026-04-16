@@ -153,6 +153,19 @@ export async function adkCheck(
   }
 
   // Write minimal tsconfig
+  // Derive typeRoots from the SDK path so TypeScript finds @types/node
+  // from the global install (e.g. /root/.bun/install/global/node_modules/@types)
+  const sdkTypesRoot = (() => {
+    const marker = "node_modules";
+    const idx = sdkPath.indexOf(marker);
+    if (idx !== -1) return join(sdkPath.substring(0, idx + marker.length), "@types");
+    return undefined;
+  })();
+  const typeRoots = [
+    join(cwd, "node_modules", "@types"),
+    ...(sdkTypesRoot ? [sdkTypesRoot] : []),
+  ];
+
   const tsconfigFile = join(cwd, ".adk_tsconfig.json");
   writeFileSync(
     tsconfigFile,
@@ -165,6 +178,7 @@ export async function adkCheck(
         strict: true,
         noEmit: true,
         skipLibCheck: true,
+        typeRoots,
         types: ["node"],
       },
       include: [basename(checkFile)],
