@@ -913,7 +913,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
-      let accessToken = await readRefSecret(name, "access_token");
+      let accessToken = await readRefSecret(name, "access_token")
+        ?? await readRefSecret(name, "api_key")
+        ?? await readRefSecret(name, "token");
 
       const doCall = async (token: string | null) => {
         // Direct MCP only for redirect/proxy agents with an MCP upstream.
