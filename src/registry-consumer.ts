@@ -129,8 +129,20 @@ async function resolveTemplates<T>(
 // ============================================
 
 /**
+ * Expand `$VAR` and `${VAR}` references in a string using process.env.
+ * Unresolved variables are left as-is (no silent empty-string replacement).
+ */
+function expandEnvVars(value: string): string {
+  return value.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (match, braced, bare) => {
+    const varName = braced ?? bare;
+    return process.env[varName] ?? match;
+  });
+}
+
+/**
  * Build auth headers for a registry based on its auth config and custom headers.
  * Merges typed auth (bearer, api-key) with arbitrary custom headers.
+ * Environment variable references ($VAR or ${VAR}) in header values are expanded.
  */
 function buildRegistryAuthHeaders(
   registry: ResolvedRegistry,
@@ -171,8 +183,11 @@ function buildRegistryAuthHeaders(
   }
 
   // Merge custom headers (these override auth-generated headers)
+  // Expand $VAR / ${VAR} env references in header values
   if (registry.headers) {
-    Object.assign(headers, registry.headers);
+    for (const [key, value] of Object.entries(registry.headers)) {
+      headers[key] = expandEnvVars(value);
+    }
   }
 
   return headers;
