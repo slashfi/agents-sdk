@@ -114,7 +114,7 @@ export async function adkCheck(
   let checkFile: string;
   let originalFile: string | undefined;
   const cleanup: string[] = [];
-  const PREAMBLE_CHECK = makePreambleCheck("@slashfi/agents-sdk");
+  const PREAMBLE_CHECK = makePreambleCheck(sdkPath);
 
   if (isInline) {
     cwd = process.cwd();
