@@ -1072,9 +1072,12 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         const toStorageKey = (headerName: string) =>
           headerName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
 
-        // config.headers: { "Header-Name": "value" } — check by header name
+        // config.headers: { "Header-Name": "value" } — check by header name (case-insensitive)
         const configHeaders = (entry?.config as Record<string, unknown> | undefined)?.headers as
           Record<string, unknown> | undefined;
+        const configHeaderKeys = configHeaders ? Object.keys(configHeaders) : [];
+        const hasConfigHeader = (name: string) =>
+          configHeaderKeys.some((k) => k.toLowerCase() === name.toLowerCase());
 
         // Collect all declared header names from the security scheme
         const declaredHeaders: string[] = apiKeySec.headers
@@ -1085,7 +1088,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
         for (const headerName of declaredHeaders) {
           const storageKey = toStorageKey(headerName);
-          const inConfigHeaders = !!configHeaders?.[headerName];
+          const inConfigHeaders = hasConfigHeader(headerName);
           const inLegacyKeys = configKeys.includes(storageKey) || configKeys.includes("api_key");
           fields[storageKey] = {
             required: true,
@@ -1174,7 +1177,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             // Check: credentials param → existing config.headers → legacy config key → resolve callback
             const value = opts?.credentials?.[storageKey]
               ?? opts?.credentials?.[headerName]
-              ?? existingHeaders?.[headerName]
+              ?? (existingHeaders && Object.entries(existingHeaders).find(([k]) => k.toLowerCase() === headerName.toLowerCase())?.[1])
               ?? opts?.apiKey
               ?? await readRefSecret(name, storageKey)
               ?? await tryResolve(storageKey);
