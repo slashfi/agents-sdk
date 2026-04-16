@@ -1072,23 +1072,35 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         const toStorageKey = (headerName: string) =>
           headerName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
 
-        if (apiKeySec.headers && Object.keys(apiKeySec.headers).length > 0) {
-          // Multi-key mode
-          for (const headerName of Object.keys(apiKeySec.headers)) {
-            const storageKey = toStorageKey(headerName);
-            fields[storageKey] = {
-              required: true,
-              automated: false,
-              present: configKeys.includes(storageKey),
-              resolvable: await canResolve(storageKey),
-            };
-          }
-        } else {
-          // Single-key mode (backwards compat)
+        // config.headers: { "Header-Name": "value" } — check by header name
+        const configHeaders = (entry?.config as Record<string, unknown> | undefined)?.headers as
+          Record<string, unknown> | undefined;
+
+        // Collect all declared header names from the security scheme
+        const declaredHeaders: string[] = apiKeySec.headers
+          ? Object.keys(apiKeySec.headers)
+          : apiKeySec.name
+            ? [apiKeySec.name]
+            : [];
+
+        for (const headerName of declaredHeaders) {
+          const storageKey = toStorageKey(headerName);
+          const inConfigHeaders = !!configHeaders?.[headerName];
+          const inLegacyKeys = configKeys.includes(storageKey) || configKeys.includes("api_key");
+          fields[storageKey] = {
+            required: true,
+            automated: false,
+            present: inConfigHeaders || inLegacyKeys,
+            resolvable: await canResolve(storageKey),
+          };
+        }
+
+        // Fallback: no headers declared at all → generic api_key field
+        if (declaredHeaders.length === 0) {
           fields.api_key = {
             required: true,
             automated: false,
-            present: configKeys.includes("api_key"),
+            present: !!configHeaders || configKeys.includes("api_key"),
             resolvable: await canResolve("api_key"),
           };
         }
@@ -1142,23 +1154,39 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         const toStorageKey = (headerName: string) =>
           headerName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
 
-        if (apiKeySec.headers && Object.keys(apiKeySec.headers).length > 0) {
-          // Multi-key mode: iterate all declared headers
-          const missingFields: AuthChallengeField[] = [];
-          const resolvedKeys: Array<{ storageKey: string; value: string }> = [];
+        // Check existing config.headers
+        const existingHeaders = ((entry.config ?? {}) as Record<string, unknown>).headers as
+          Record<string, string> | undefined;
 
-          for (const [headerName, meta] of Object.entries(apiKeySec.headers)) {
+        // Collect declared headers: from security.headers or security.name
+        const declaredHeaders: Array<{ headerName: string; description?: string }> = apiKeySec.headers
+          ? Object.entries(apiKeySec.headers).map(([h, meta]) => ({ headerName: h, description: meta.description }))
+          : apiKeySec.name
+            ? [{ headerName: apiKeySec.name }]
+            : [];
+
+        if (declaredHeaders.length > 0) {
+          const missingFields: AuthChallengeField[] = [];
+          const resolvedHeaders: Record<string, string> = {};
+
+          for (const { headerName, description } of declaredHeaders) {
             const storageKey = toStorageKey(headerName);
-            const value = opts?.credentials?.[storageKey] ?? await tryResolve(storageKey);
+            // Check: credentials param → existing config.headers → legacy config key → resolve callback
+            const value = opts?.credentials?.[storageKey]
+              ?? opts?.credentials?.[headerName]
+              ?? existingHeaders?.[headerName]
+              ?? opts?.apiKey
+              ?? await readRefSecret(name, storageKey)
+              ?? await tryResolve(storageKey);
 
             if (value) {
-              resolvedKeys.push({ storageKey, value });
+              resolvedHeaders[headerName] = value;
             } else {
               missingFields.push({
                 name: storageKey,
                 label: headerName,
                 secret: true,
-                description: meta.description,
+                description,
               });
             }
           }
@@ -1166,13 +1194,18 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           if (missingFields.length > 0) {
             return { type: "apiKey", complete: false, fields: missingFields };
           }
-          for (const { storageKey, value } of resolvedKeys) {
-            await storeRefSecret(name, storageKey, value);
+
+          // Store as config.headers for the ref.call path to forward
+          const encKey = options.encryptionKey;
+          const headersToStore: Record<string, string> = {};
+          for (const [h, v] of Object.entries(resolvedHeaders)) {
+            headersToStore[h] = encKey ? `${SECRET_PREFIX}${await encryptSecret(v, encKey)}` : v;
           }
+          await ref.update(name, { config: { headers: headersToStore } });
           return { type: "apiKey", complete: true };
         }
 
-        // Single-key mode (backwards compat)
+        // Fallback: no headers declared → generic api_key
         const key = opts?.credentials?.["api_key"] ?? opts?.apiKey ?? await tryResolve("api_key");
         if (!key) {
           return {
@@ -1180,11 +1213,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             complete: false,
             fields: [{
               name: "api_key",
-              label: apiKeySec.name ?? "API Key",
+              label: "API Key",
               secret: true,
-              description: apiKeySec.prefix
-                ? `Value sent as "${apiKeySec.prefix} <key>"`
-                : undefined,
             }],
           };
         }
