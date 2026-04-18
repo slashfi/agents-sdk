@@ -10,7 +10,7 @@
  *   run <file>       Type-check + execute a file
  *   run -e "code"    Type-check + execute inline code
  *   registry <op>    Manage registry connections (add, remove, list, browse, inspect, test)
- *   ref <op>         Manage agent refs (add, remove, list, get, inspect, call, resources, read)
+ *   ref <op>         Manage agent refs (add, remove, list, inspect, call, resources, read)
  *
  * @example
  * ```bash
@@ -71,7 +71,6 @@ const HELP_SECTIONS: Record<string, string> = {
   adk ref add <name> --url <url>         Install from a direct URL
   adk ref remove <name>
   adk ref list
-  adk ref get <name>
   adk ref inspect <name> [--full]
   adk ref call <name> <tool> [params_json]
   adk ref resources <name>
@@ -122,7 +121,6 @@ Ref operations:
   adk ref add <ref> [--registry <name>] [--as <alias>] [--url <url>] [--scheme mcp|https|registry]
   adk ref remove <name>
   adk ref list
-  adk ref get <name>
   adk ref inspect <name> [--full]
   adk ref call <name> <tool> [params_json]
   adk ref resources <name>
@@ -389,14 +387,6 @@ async function runRef() {
       }
       break;
     }
-    case "get": {
-      const name = args[2];
-      if (!name) { console.error("Usage: adk ref get <name>"); process.exit(1); }
-      const entry = await adk.ref.get(name);
-      if (!entry) { console.error(`Not found: ${name}`); process.exit(1); }
-      console.log(JSON.stringify(entry, null, 2));
-      break;
-    }
     case "inspect": {
       const name = args[2];
       if (!name) { console.error("Usage: adk ref inspect <name> [--full]"); process.exit(1); }
@@ -499,7 +489,7 @@ async function runRef() {
     }
     default:
       console.error(`Unknown ref operation: ${op}`);
-      console.error("Operations: add, remove, list, get, inspect, call, resources, read, auth, auth-status");
+      console.error("Operations: add, remove, list, inspect, call, resources, read, auth, auth-status");
       process.exit(1);
   }
 }
