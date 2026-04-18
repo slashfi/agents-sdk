@@ -75,7 +75,7 @@ const HELP_SECTIONS: Record<string, string> = {
   adk ref call <name> <tool> [params_json]
   adk ref resources <name>
   adk ref read <name> <uri> [uri...]
-  adk ref auth <name> [--api-key <key>]
+  adk ref auth <name> [--api-key <key>] [--<field> <value> ...]
   adk ref auth-status <name>
 
 Examples:
@@ -125,7 +125,7 @@ Ref operations:
   adk ref call <name> <tool> [params_json]
   adk ref resources <name>
   adk ref read <name> <uri> [uri...]
-  adk ref auth <name> [--api-key <key>]
+  adk ref auth <name> [--api-key <key>] [--<field> <value> ...]
   adk ref auth-status <name>
 
 Init targets (presets):
@@ -463,19 +463,14 @@ async function runRef() {
         break;
       }
 
-      if (status.security?.type === "apiKey" || status.security?.type === "http") {
-        console.error(`Provide a key: adk ref auth ${name} --api-key <your-key>`);
-        process.exit(1);
-      }
-
-      // OAuth — run locally with browser open
+      // authLocal handles both OAuth (browser redirect) and apiKey/http (local credential form)
       try {
         const result = await adk.ref.authLocal(name, {
           onAuthorizeUrl: (url) => {
-            console.log(`\nOpen this URL to authorize:\n\n  ${url}\n`);
+            console.log(`\nOpen this URL to authenticate:\n\n  ${url}\n`);
             const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
             import("node:child_process").then(({ exec }) => exec(`${opener} "${url}"`)).catch(() => {});
-            console.log("Waiting for callback ...");
+            console.log("Waiting ...");
           },
         });
         if (result.complete) {

@@ -353,6 +353,74 @@ function isUnauthorized(result: unknown): boolean {
   return false;
 }
 
+// ============================================
+// Local auth form HTML
+// ============================================
+
+const esc = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+function renderCredentialForm(name: string, fields: AuthChallengeField[], error?: string): string {
+  const fieldHtml = fields.map((f) => `
+      <div class="field">
+        <label for="${esc(f.name)}">${esc(f.label)}</label>
+        ${f.description ? `<p class="desc">${esc(f.description)}</p>` : ""}
+        <input id="${esc(f.name)}" name="${esc(f.name)}" type="${f.secret ? "password" : "text"}" required autocomplete="off" spellcheck="false" />
+      </div>`).join("");
+
+  const errorHtml = error
+    ? `<div class="error">${esc(error)}</div>`
+    : "";
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Authenticate \u2014 ${esc(name)}</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e5e5e5;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{background:#141414;border:1px solid #262626;border-radius:12px;padding:32px;width:100%;max-width:420px}
+h1{font-size:20px;font-weight:600;color:#fafafa;margin-bottom:4px}
+.sub{font-size:14px;color:#a3a3a3;margin-bottom:24px}
+.field{margin-bottom:16px}
+label{display:block;font-size:13px;font-weight:500;color:#d4d4d4;margin-bottom:6px}
+.desc{font-size:12px;color:#737373;margin-bottom:6px}
+input{width:100%;padding:10px 12px;background:#0a0a0a;border:1px solid #333;border-radius:8px;color:#fafafa;font-size:14px;font-family:'SF Mono',Menlo,Consolas,monospace;outline:none;transition:border-color .15s}
+input:focus{border-color:#3b82f6}
+button{width:100%;padding:10px;background:#f5f5f5;color:#0a0a0a;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px;transition:background .15s}
+button:hover{background:#e5e5e5}
+.error{font-size:13px;color:#f87171;margin-bottom:16px;padding:10px 12px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);border-radius:8px}
+</style></head><body>
+<div class="card">
+  <h1>Authenticate</h1>
+  <p class="sub">${esc(name)}</p>
+  ${errorHtml}
+  <form method="POST">${fieldHtml}
+    <button type="submit">Authenticate</button>
+  </form>
+</div>
+</body></html>`;
+}
+
+function renderAuthSuccess(name: string): string {
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Authenticated \u2014 ${esc(name)}</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e5e5e5;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{background:#141414;border:1px solid #262626;border-radius:12px;padding:32px 48px;width:100%;max-width:420px;text-align:center}
+.icon{font-size:48px;margin-bottom:16px;color:#22c55e}
+h1{font-size:20px;font-weight:600;color:#fafafa;margin-bottom:4px}
+p{font-size:14px;color:#a3a3a3}
+</style></head><body>
+<div class="card">
+  <div class="icon">&#10003;</div>
+  <h1>Authenticated</h1>
+  <p>${esc(name)} is ready to use. You can close this tab.</p>
+</div>
+</body></html>`;
+}
+
 export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
   async function readConfig(): Promise<ConsumerConfig> {
@@ -1392,19 +1460,88 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const result = await ref.auth(name);
 
       if (result.complete) return { complete: true };
+
+      const port = options.oauthCallbackPort ?? 8919;
+      const timeout = opts?.timeoutMs ?? 300_000;
+      const { createServer } = await import("node:http");
+
+      // API key / HTTP auth — serve a local credential form
+      if (result.fields && result.fields.length > 0 && result.type !== "oauth2") {
+        return new Promise<{ complete: boolean }>((resolve, reject) => {
+          const server = createServer(async (req, res) => {
+            const reqUrl = new URL(req.url ?? "/", `http://localhost:${port}`);
+
+            if (req.method === "GET" && reqUrl.pathname === "/auth") {
+              res.writeHead(200, { "Content-Type": "text/html" });
+              res.end(renderCredentialForm(name, result.fields!));
+              return;
+            }
+
+            if (req.method === "POST" && reqUrl.pathname === "/auth") {
+              const chunks: Buffer[] = [];
+              for await (const chunk of req) chunks.push(chunk as Buffer);
+              const body = Buffer.concat(chunks).toString();
+              const params = new URLSearchParams(body);
+
+              const credentials: Record<string, string> = {};
+              for (const field of result.fields!) {
+                const val = params.get(field.name);
+                if (val) credentials[field.name] = val;
+              }
+
+              try {
+                const authResult = await ref.auth(name, { credentials });
+                if (authResult.complete) {
+                  res.writeHead(200, { "Content-Type": "text/html" });
+                  res.end(renderAuthSuccess(name));
+                  server.close();
+                  resolve({ complete: true });
+                } else {
+                  res.writeHead(200, { "Content-Type": "text/html" });
+                  res.end(renderCredentialForm(
+                    name,
+                    authResult.fields ?? result.fields!,
+                    "Some credentials were missing or invalid.",
+                  ));
+                }
+              } catch (err) {
+                res.writeHead(500, { "Content-Type": "text/html" });
+                res.end(renderCredentialForm(
+                  name,
+                  result.fields!,
+                  err instanceof Error ? err.message : String(err),
+                ));
+              }
+              return;
+            }
+
+            res.writeHead(404);
+            res.end();
+          });
+
+          server.listen(port, () => {
+            if (opts?.onAuthorizeUrl) {
+              opts.onAuthorizeUrl(`http://localhost:${port}/auth`);
+            }
+          });
+
+          const timer = setTimeout(() => {
+            server.close();
+            reject(new Error("Auth timed out"));
+          }, timeout);
+          server.on("close", () => clearTimeout(timer));
+        });
+      }
+
+      // OAuth2 — open authorize URL and wait for callback
       if (result.type !== "oauth2" || !result.authorizeUrl) {
-        throw new Error(`authLocal only handles OAuth2. Auth type: ${result.type}`);
+        throw new Error(`authLocal cannot handle auth type: ${result.type}`);
       }
 
       if (opts?.onAuthorizeUrl) {
         opts.onAuthorizeUrl(result.authorizeUrl);
       }
 
-      // Spin up local callback server
-      const port = options.oauthCallbackPort ?? 8919;
-      const timeout = opts?.timeoutMs ?? 300_000;
-
-      const { createServer } = await import("node:http");
       return new Promise<{ complete: boolean }>((resolve, reject) => {
         const server = createServer(async (req, res) => {
           const reqUrl = new URL(req.url ?? "/", `http://localhost:${port}`);
