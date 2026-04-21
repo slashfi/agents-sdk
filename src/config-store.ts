@@ -976,7 +976,15 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         found = true;
         const updated = { ...r };
         if (updates.url) updated.url = updates.url;
-        if (updates.as) updated.as = updates.as;
+        // Rename: prefer `name`, fall back to legacy `as`. When the
+        // caller passes `name`, clear the legacy `as` so the stored
+        // entry has one source of truth.
+        if (updates.name !== undefined) {
+          updated.name = updates.name;
+          if (updated.as !== undefined) updated.as = undefined;
+        } else if (updates.as !== undefined) {
+          updated.as = updates.as;
+        }
         if (updates.scheme) updated.scheme = updates.scheme;
         if (updates.config) updated.config = { ...updated.config, ...updates.config };
         if (updates.sourceRegistry) updated.sourceRegistry = updates.sourceRegistry;
