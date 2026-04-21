@@ -10,6 +10,7 @@
  * Filtering happens in the callback, not the API.
  */
 
+import { getDefaultLogger, type Logger } from "./logger.js";
 import type { AgentDefinition, CallAgentRequest, CallAgentResponse } from "./types.js";
 // =============================================================================
 // Event Types
@@ -293,11 +294,17 @@ export interface EventBus {
   ): void;
 }
 
+export interface EventBusOptions {
+  /** Logger for listener errors (default: module-level default logger) */
+  logger?: Logger;
+}
+
 /**
  * Create an event bus.
  */
-export function createEventBus(): EventBus {
+export function createEventBus(options: EventBusOptions = {}): EventBus {
   const listeners: ListenerEntry[] = [];
+  const logger = options.logger ?? getDefaultLogger();
 
   function on<T extends EventType>(
     eventType: T,
@@ -346,11 +353,14 @@ export function createEventBus(): EventBus {
       try {
         await listener.callback(event as never);
       } catch (err) {
-        // Never propagate listener errors — log and continue
-        console.error(
-          `[agents-sdk] Event listener error for ${event.type}:`,
-          err,
-        );
+        // Never propagate listener errors — log and continue.
+        // Structured fields so Datadog keeps the whole record as one event.
+        logger.error("event_listener_error", {
+          component: "agents-sdk.events",
+          event_type: event.type,
+          agent_path: event.agentPath,
+          error: err,
+        });
       }
     }
   }

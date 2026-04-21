@@ -27,6 +27,8 @@ import type {
   ResolvedRegistry,
 } from "./define-config.js";
 import { normalizeRef } from "./define-config.js";
+import type { FetchFn } from "./fetch-types.js";
+import type { Logger } from "./logger.js";
 import { createRegistryConsumer } from "./registry-consumer.js";
 import type {
   AgentListing,
@@ -94,6 +96,23 @@ export interface AdkOptions {
    * (e.g. client_id/client_secret) before the user auth flow runs.
    */
   resolveCredentials?: ResolveCredentials;
+  /**
+   * Custom fetch implementation. Forwarded to every `createRegistryConsumer`
+   * call spun up internally by the adk (consumer(), available(), registry.test()).
+   *
+   * Hosts running inside a long-lived server (e.g. atlas) should pass a
+   * hardened fetch — one backed by a connection pool with short timeouts,
+   * TCP keepalive, and one-shot retry on connection errors — to avoid
+   * dead-socket hangs when upstream pods roll. Defaults to `globalThis.fetch`.
+   */
+  fetch?: FetchFn;
+  /**
+   * Structured logger. Currently reserved for future use; the adk itself
+   * does not emit logs today but may in future versions. Threading this in
+   * now lets hosts standardize on a single logger across all sdk surfaces
+   * (`createAgentRegistry`, `createAgentServer`, `createAdk`, etc.).
+   */
+  logger?: Logger;
 }
 
 export interface RegistryTestResult {
@@ -647,7 +666,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
     return createRegistryConsumer(
       { registries: resolved, refs: config.refs ?? [] },
-      { token: options.token },
+      { token: options.token, fetch: options.fetch },
     );
   }
 
@@ -685,7 +704,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
     return createRegistryConsumer(
       { registries: resolved, refs: config.refs ?? [] },
-      { token: options.token },
+      { token: options.token, fetch: options.fetch },
     );
   }
 
@@ -793,7 +812,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           const url = registryUrl(r);
           const rName = registryDisplayName(r);
           try {
-            const consumer = await createRegistryConsumer({ registries: [r] }, { token: options.token });
+            const consumer = await createRegistryConsumer(
+              { registries: [r] },
+              { token: options.token, fetch: options.fetch },
+            );
             const disc = await consumer.discover(url);
             return { name: rName, url, status: "active", issuer: disc.issuer };
           } catch (err: unknown) {

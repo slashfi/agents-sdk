@@ -21,6 +21,7 @@ import {
   generateKeyPair,
   importJWK,
 } from "jose";
+import { getDefaultLogger, type Logger } from "./logger.js";
 
 // ── Types ──
 
@@ -88,6 +89,11 @@ export interface KeyManagerOptions {
   tokenTtlSeconds?: number;
   /** Enable background key rotation (default: true). Set to false on read-only replicas. */
   enableRotation?: boolean;
+  /**
+   * Structured logger for rotation errors. Defaults to the module-level
+   * default logger (single-line JSON).
+   */
+  logger?: Logger;
 }
 
 // ── Constants ──
@@ -148,6 +154,7 @@ export async function createKeyManager(
     tokenTtlSeconds = 300,
     enableRotation = true,
   } = opts;
+  const logger = opts.logger ?? getDefaultLogger();
 
   let keys: CachedKey[] = [];
 
@@ -221,7 +228,11 @@ export async function createKeyManager(
         try {
           await checkAndRotate();
         } catch (err) {
-          console.error("[key-manager] Check/rotation failed:", err);
+          logger.error("key_rotation_failed", {
+            component: "agents-sdk.key-manager",
+            issuer,
+            error: err,
+          });
         }
       }, checkIntervalMs)
     : null;

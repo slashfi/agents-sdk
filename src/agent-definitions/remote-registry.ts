@@ -25,6 +25,8 @@
  */
 
 import { defineAgent, defineTool } from "../define.js";
+import type { FetchFn } from "../fetch-types.js";
+import { getDefaultLogger, type Logger } from "../logger.js";
 import type {
   AgentDefinition,
   IntegrationMethodResult,
@@ -40,6 +42,19 @@ export interface RemoteRegistryAgentOptions {
   signJwt: (claims: Record<string, unknown>) => Promise<string>;
   /** Add a trusted JWKS issuer (optional — for bidirectional trust) */
   addTrustedIssuer?: (issuerUrl: string) => Promise<void>;
+  /**
+   * Structured logger for connection-store traces and setup flow. Defaults
+   * to the module-level default logger. Traces are emitted at debug level.
+   */
+  logger?: Logger;
+  /**
+   * Custom fetch implementation for outbound JWKS / oauth/token / MCP calls
+   * to remote registries. Defaults to `globalThis.fetch`. Hosts in
+   * long-running processes should pass a hardened fetch (e.g. one backed
+   * by undici.Agent with short timeouts, keepalive, and retry) to avoid
+   * dead-socket hangs on rolling deploys.
+   */
+  fetch?: FetchFn;
 }
 
 /** Stored connection to a remote registry */
@@ -90,6 +105,8 @@ export function createRemoteRegistryAgent(
   options: RemoteRegistryAgentOptions,
 ): AgentDefinition {
   const { secretStore, signJwt, addTrustedIssuer } = options;
+  const logger = options.logger ?? getDefaultLogger();
+  const fetchFn: FetchFn = options.fetch ?? globalThis.fetch;
 
   // --- Connection storage (KV via SecretStore) ---
 
@@ -97,12 +114,11 @@ export function createRemoteRegistryAgent(
     ownerId: string,
     conn: RegistryConnection,
   ): Promise<void> {
-    console.error(
-      "[remote-registry] storeConnection for owner:",
-      ownerId,
-      "conn:",
-      conn.id,
-    );
+    logger.debug("remote_registry_store_connection", {
+      component: "agents-sdk.remote-registry",
+      owner_id: ownerId,
+      connection_id: conn.id,
+    });
     const all = await loadAllConnections(ownerId);
     all[conn.id] = conn;
     const value = JSON.stringify(all);
@@ -116,7 +132,10 @@ export function createRemoteRegistryAgent(
   async function loadAllConnections(
     ownerId: string,
   ): Promise<Record<string, RegistryConnection>> {
-    console.error("[remote-registry] loadAllConnections for owner:", ownerId);
+    logger.debug("remote_registry_load_connections", {
+      component: "agents-sdk.remote-registry",
+      owner_id: ownerId,
+    });
     if (secretStore.resolveByEntity) {
       const scope = { tenantId: ownerId };
       const secretIds = await secretStore.resolveByEntity(
@@ -156,7 +175,7 @@ export function createRemoteRegistryAgent(
     jwt: string,
     request: Record<string, unknown>,
   ): Promise<unknown> {
-    const res = await globalThis.fetch(url, {
+    const res = await fetchFn(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -299,10 +318,10 @@ export function createRemoteRegistryAgent(
     params: Record<string, unknown>,
     _ctx: ToolContext,
   ): Promise<IntegrationMethodResult> => {
-    console.log(
-      "[remote-registry] setupFn called with:",
-      JSON.stringify(params),
-    );
+    logger.debug("remote_registry_setup_called", {
+      component: "agents-sdk.remote-registry",
+      params,
+    });
     const url = params.url as string;
     const name = (params.name as string) ?? "registry";
     const oidcUserId = params.oidcUserId as string | undefined;
@@ -317,7 +336,7 @@ export function createRemoteRegistryAgent(
           action: "setup",
           type: "agent-registry",
         });
-        const tokenRes = await globalThis.fetch(`${baseUrl}/oauth/token`, {
+        const tokenRes = await fetchFn(`${baseUrl}/oauth/token`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -354,29 +373,39 @@ export function createRemoteRegistryAgent(
 
       // Phase 1: Verify JWKS at origin, establish trust, then request OIDC
       const jwksUri = `${new URL(baseUrl).origin}/.well-known/jwks.json`;
-      console.log("[setupFn] fetching JWKS:", jwksUri);
-      const jwksRes = await globalThis.fetch(jwksUri);
-      console.log("[setupFn] JWKS status:", jwksRes.status);
+      logger.debug("remote_registry_setup_fetching_jwks", {
+        component: "agents-sdk.remote-registry",
+        jwks_uri: jwksUri,
+      });
+      const jwksRes = await fetchFn(jwksUri);
+      logger.debug("remote_registry_setup_jwks_status", {
+        component: "agents-sdk.remote-registry",
+        status: jwksRes.status,
+      });
       if (!jwksRes.ok)
         return {
           success: false,
           error: `JWKS not reachable at ${jwksUri}`,
         };
       if (addTrustedIssuer) {
-        console.log("[setupFn] adding trusted issuer:", baseUrl);
+        logger.debug("remote_registry_setup_adding_trusted_issuer", {
+          component: "agents-sdk.remote-registry",
+          issuer: baseUrl,
+        });
         await addTrustedIssuer(baseUrl);
-        console.log("[setupFn] added trusted issuer");
       }
 
       // Request identity — atlas will return authorize URL for Slack OIDC
-      console.log("[setupFn] Phase 1: requesting identity via jwt_exchange");
+      logger.debug("remote_registry_setup_phase1_jwt_exchange", {
+        component: "agents-sdk.remote-registry",
+        target_url: `${baseUrl}/oauth/token`,
+      });
       const jwt = await signJwt({
         action: "setup",
         type: "agent-registry",
         targetUrl: url,
       });
-      console.log("[setupFn] POSTing to:", `${baseUrl}/oauth/token`);
-      const tokenRes = await globalThis.fetch(`${baseUrl}/oauth/token`, {
+      const tokenRes = await fetchFn(`${baseUrl}/oauth/token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -386,12 +415,11 @@ export function createRemoteRegistryAgent(
           redirect_uri: params.redirect_uri ?? "",
         }),
       });
-      console.log("[setupFn] token status:", tokenRes.status);
       const tokenData = (await tokenRes.json()) as OAuthTokenJsonBody;
-      console.log(
-        "[setupFn] tokenData:",
-        JSON.stringify(tokenData).substring(0, 300),
-      );
+      logger.debug("remote_registry_setup_phase1_response", {
+        component: "agents-sdk.remote-registry",
+        status: tokenRes.status,
+      });
 
       // If already set up (user linked), store connection directly
       if (tokenData.access_token) {
@@ -460,7 +488,7 @@ export function createRemoteRegistryAgent(
         action: "connect",
         type: "agent-registry",
       });
-      const tokenRes = await globalThis.fetch(`${conn.url}/oauth/token`, {
+      const tokenRes = await fetchFn(`${conn.url}/oauth/token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -532,7 +560,7 @@ export function createRemoteRegistryAgent(
           const base = url.replace(/\/$/, "");
           const origin = new URL(base).origin;
           const jwksUri = `${origin}/.well-known/jwks.json`;
-          const res = await globalThis.fetch(jwksUri);
+          const res = await fetchFn(jwksUri);
           if (!res.ok) {
             return {
               success: false,
