@@ -257,7 +257,7 @@ async function runRegistry() {
       const agents = await adk.registry.browse(name, query);
       console.log(`\n${agents.length} agent(s)${query ? ` matching "${query}"` : ""}\n`);
       for (const a of agents) {
-        const toolCount = a.toolCount ?? a.tools?.length ?? 0;
+        const toolCount = a.toolCount ?? 0;
         console.log(`  ${a.path} (${toolCount} tools)`);
         if (a.description) console.log(`    ${a.description.slice(0, 120)}`);
         console.log();

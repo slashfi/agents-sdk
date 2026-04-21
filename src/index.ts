@@ -324,6 +324,9 @@ export type {
   RegistryConsumer,
   RegistryConsumerOptions,
   RegistryConfiguration,
+  AgentBase,
+  AgentListEntry,
+  AgentInspection,
   AgentListing,
   SecretResolver,
 } from "./registry-consumer.js";

@@ -209,23 +209,14 @@ export interface RegistryConfiguration {
   supported_grant_types?: string[];
 }
 
-/** An agent definition as listed by a registry */
-export interface AgentListing {
+/** Fields common to every agent reference a registry can return. */
+export interface AgentBase {
   /** Agent path (e.g., '@notion') */
   path: string;
   /** Description */
   description?: string;
   /** Publisher (registry name) */
   publisher: string;
-  /** Tools available */
-  tools?: Array<{
-    name: string;
-    description?: string;
-  }>;
-  /** Number of tools — returned by `list_agents` without the full `tools` array */
-  toolCount?: number;
-  /** Whether it requires auth */
-  requiresAuth?: boolean;
   /** Security scheme summary (machine-readable auth type) */
   security?: SecuritySchemeSummary;
   /** Available resources (e.g., AUTH.md) */
@@ -234,7 +225,39 @@ export interface AgentListing {
     name?: string;
     mimeType?: string;
   }>;
-  /** Slim tool summaries (when describe_tools called without full: true) */
+}
+
+/**
+ * Lightweight agent entry returned by `list_agents` / `consumer.list()` /
+ * `consumer.browse()` / `consumer.available()`. Registries emit a `toolCount`
+ * instead of the full `tools` array to keep listings small; call `inspect()`
+ * to get the per-tool details.
+ */
+export interface AgentListEntry extends AgentBase {
+  /** Number of tools this agent exposes */
+  toolCount?: number;
+  /** Whether the agent requires auth (populated only for direct MCP/HTTPS refs) */
+  requiresAuth?: boolean;
+  /** Integration config if applicable */
+  integration?: {
+    provider: string;
+    displayName: string;
+    category?: string;
+  };
+}
+
+/**
+ * Full agent detail returned by `describe_tools` / `consumer.inspect()`.
+ * Carries the actual tool definitions (or slim summaries) and extra context
+ * the listing endpoint omits.
+ */
+export interface AgentInspection extends AgentBase {
+  /** Full tool details (returned when `full: true`) */
+  tools?: Array<{
+    name: string;
+    description?: string;
+  }>;
+  /** Slim tool summaries (returned when `full` is not set) */
   toolSummaries?: Array<{
     name: string;
     description: string;
@@ -244,16 +267,16 @@ export interface AgentListing {
   context?: string;
   /** Upstream MCP/API URL for direct connections */
   upstream?: string;
-  /** Integration config if applicable */
-  integration?: {
-    provider: string;
-    displayName: string;
-    category?: string;
-  };
+  /** Agent mode (redirect | proxy | api) */
+  mode?: string;
 }
 
+/** @deprecated Prefer `AgentListEntry` (for listings) or `AgentInspection` (for inspect results). */
+export type AgentListing = AgentListEntry | AgentInspection;
+
 /** Raw agent entry returned by the list_agents MCP tool (before normalization). */
-type ListAgentsEntry = Omit<AgentListing, "publisher" | "tools"> & {
+type ListAgentsEntry = Omit<AgentListEntry, "publisher"> & {
+  /** Legacy field — older registries emitted `tools` instead of `toolCount`. */
   tools?: Array<{ name: string; description?: string } | string>;
 };
 
@@ -335,7 +358,7 @@ async function listFromMcpServer(
   url: string,
   auth: { token?: string; headers?: Record<string, string> },
   fetchFn: FetchFn,
-): Promise<AgentListing[]> {
+): Promise<AgentListEntry[]> {
   const serverUrl = url.replace(/\/$/, "");
 
   const headers: Record<string, string> = {
@@ -385,12 +408,13 @@ async function listFromMcpServer(
 
   const serverName = initResult?.serverInfo?.name ?? new URL(serverUrl).hostname;
 
-  // Return as a single agent listing with all tools
+  // Return as a single agent listing — toolCount keeps listings lightweight;
+  // callers that need per-tool detail should use `inspect()`.
   return [{
     path: serverName,
     description: `MCP server at ${serverUrl}`,
     publisher: serverName,
-    tools: toolsResult?.tools ?? [],
+    toolCount: toolsResult?.tools?.length ?? 0,
     requiresAuth: false,
   }];
 }
@@ -519,16 +543,14 @@ async function callMcpTool(
  * Returns a single generic 'call' tool since we can't auto-discover REST endpoints
  * without an OpenAPI spec.
  */
-function listFromHttpsApi(url: string): AgentListing[] {
+function listFromHttpsApi(url: string): AgentListEntry[] {
   const hostname = new URL(url).hostname;
   return [{
     path: hostname,
     description: `REST API at ${url}`,
     publisher: hostname,
-    tools: [{
-      name: "call",
-      description: "Make an HTTP request to the API. Params: method, path, body, headers.",
-    }],
+    // Single generic `call` tool — callers can use `inspect()` for details.
+    toolCount: 1,
     requiresAuth: false,
   }];
 }
@@ -600,7 +622,7 @@ export interface RegistryConsumerOptions {
 
 export interface RegistryConsumer {
   /** List all available agents across all connected registries */
-  list(): Promise<AgentListing[]>;
+  list(): Promise<AgentListEntry[]>;
 
   /** List configured refs (from the consumer's config) */
   refs(): ResolvedRef[];
@@ -619,14 +641,14 @@ export interface RegistryConsumer {
   discover(registryUrl: string): Promise<RegistryConfiguration>;
 
   /** Browse agents from a specific registry (or all if url omitted), with optional BM25 search */
-  browse(registryUrl?: string, query?: string): Promise<AgentListing[]>;
+  browse(registryUrl?: string, query?: string): Promise<AgentListEntry[]>;
 
   /** Inspect a specific agent — returns tools, auth requirements, resources */
   inspect(
     agentPath: string,
     registryUrl?: string,
     options?: { full?: boolean },
-  ): Promise<AgentListing | null>;
+  ): Promise<AgentInspection | null>;
 
   /** Resolve a secret URL to its value */
   resolveSecret(url: string): Promise<string>;
@@ -646,7 +668,7 @@ export interface RegistryConsumer {
   index(): ResolvedConfig;
 
   /** Diff: what's available vs what's configured */
-  available(): Promise<AgentListing[]>;
+  available(): Promise<AgentListEntry[]>;
 }
 
 /**
@@ -695,7 +717,7 @@ export async function createRegistryConsumer(
   async function listFromRegistry(
     registry: ResolvedRegistry,
     query?: string,
-  ): Promise<AgentListing[]> {
+  ): Promise<AgentListEntry[]> {
     const mcpUrl = registry.url.replace(/\/$/, "");
 
     const response = await callMcpTool(
@@ -717,15 +739,15 @@ export async function createRegistryConsumer(
     ) as ListAgentsResponse;
     const agents = data.agents ?? [];
 
-    return agents.map((agent) => ({
-      ...agent,
-      ...agent,
-      // Normalize tools: strings become { name } objects
-      tools: agent.tools?.map((t) =>
-        typeof t === "string" ? { name: t } : t,
-      ),
-      publisher: registry.publisher,
-    }));
+    return agents.map((agent) => {
+      // Legacy registries may still emit `tools` instead of `toolCount`; back-fill.
+      const { tools, toolCount, ...rest } = agent;
+      return {
+        ...rest,
+        publisher: registry.publisher,
+        toolCount: toolCount ?? tools?.length,
+      };
+    });
   }
 
   // Send any call_agent request through a registry's MCP endpoint
@@ -823,7 +845,7 @@ export async function createRegistryConsumer(
 
   // Build the consumer
   const consumer: RegistryConsumer = {
-    async list(): Promise<AgentListing[]> {
+    async list(): Promise<AgentListEntry[]> {
       // Collect from standard registries
       const registryResults = await Promise.allSettled(
         resolvedRegistries.map((r) => listFromRegistry(r)),
@@ -927,7 +949,7 @@ export async function createRegistryConsumer(
       return discover(registryUrl, registry);
     },
 
-    async browse(registryUrl?: string, query?: string): Promise<AgentListing[]> {
+    async browse(registryUrl?: string, query?: string): Promise<AgentListEntry[]> {
       // List agents from a specific registry, or all registries if not specified
       const targets = registryUrl
         ? resolvedRegistries.filter(
@@ -947,7 +969,7 @@ export async function createRegistryConsumer(
       agentPath: string,
       registryUrl?: string,
       options?: { full?: boolean },
-    ): Promise<AgentListing | null> {
+    ): Promise<AgentInspection | null> {
       const targetRegistries = registryUrl
         ? resolvedRegistries.filter((r) => r.url === registryUrl || r.name === registryUrl)
         : resolvedRegistries;
@@ -990,7 +1012,7 @@ export async function createRegistryConsumer(
             context: data.context,
             ...(data.upstream && { upstream: data.upstream }),
             ...(data.mode && { mode: data.mode }),
-          } as AgentListing;
+          } as AgentInspection;
         }),
       );
 
@@ -1020,7 +1042,7 @@ export async function createRegistryConsumer(
       };
     },
 
-    async available(): Promise<AgentListing[]> {
+    async available(): Promise<AgentListEntry[]> {
       const all = await consumer.list();
       const configuredRefs = new Set(resolvedRefs.map((r) => r.ref));
       return all.filter((a) => !configuredRefs.has(a.path));

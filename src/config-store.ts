@@ -31,7 +31,8 @@ import type { FetchFn } from "./fetch-types.js";
 import type { Logger } from "./logger.js";
 import { createRegistryConsumer } from "./registry-consumer.js";
 import type {
-  AgentListing,
+  AgentListEntry,
+  AgentInspection,
   RegistryConfiguration,
   RegistryConsumer,
 } from "./registry-consumer.js";
@@ -129,7 +130,7 @@ export interface AdkRegistryApi {
   list(): Promise<RegistryEntry[]>;
   get(name: string): Promise<RegistryEntry | null>;
   update(name: string, updates: Partial<RegistryEntry>): Promise<boolean>;
-  browse(name: string, query?: string): Promise<AgentListing[]>;
+  browse(name: string, query?: string): Promise<AgentListEntry[]>;
   inspect(name: string): Promise<RegistryConfiguration>;
   test(name?: string): Promise<RegistryTestResult[]>;
 }
@@ -217,7 +218,7 @@ export interface AdkRefApi {
   list(): Promise<ResolvedRef[]>;
   get(name: string): Promise<RefEntry | null>;
   update(name: string, updates: Partial<RefEntry>): Promise<boolean>;
-  inspect(name: string, options?: { full?: boolean }): Promise<AgentListing | null>;
+  inspect(name: string, options?: { full?: boolean }): Promise<AgentInspection | null>;
   call: AdkRefCallFn;
   resources(name: string): Promise<CallAgentResponse>;
   read(name: string, uris: string[]): Promise<CallAgentResponse>;
@@ -784,7 +785,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       return true;
     },
 
-    async browse(name: string, query?: string): Promise<AgentListing[]> {
+    async browse(name: string, query?: string): Promise<AgentListEntry[]> {
       const consumer = await buildConsumer(name);
       const config = await readConfig();
       const target = findRegistry(config.registries ?? [], name);
@@ -995,7 +996,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       return true;
     },
 
-    async inspect(name: string, opts?: { full?: boolean }): Promise<AgentListing | null> {
+    async inspect(name: string, opts?: { full?: boolean }): Promise<AgentInspection | null> {
       const config = await readConfig();
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
