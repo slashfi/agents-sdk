@@ -20,7 +20,6 @@
 import type { FsStore } from "./agent-definitions/config.js";
 import type {
   ConsumerConfig,
-  ProxyEntry,
   RefEntry,
   RegistryEntry,
   ResolvedRef,
@@ -265,14 +264,7 @@ export interface AdkRefApi {
   refreshToken(name: string): Promise<{ accessToken: string } | null>;
 }
 
-export interface AdkProxyApi {
-  add(entry: ProxyEntry): Promise<void>;
-  remove(name: string): Promise<boolean>;
-  list(): Promise<ProxyEntry[]>;
-}
-
 export interface Adk {
-  proxy: AdkProxyApi;
   registry: AdkRegistryApi;
   ref: AdkRefApi;
   readConfig(): Promise<ConsumerConfig>;
@@ -1697,33 +1689,5 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     return { refName: pending.refName, complete: true, stateContext };
   }
 
-  // ==========================================
-  // Proxy API
-  // ==========================================
-
-  const proxy: AdkProxyApi = {
-    async add(entry: ProxyEntry): Promise<void> {
-      const config = await readConfig();
-      const proxies = (config.proxies ?? []).filter((p) => p.name !== entry.name);
-      proxies.push(entry);
-      await writeConfig({ ...config, proxies });
-    },
-
-    async remove(name: string): Promise<boolean> {
-      const config = await readConfig();
-      if (!config.proxies?.length) return false;
-      const before = config.proxies.length;
-      const proxies = config.proxies.filter((p) => p.name !== name);
-      if (proxies.length === before) return false;
-      await writeConfig({ ...config, proxies });
-      return true;
-    },
-
-    async list(): Promise<ProxyEntry[]> {
-      const config = await readConfig();
-      return config.proxies ?? [];
-    },
-  };
-
-  return { proxy, registry, ref, readConfig, writeConfig, handleCallback };
+  return { registry, ref, readConfig, writeConfig, handleCallback };
 }

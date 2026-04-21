@@ -101,34 +101,11 @@ export type RefEntry = {
     };
 
 // ============================================
-// Proxy Config
-// ============================================
-
-/** A proxy target — remote adk server that handles ref/registry operations */
-export interface ProxyEntry {
-  /** Human-readable name */
-  name: string;
-  /** URL of the remote server */
-  url: string;
-  /** Connection type: 'mcp' (direct MCP server) or 'registry' (agent on a registry) */
-  type: 'mcp' | 'registry';
-  /** For type 'registry': the agent path that implements adk tools (e.g. '@config') */
-  agent?: string;
-  /** Auth for connecting to the proxy */
-  auth?: RegistryAuth;
-  /** Whether this is the default proxy when no local refs/registries exist */
-  default?: boolean;
-}
-
-// ============================================
 // Consumer Config
 // ============================================
 
 /** The full consumer configuration */
 export interface ConsumerConfig {
-  /** Remote adk proxies — forward operations to a remote server */
-  proxies?: ProxyEntry[];
-
   /** Registries to connect to, in resolution order */
   registries?: (string | RegistryEntry)[];
 

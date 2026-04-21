@@ -306,7 +306,6 @@ export {
 export type {
   RegistryAuth,
   RegistryEntry,
-  ProxyEntry,
   RefConfig,
   RefEntry,
   ConsumerConfig,
@@ -427,7 +426,6 @@ export { createAdk } from "./config-store.js";
 export type {
   Adk,
   AdkOptions,
-  AdkProxyApi,
   AdkRegistryApi,
   AdkRefApi,
   AdkAgentRegistry,
