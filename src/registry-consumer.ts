@@ -207,6 +207,16 @@ export interface RegistryConfiguration {
   jwks_uri?: string;
   token_endpoint?: string;
   supported_grant_types?: string[];
+  /**
+   * When the registry advertises proxy support in its `initialize` response,
+   * consumers can auto-populate `RegistryEntry.proxy` at add time so ref ops
+   * forward to the server-side adk-tools agent automatically.
+   */
+  proxy?: {
+    mode: "required" | "optional";
+    /** Agent path to forward to. Defaults to '@config'. */
+    agent?: string;
+  };
 }
 
 /** Fields common to every agent reference a registry can return. */
@@ -472,17 +482,34 @@ async function discoverRegistryViaMcp(
     clientInfo: { name: "agents-sdk-consumer", version: "1.0.0" },
   })) as {
     serverInfo?: { name?: string; version?: string };
+    capabilities?: {
+      registry?: {
+        proxy?: {
+          mode?: "required" | "optional";
+          agent?: string;
+        };
+      };
+    };
   };
 
   await rpc("notifications/initialized").catch(() => {});
 
   const issuer = issuerFromMcpUrlAndServerInfo(serverUrl, initResult?.serverInfo);
 
+  const advertisedProxy = initResult?.capabilities?.registry?.proxy;
+  const proxy = advertisedProxy?.mode
+    ? {
+        mode: advertisedProxy.mode,
+        ...(advertisedProxy.agent && { agent: advertisedProxy.agent }),
+      }
+    : undefined;
+
   return {
     issuer,
     jwks_uri: `${issuer}/.well-known/jwks.json`,
     token_endpoint: `${issuer}/oauth/token`,
     supported_grant_types: ["client_credentials", "jwt_exchange"],
+    ...(proxy && { proxy }),
   };
 }
 

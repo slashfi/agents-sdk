@@ -206,6 +206,17 @@ export interface AgentServerOptions {
     features?: string[];
     /** OAuth callback URL for shared OAuth flows */
     oauthCallbackUrl?: string;
+    /**
+     * Announce that ref operations for agents sourced from this registry
+     * should be forwarded to a server-side adk-tools agent instead of
+     * running locally. Consumers pick this up during `registry.add` and
+     * auto-populate `RegistryEntry.proxy` — no user flag needed.
+     */
+    proxy?: {
+      mode: "required" | "optional";
+      /** Agent path to forward to. Defaults to '@config'. */
+      agent?: string;
+    };
   };
   /**
    * Structured logger for server-side errors (tool-call failures, JWT
@@ -590,6 +601,14 @@ export function createAgentServer(
                 }),
                 ...(options.registry.oauthCallbackUrl && {
                   oauthCallbackUrl: options.registry.oauthCallbackUrl,
+                }),
+                ...(options.registry.proxy && {
+                  proxy: {
+                    mode: options.registry.proxy.mode,
+                    ...(options.registry.proxy.agent && {
+                      agent: options.registry.proxy.agent,
+                    }),
+                  },
                 }),
               },
             }),
