@@ -185,7 +185,7 @@ export async function runInit(adk: Adk, targets: SkillTarget[]): Promise<void> {
       if (agents.length > 0) {
         console.log(`\n${agents.length} agent(s) available on ${DEFAULT_REGISTRY_URL}:\n`);
         for (const a of agents) {
-          const toolCount = a.tools?.length ?? 0;
+          const toolCount = a.toolCount ?? a.tools?.length ?? 0;
           console.log(`  ${a.path} (${toolCount} tools)`);
           if (a.description) console.log(`    ${a.description.slice(0, 120)}`);
           console.log();

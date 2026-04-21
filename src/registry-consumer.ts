@@ -222,6 +222,8 @@ export interface AgentListing {
     name: string;
     description?: string;
   }>;
+  /** Number of tools — returned by `list_agents` without the full `tools` array */
+  toolCount?: number;
   /** Whether it requires auth */
   requiresAuth?: boolean;
   /** Security scheme summary (machine-readable auth type) */
