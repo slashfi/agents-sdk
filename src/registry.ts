@@ -7,6 +7,7 @@
 import { dirname, resolve } from "node:path";
 import type { AgentEvent, BaseEvent, CallAgentToolCallEvent, CustomEventMap, EventCallback, EventType, ListAgentsResult, ListAgentsToolCallEvent } from "./events.js";
 import { createEventBus } from "./events.js";
+import type { Logger } from "./logger.js";
 import type { SerializedAgentDefinition } from "./serialized.js";
 import type {
   AgentAction,
@@ -87,7 +88,11 @@ export interface AgentRegistryOptions {
   contextFactory?: ContextFactory;
   /** Lifecycle middleware hooks */
   middleware?: RegistryMiddleware;
-
+  /**
+   * Structured logger for SDK-internal events (listener errors, etc.).
+   * Defaults to the module-level default logger (JSON to stdout/stderr).
+   */
+  logger?: Logger;
 }
 
 /**
@@ -231,7 +236,7 @@ export function createAgentRegistry(
 ): AgentRegistry {
   const { defaultVisibility = "internal" } = options;
   const agents = new Map<string, AgentDefinition>();
-  const eventBus = createEventBus();
+  const eventBus = createEventBus({ logger: options.logger });
 
   /**
    * Check if agent supports the requested action.

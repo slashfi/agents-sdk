@@ -39,6 +39,7 @@ import type {
   ResolvedRegistry,
 } from "./define-config.js";
 import type { CallAgentRequest } from "./call-agent-schema.js";
+import type { FetchFn } from "./fetch-types.js";
 import type { SecuritySchemeSummary, CallAgentResponse } from "./types.js";
 import {
   isSecretUri,
@@ -331,7 +332,7 @@ async function defaultSecretResolver(
 async function listFromMcpServer(
   url: string,
   auth: { token?: string; headers?: Record<string, string> },
-  fetchFn: typeof globalThis.fetch,
+  fetchFn: FetchFn,
 ): Promise<AgentListing[]> {
   const serverUrl = url.replace(/\/$/, "");
 
@@ -409,7 +410,7 @@ function issuerFromMcpUrlAndServerInfo(
 async function discoverRegistryViaMcp(
   registryUrl: string,
   authHeaders: Record<string, string>,
-  fetchFn: typeof globalThis.fetch,
+  fetchFn: FetchFn,
 ): Promise<RegistryConfiguration> {
   const serverUrl = registryUrl.replace(/\/$/, "");
   const headers: Record<string, string> = {
@@ -467,7 +468,7 @@ async function callMcpTool(
   toolName: string,
   params: Record<string, unknown>,
   auth: { token?: string; headers?: Record<string, string> },
-  fetchFn: typeof globalThis.fetch,
+  fetchFn: FetchFn,
 ): Promise<unknown> {
   const serverUrl = url.replace(/\/$/, "");
   const headers: Record<string, string> = {
@@ -539,7 +540,7 @@ async function callHttpsTool(
   _toolName: string,
   params: Record<string, unknown>,
   auth: { token?: string; headers?: Record<string, string> },
-  fetchFn: typeof globalThis.fetch,
+  fetchFn: FetchFn,
 ): Promise<unknown> {
   const method = (params.method as string) ?? "GET";
   const path = (params.path as string) ?? "";
@@ -582,8 +583,13 @@ export interface RegistryConsumerOptions {
   /** Bearer token for authenticated registries */
   token?: string;
 
-  /** Custom fetch implementation */
-  fetch?: typeof globalThis.fetch;
+  /**
+   * Custom fetch implementation. Forwarded to every outbound HTTP call the
+   * consumer makes (discovery, jwks, callRegistry, secret resolve). Hosts
+   * running in long-lived servers should pass a hardened fetch to avoid
+   * dead-socket hangs on rolling deploys.
+   */
+  fetch?: FetchFn;
 }
 
 // ============================================
@@ -651,7 +657,7 @@ export async function createRegistryConsumer(
   config: ConsumerConfig,
   options: RegistryConsumerOptions = {},
 ): Promise<RegistryConsumer> {
-  const fetchFn = options.fetch ?? globalThis.fetch;
+  const fetchFn: FetchFn = options.fetch ?? globalThis.fetch;
   const resolveSecretFn = options.resolveSecret ?? defaultSecretResolver;
 
   // Normalize registries

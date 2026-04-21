@@ -44,6 +44,7 @@ import {
   verifyJwtFromIssuer,
   verifyJwtLocal,
 } from "./jwt.js";
+import { getDefaultLogger, type Logger } from "./logger.js";
 import { type OIDCProviderConfig, createOIDCSignIn } from "./oidc-signin.js";
 import type { AgentRegistry } from "./registry.js";
 import {
@@ -206,6 +207,12 @@ export interface AgentServerOptions {
     /** OAuth callback URL for shared OAuth flows */
     oauthCallbackUrl?: string;
   };
+  /**
+   * Structured logger for server-side errors (tool-call failures, JWT
+   * exchange errors, request errors, etc.). Defaults to the module-level
+   * default logger (single-line JSON).
+   */
+  logger?: Logger;
 }
 
 export interface AgentServer {
@@ -522,6 +529,7 @@ export function createAgentServer(
     secretStore,
     oauthIdentityProvider,
   } = options;
+  const logger = options.logger ?? getDefaultLogger();
 
   // Build tool definitions and validation schemas from overrides
   const toolDefs = getToolDefinitions(options.schemas);
@@ -607,7 +615,13 @@ export function createAgentServer(
           const result = await handleToolCall(name, args ?? {}, auth);
           return jsonRpcSuccess(request.id, result);
         } catch (err) {
-          console.error("[server] Tool call error:", err);
+          logger.error("mcp_tool_call_error", {
+            component: "agents-sdk.server",
+            tool: name,
+            caller_id: auth?.callerId,
+            caller_type: auth?.callerType,
+            error: err,
+          });
           return jsonRpcSuccess(
             request.id,
             mcpResult(
@@ -907,22 +921,24 @@ export function createAgentServer(
                 callerType: "system",
               });
               if (addResult.success) {
-                console.error(
-                  `[jwt_exchange] Reverse connection stored for ${assertionPayload.iss}`,
-                );
+                logger.info("jwt_exchange_reverse_connection_stored", {
+                  component: "agents-sdk.server",
+                  issuer: assertionPayload.iss,
+                });
               } else {
-                console.error(
-                  "[jwt_exchange] Reverse connection failed:",
-                  addResult.error,
-                );
+                logger.error("jwt_exchange_reverse_connection_failed", {
+                  component: "agents-sdk.server",
+                  issuer: assertionPayload.iss,
+                  error: addResult.error,
+                });
               }
             }
           }
         } catch (reverseErr) {
-          console.error(
-            "[jwt_exchange] Reverse registration check failed:",
-            reverseErr,
-          );
+          logger.error("jwt_exchange_reverse_registration_failed", {
+            component: "agents-sdk.server",
+            error: reverseErr,
+          });
         }
 
         if (!exchangeResult) {
@@ -988,7 +1004,10 @@ export function createAgentServer(
 
         return jsonResponse(exchangeResult);
       } catch (err) {
-        console.error("[oauth] JWT exchange error:", err);
+        logger.error("oauth_jwt_exchange_error", {
+          component: "agents-sdk.server",
+          error: err,
+        });
         return jsonResponse(
           {
             error: "server_error",
@@ -1061,7 +1080,10 @@ export function createAgentServer(
           refresh_token: tokenResult.refreshToken,
         });
       } catch (err) {
-        console.error("[oauth] Token error:", err);
+        logger.error("oauth_token_error", {
+          component: "agents-sdk.server",
+          error: err,
+        });
         return jsonResponse(
           { error: "server_error", error_description: "Token exchange failed" },
           500,
@@ -1190,36 +1212,31 @@ export function createAgentServer(
         const allIssuerUrls = [
           ...new Set([...storeIssuers, ...configIssuerUrls]),
         ];
-        console.log(
-          "[oauth/authorize] storeIssuers:",
-          storeIssuers.length,
-          "configIssuers:",
-          configIssuerUrls.length,
-          "total:",
-          allIssuerUrls.length,
-          "urls:",
-          allIssuerUrls,
-        );
+        logger.debug("oauth_authorize_issuer_check", {
+          component: "agents-sdk.server",
+          store_issuers: storeIssuers.length,
+          config_issuers: configIssuerUrls.length,
+          total_issuers: allIssuerUrls.length,
+          issuer_urls: allIssuerUrls,
+        });
         for (const issuerUrl of allIssuerUrls) {
           try {
             const result = await verifyJwtFromIssuer(token, issuerUrl);
-            console.log(
-              "[oauth/authorize] verify",
-              issuerUrl,
-              "->",
-              result ? "OK" : "null",
-            );
+            logger.debug("oauth_authorize_verify", {
+              component: "agents-sdk.server",
+              issuer: issuerUrl,
+              ok: !!result,
+            });
             if (result) {
               claims = result as unknown as Record<string, unknown>;
               break;
             }
           } catch (e: unknown) {
-            console.log(
-              "[oauth/authorize] verify",
-              issuerUrl,
-              "-> ERROR:",
-              e instanceof Error ? e.message : String(e),
-            );
+            logger.debug("oauth_authorize_verify_error", {
+              component: "agents-sdk.server",
+              issuer: issuerUrl,
+              error: e,
+            });
           }
         }
         if (!claims) {
@@ -1500,7 +1517,12 @@ export function createAgentServer(
             const res = jsonResponse(jsonRpcSuccess(body.id, result));
             return cors ? addCors(res) : res;
           } catch (err) {
-            console.error("[server] Scoped tool call error:", err);
+            logger.error("mcp_scoped_tool_call_error", {
+              component: "agents-sdk.server",
+              caller_id: effectiveAuth?.callerId,
+              caller_type: effectiveAuth?.callerType,
+              error: err,
+            });
             const res = jsonResponse(
               jsonRpcSuccess(
                 body.id,
@@ -1534,7 +1556,12 @@ export function createAgentServer(
       );
       return cors ? addCors(res) : res;
     } catch (err) {
-      console.error("[server] Request error:", err);
+      logger.error("mcp_request_error", {
+        component: "agents-sdk.server",
+        method: req.method,
+        url: req.url,
+        error: err,
+      });
       const res = jsonResponse(
         {
           jsonrpc: "2.0",
@@ -1586,9 +1613,12 @@ export function createAgentServer(
         fetch,
       });
       this.url = `http://${hostname}:${port}`;
-      console.log(
-        `[agents-sdk] Server listening on http://${hostname}:${port}`,
-      );
+      logger.info("agent_server_listening", {
+        component: "agents-sdk.server",
+        url: this.url,
+        hostname,
+        port,
+      });
     },
 
     async stop() {
@@ -1644,7 +1674,11 @@ export function createAgentServer(
           issuer: issuerUrl,
           scopes: scopes ?? ["*"],
         });
-        console.error(`[agent-server] Added trusted issuer: ${issuerUrl}`);
+        logger.info("trusted_issuer_added", {
+          component: "agents-sdk.server",
+          issuer: issuerUrl,
+          scopes: scopes ?? ["*"],
+        });
       }
     },
   };

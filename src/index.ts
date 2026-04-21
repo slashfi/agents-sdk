@@ -126,6 +126,7 @@ export type {
 export { createEventBus } from "./events.js";
 export type {
   EventBus,
+  EventBusOptions,
   EventType,
   SystemEventType,
   CustomEventMap,
@@ -144,6 +145,18 @@ export type {
   SystemEventMap,
   ListenerEntry,
 } from "./events.js";
+
+// Logger
+export {
+  createConsoleJsonLogger,
+  createNoopLogger,
+  getDefaultLogger,
+  setDefaultLogger,
+} from "./logger.js";
+export type { LogFields, LogLevel, Logger } from "./logger.js";
+
+// Structural fetch type
+export type { FetchFn } from "./fetch-types.js";
 
 // Server
 export {
