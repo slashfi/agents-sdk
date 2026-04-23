@@ -626,3 +626,215 @@ describe("ADK registry proxy routing", () => {
     expect((result as { authorizeUrl?: string }).authorizeUrl).toBeUndefined();
   });
 });
+
+// ─── Registry auth lifecycle ─────────────────────────────────────
+
+describe("ADK registry auth lifecycle", () => {
+  const PORT = 19930;
+  const MCP_URL = `http://localhost:${PORT}/mcp`;
+  const AS_URL = `http://localhost:${PORT}`;
+
+  let mcpServer: ReturnType<typeof Bun.serve>;
+  let activeAccessToken = "access-token-v1";
+  let tokenExchangeCount = 0;
+  let tokenRefreshCount = 0;
+
+  beforeAll(() => {
+    // Fake registry that speaks MCP when authenticated, emits an RFC 6750
+    // challenge pointing at RFC 9728 metadata when not, and doubles as the
+    // OAuth authorization server (registration + authorize + token) so the
+    // whole adk registry.auth flow can run end-to-end in-process.
+    mcpServer = Bun.serve({
+      port: PORT,
+      async fetch(req) {
+        const url = new URL(req.url);
+        const path = url.pathname;
+
+        // RFC 9728 protected-resource metadata
+        if (path === "/.well-known/oauth-protected-resource") {
+          return Response.json({
+            resource: MCP_URL,
+            authorization_servers: [AS_URL],
+            scopes_supported: ["mcp:full"],
+            bearer_methods_supported: ["header"],
+          });
+        }
+
+        // RFC 8414 authorization-server metadata
+        if (path === "/.well-known/oauth-authorization-server") {
+          return Response.json({
+            issuer: AS_URL,
+            authorization_endpoint: `${AS_URL}/oauth/authorize`,
+            token_endpoint: `${AS_URL}/oauth/token`,
+            registration_endpoint: `${AS_URL}/oauth/register`,
+          });
+        }
+
+        // Dynamic client registration (RFC 7591)
+        if (path === "/oauth/register" && req.method === "POST") {
+          return Response.json({
+            client_id: "test-client-id",
+            client_secret: "test-client-secret",
+          });
+        }
+
+        // Token endpoint — supports authorization_code + refresh_token grants
+        if (path === "/oauth/token" && req.method === "POST") {
+          const body = new URLSearchParams(await req.text());
+          const grant = body.get("grant_type");
+          if (grant === "authorization_code") {
+            tokenExchangeCount++;
+            return Response.json({
+              access_token: activeAccessToken,
+              refresh_token: "refresh-token-v1",
+              token_type: "Bearer",
+              expires_in: 3600,
+            });
+          }
+          if (grant === "refresh_token") {
+            tokenRefreshCount++;
+            if (body.get("refresh_token") !== "refresh-token-v1") {
+              return new Response(
+                JSON.stringify({ error: "invalid_grant" }),
+                { status: 400 },
+              );
+            }
+            // Rotate to a new access token so the test can tell refresh ran.
+            activeAccessToken = "access-token-v2";
+            return Response.json({
+              access_token: activeAccessToken,
+              token_type: "Bearer",
+              expires_in: 3600,
+            });
+          }
+          return new Response("unsupported_grant_type", { status: 400 });
+        }
+
+        // MCP endpoint
+        if (path === "/mcp" && req.method === "POST") {
+          const auth = req.headers.get("authorization") ?? "";
+          const expected = `Bearer ${activeAccessToken}`;
+          if (auth !== expected) {
+            return new Response(
+              JSON.stringify({ error: { code: "UNAUTHORIZED", message: "No token" } }),
+              {
+                status: 401,
+                headers: {
+                  "Content-Type": "application/json",
+                  "WWW-Authenticate": `Bearer realm="test", resource_metadata="${AS_URL}/.well-known/oauth-protected-resource"`,
+                },
+              },
+            );
+          }
+          const rpc = (await req.json()) as { id: number; method: string };
+          if (rpc.method === "initialize") {
+            return Response.json({
+              jsonrpc: "2.0",
+              id: rpc.id,
+              result: { serverInfo: { name: "test-mcp" }, capabilities: {} },
+            });
+          }
+          if (rpc.method === "tools/call") {
+            return Response.json({
+              jsonrpc: "2.0",
+              id: rpc.id,
+              result: {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      agents: [
+                        { path: "@test-agent", description: "An agent", toolCount: 1 },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            });
+          }
+          return new Response("method not found", { status: 404 });
+        }
+
+        return new Response("not found", { status: 404 });
+      },
+    });
+  });
+
+  afterAll(() => {
+    mcpServer.stop();
+  });
+
+  test("registry.add records auth challenge; browse refuses; auth() unlocks", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs, { encryptionKey: "test-key-32-chars-long-enough!!" });
+
+    const addResult = await adk.registry.add({ name: "test", url: MCP_URL });
+
+    expect(addResult.authRequirement).toBeDefined();
+    expect(addResult.authRequirement?.scheme).toBe("Bearer");
+    expect(addResult.authRequirement?.authorizationServers).toEqual([AS_URL]);
+    expect(addResult.authRequirement?.scopes).toEqual(["mcp:full"]);
+
+    await expect(adk.registry.browse("test")).rejects.toMatchObject({
+      code: "registry_auth_required",
+    });
+
+    await adk.registry.auth("test", { token: activeAccessToken });
+
+    // Stored token is encrypted (secret: prefix) — buildConsumer decrypts
+    // it transparently so browse should now land the MCP call.
+    const stored = await adk.registry.get("test");
+    expect(stored?.auth?.type).toBe("bearer");
+    expect((stored?.auth as { token: string }).token).toMatch(/^secret:/);
+    expect(stored?.authRequirement).toBeUndefined();
+
+    const agents = await adk.registry.browse("test");
+    expect(agents).toHaveLength(1);
+    expect(agents[0]?.path).toBe("@test-agent");
+  });
+
+  test("browse 401 triggers refresh via stored refresh_token and retries", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs, { encryptionKey: "test-key-32-chars-long-enough!!" });
+
+    // Reset server-side token so the next refresh rotates predictably.
+    activeAccessToken = "access-token-v1";
+    tokenRefreshCount = 0;
+
+    await adk.registry.add({ name: "test", url: MCP_URL });
+    await adk.registry.auth("test", { token: activeAccessToken });
+
+    // Seed the entry with OAuth state as if `authLocal` had completed.
+    // Refresh token / endpoint / clientId are written directly so the
+    // test isn't dependent on the full browser-redirect flow.
+    const config = await adk.readConfig();
+    await adk.writeConfig({
+      ...config,
+      registries: config.registries?.map((r: any) => {
+        if (typeof r !== "string" && r.name === "test") {
+          return {
+            ...r,
+            oauth: {
+              tokenEndpoint: `${AS_URL}/oauth/token`,
+              clientId: "test-client-id",
+              refreshToken: "refresh-token-v1",
+            },
+          };
+        }
+        return r;
+      }),
+    });
+
+    // Rotate the server token — the client's stored token is now stale.
+    activeAccessToken = "access-token-v2";
+
+    const agents = await adk.registry.browse("test");
+
+    // Refresh was called exactly once; the browse call succeeded on retry.
+    expect(tokenRefreshCount).toBe(1);
+    expect(agents).toHaveLength(1);
+
+    const stored = await adk.registry.get("test");
+    expect((stored?.auth as { token: string }).token).toMatch(/^secret:/);
+  });
+});

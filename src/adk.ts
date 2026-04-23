@@ -60,7 +60,8 @@ const HELP_SECTIONS: Record<string, string> = {
   adk registry list
   adk registry browse <name> [--query <q>]
   adk registry inspect <name>
-  adk registry test [name]`,
+  adk registry test [name]
+  adk registry auth <name> [--token <t>] [--api-key <k>] [--header <h>]`,
   ref: `Ref operations:
   adk ref add <name>                     Install from default (public) registry
   adk ref add <name> --registry <reg>    Install from a specific registry
@@ -106,6 +107,7 @@ Registry operations:
   adk registry browse <name> [--query <q>]
   adk registry inspect <name>
   adk registry test [name]
+  adk registry auth <name> [--token <t>] [--api-key <k>] [--header <h>]
 
 Ref operations:
   adk ref add <ref> [--registry <name>] [--as <alias>] [--url <url>] [--scheme mcp|https|registry]
@@ -156,6 +158,7 @@ async function runRegistry() {
   const op = args[1];
   const adk = getAdk();
 
+  try {
   switch (op) {
     case "add": {
       const url = args[2];
@@ -187,7 +190,7 @@ async function runRegistry() {
           }
         : undefined;
       const displayName = name ?? new URL(url).hostname;
-      await adk.registry.add({
+      const addResult = await adk.registry.add({
         url,
         name: displayName,
         ...(auth && { auth }),
@@ -202,6 +205,17 @@ async function runRegistry() {
       console.log(
         `Added registry: ${displayName}${effectiveProxy ? ` (proxy: ${effectiveProxy.mode} → ${effectiveProxy.agent ?? "@config"}${source})` : ""}`,
       );
+      if (addResult.authRequirement) {
+        const req = addResult.authRequirement;
+        console.log(`\n  \x1b[33m!\x1b[0m Auth required: ${req.scheme ?? "Bearer"}${req.realm ? ` (realm: ${req.realm})` : ""}`);
+        if (req.authorizationServers?.length) {
+          console.log(`    authorization servers: ${req.authorizationServers.join(", ")}`);
+        }
+        if (req.scopes?.length) {
+          console.log(`    scopes: ${req.scopes.join(" ")}`);
+        }
+        console.log(`\n    Run: adk registry auth ${displayName} --token <token>`);
+      }
       break;
     }
     case "remove": {
@@ -264,10 +278,64 @@ async function runRegistry() {
       }
       break;
     }
+    case "auth": {
+      const name = args[2];
+      if (!name) { console.error("Usage: adk registry auth <name> [--token <t>] [--api-key <k>] [--header <h>]"); process.exit(1); }
+      const token = getArg("--token");
+      const apiKey = getArg("--api-key");
+      const header = getArg("--header");
+
+      // Explicit credential mode — user supplied a token/key directly.
+      if (token || apiKey) {
+        const credential = token
+          ? { token }
+          : { apiKey: apiKey!, ...(header && { header }) };
+        const updated = await adk.registry.auth(name, credential);
+        if (!updated) {
+          console.error(`Registry not found: ${name}`);
+          process.exit(1);
+        }
+        console.log(`\x1b[32m✓\x1b[0m Auth saved for ${name}`);
+        break;
+      }
+
+      // Auto-resolve: OAuth (when registry advertised an AS) or local
+      // credential form otherwise. Mirrors `adk ref auth` UX. Always force
+      // a fresh flow — invoking the command implies the existing creds
+      // aren't trusted, so skip the "already looks valid" short-circuit.
+      try {
+        const result = await adk.registry.authLocal(name, {
+          force: true,
+          onAuthorizeUrl: (url) => {
+            console.log(`\nOpen this URL to authenticate:\n\n  ${url}\n`);
+            const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+            import("node:child_process").then(({ exec }) => exec(`${opener} "${url}"`)).catch(() => {});
+            console.log("Waiting ...");
+          },
+        });
+        if (result.complete) {
+          console.log(`\x1b[32m✓\x1b[0m Auth complete for ${name}`);
+        }
+      } catch (err) {
+        if (err instanceof AdkError) throw err;
+        console.error(`Auth failed: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+      break;
+    }
     default:
       console.error(`Unknown registry operation: ${op}`);
-      console.error("Operations: add, remove, list, browse, inspect, test");
+      console.error("Operations: add, remove, list, browse, inspect, test, auth");
       process.exit(1);
+  }
+  } catch (err) {
+    if (err instanceof AdkError) {
+      console.error(`\n\x1b[31m✗\x1b[0m ${err.message}`);
+      console.error(`  ${err.hint}`);
+      console.error(`  Error ID: ${err.errorId}`);
+      process.exit(1);
+    }
+    throw err;
   }
 }
 

@@ -14,6 +14,8 @@
  */
 
 import { generatePkcePair } from "./pkce.js";
+import type { RegistryAuthRequirement } from "./define-config.js";
+import type { FetchFn } from "./fetch-types.js";
 
 // ============================================
 // Types
@@ -238,4 +240,123 @@ export async function refreshAccessToken(
     refreshToken: data.refresh_token as string | undefined,
     expiresIn: data.expires_in as number | undefined,
   };
+}
+
+// ============================================
+// Registry Auth Probe (RFC 6750 + RFC 9728)
+// ============================================
+
+/**
+ * Parse a `WWW-Authenticate` header of the form
+ *   `Bearer realm="x", resource_metadata="https://..."`
+ * Returns the scheme and any `key="value"` params. Tolerant of
+ * single-value headers and missing params.
+ */
+export function parseWwwAuthenticate(
+  header: string,
+): { scheme: string; params: Record<string, string> } {
+  const spaceIdx = header.indexOf(" ");
+  const scheme = (spaceIdx === -1 ? header : header.slice(0, spaceIdx)).trim();
+  const rest = spaceIdx === -1 ? "" : header.slice(spaceIdx + 1);
+  const params: Record<string, string> = {};
+  for (const match of rest.matchAll(/([a-zA-Z_][a-zA-Z0-9_-]*)\s*=\s*"([^"]*)"/g)) {
+    params[match[1]!.toLowerCase()] = match[2]!;
+  }
+  return { scheme, params };
+}
+
+/** RFC 9728 protected-resource metadata. */
+export interface ProtectedResourceMetadata {
+  resource: string;
+  authorization_servers?: string[];
+  bearer_methods_supported?: string[];
+  scopes_supported?: string[];
+  resource_documentation?: string;
+}
+
+/** Fetch RFC 9728 metadata. Returns null on any failure. */
+export async function discoverProtectedResourceMetadata(
+  metadataUrl: string,
+  fetchFn: FetchFn = globalThis.fetch,
+): Promise<ProtectedResourceMetadata | null> {
+  try {
+    const res = await fetchFn(metadataUrl);
+    if (!res.ok) return null;
+    return (await res.json()) as ProtectedResourceMetadata;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Probe an MCP URL to see whether it requires authentication.
+ *
+ * Sends a minimal `initialize` request. On 200 the server accepts anonymous
+ * connections; on 401 we parse the `WWW-Authenticate` header and, if it
+ * points at RFC 9728 resource metadata, fetch it so the caller can record
+ * the authorization servers and scopes.
+ *
+ * Returns `{ ok: true }` when no auth is required, or
+ * `{ ok: false, requirement }` when the server challenged the request.
+ * Other failures (DNS, TLS, unexpected status) surface as `{ ok: null }`
+ * — the caller should treat those as probe-inconclusive rather than
+ * asserting auth is required.
+ */
+export async function probeRegistryAuth(
+  registryUrl: string,
+  fetchFn: FetchFn = globalThis.fetch,
+): Promise<
+  | { ok: true }
+  | { ok: false; requirement: RegistryAuthRequirement }
+  | { ok: null }
+> {
+  const url = registryUrl.replace(/\/$/, "");
+  let res: Response;
+  try {
+    res = await fetchFn(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "agents-sdk-probe", version: "1.0.0" },
+        },
+      }),
+    });
+  } catch {
+    return { ok: null };
+  }
+
+  if (res.status !== 401) {
+    return res.ok ? { ok: true } : { ok: null };
+  }
+
+  const wwwAuth = res.headers.get("www-authenticate") ?? "";
+  const { scheme, params } = parseWwwAuthenticate(wwwAuth);
+  const requirement: RegistryAuthRequirement = {};
+  if (scheme) requirement.scheme = scheme;
+  if (params.realm) requirement.realm = params.realm;
+
+  const metadataUrl = params.resource_metadata;
+  if (metadataUrl) {
+    requirement.resourceMetadataUrl = metadataUrl;
+    const metadata = await discoverProtectedResourceMetadata(metadataUrl, fetchFn);
+    if (metadata) {
+      if (metadata.authorization_servers?.length) {
+        requirement.authorizationServers = metadata.authorization_servers;
+      }
+      if (metadata.scopes_supported?.length) {
+        requirement.scopes = metadata.scopes_supported;
+      }
+      if (metadata.bearer_methods_supported?.length) {
+        requirement.bearerMethodsSupported = metadata.bearer_methods_supported;
+      }
+    }
+  }
+
+  return { ok: false, requirement };
 }
