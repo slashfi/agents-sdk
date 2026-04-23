@@ -43,7 +43,10 @@ import {
   dynamicClientRegistration,
   buildOAuthAuthorizeUrl,
   exchangeCodeForTokens,
+  probeRegistryAuth,
+  refreshAccessToken,
 } from "./mcp-client.js";
+import type { RegistryAuthRequirement } from "./define-config.js";
 
 const CONFIG_PATH = "consumer-config.json";
 const SECRET_PREFIX = "secret:";
@@ -124,7 +127,7 @@ export interface RegistryTestResult {
 }
 
 export interface AdkRegistryApi {
-  add(entry: RegistryEntry): Promise<void>;
+  add(entry: RegistryEntry): Promise<{ authRequirement?: RegistryAuthRequirement }>;
   remove(nameOrUrl: string): Promise<boolean>;
   list(): Promise<RegistryEntry[]>;
   get(name: string): Promise<RegistryEntry | null>;
@@ -132,6 +135,39 @@ export interface AdkRegistryApi {
   browse(name: string, query?: string): Promise<AgentListEntry[]>;
   inspect(name: string): Promise<RegistryConfiguration>;
   test(name?: string): Promise<RegistryTestResult[]>;
+  /**
+   * Attach a credential to a registry that returned 401 during `add`. Clears
+   * `authRequirement` so subsequent ops stop throwing `registry_auth_required`.
+   * Accepts a pre-existing token / api-key when the caller already has one.
+   */
+  auth(
+    nameOrUrl: string,
+    credential:
+      | { token: string; tokenUrl?: string }
+      | { apiKey: string; header?: string },
+  ): Promise<boolean>;
+
+  /**
+   * Resolve auth for a registry the way `adk registry auth` does — runs the
+   * full OAuth flow (dynamic client registration + PKCE authorize + callback
+   * + token exchange) when the registry advertised authorization servers,
+   * or spins up a local HTTPS form for bearer-token entry otherwise.
+   *
+   * Returns `{ complete: true }` once the registry has usable credentials
+   * persisted. The `onAuthorizeUrl` callback fires with the URL the user
+   * should open (browser redirect URL for OAuth, or `http://localhost/auth`
+   * for the token-entry form). Pass `force: true` to skip the short-circuit
+   * when existing credentials look syntactically valid but may be stale
+   * server-side — the common case when the CLI command is invoked explicitly.
+   */
+  authLocal(
+    nameOrUrl: string,
+    opts?: {
+      onAuthorizeUrl?: (url: string) => void;
+      timeoutMs?: number;
+      force?: boolean;
+    },
+  ): Promise<{ complete: boolean }>;
 }
 
 /** Describes a single credential field requirement */
@@ -802,19 +838,217 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
   // Registry API
   // ==========================================
 
+  /**
+   * Encrypt with `secret:` prefix when an encryption key is configured, so the
+   * value is readable by the existing `decryptConfigSecrets` path on the read
+   * side. Plaintext fallback preserves the "no key = dev mode" contract.
+   */
+  async function protectSecret(value: string): Promise<string> {
+    if (!options.encryptionKey) return value;
+    return `${SECRET_PREFIX}${await encryptSecret(value, options.encryptionKey)}`;
+  }
+
+  /**
+   * Re-probe a registry with the current stored credentials to see whether it
+   * advertises `capabilities.registry.proxy` in its MCP `initialize` response,
+   * and persist the proxy config when it does. Safe to call after a successful
+   * `auth()` / `authLocal()` — on the add path we skip the proxy probe when
+   * auth is required, so this is the second chance to back-fill it.
+   *
+   * Respects explicit user config: if `proxy` is already set, we leave it
+   * alone. Any discovery failure is swallowed — proxy is an optimization,
+   * not a correctness requirement.
+   */
+  async function discoverProxyAfterAuth(nameOrUrl: string): Promise<void> {
+    const config = await readConfig();
+    const target = findRegistry(config.registries ?? [], nameOrUrl);
+    if (!target || typeof target === "string") return;
+    if (target.proxy) return;
+
+    try {
+      const consumer = await buildConsumer(nameOrUrl);
+      const discovered = await consumer.discover(target.url);
+      if (!discovered.proxy?.mode) return;
+      await updateRegistryEntry(nameOrUrl, (existing) => {
+        if (existing.proxy) return;
+        existing.proxy = {
+          mode: discovered.proxy!.mode,
+          ...(discovered.proxy!.agent && { agent: discovered.proxy!.agent }),
+        };
+      });
+    } catch {
+      // Proxy probe is best-effort — auth itself already succeeded.
+    }
+  }
+
+  /**
+   * Atomic read-modify-write on a registry entry by name or URL. Used by
+   * `authLocal` to persist both `auth` and `oauth` together, which `auth()`
+   * alone can't express. Returns true when the entry was found and written.
+   */
+  async function updateRegistryEntry(
+    nameOrUrl: string,
+    mutate: (entry: RegistryEntry) => void,
+  ): Promise<boolean> {
+    const config = await readConfig();
+    if (!config.registries?.length) return false;
+    let found = false;
+    const registries = config.registries.map((r): string | RegistryEntry => {
+      const rName = registryDisplayName(r);
+      if (rName !== nameOrUrl && registryUrl(r) !== nameOrUrl) return r;
+      found = true;
+      const existing: RegistryEntry = typeof r === "string" ? { url: r } : { ...r };
+      mutate(existing);
+      return existing;
+    });
+    if (!found) return false;
+    await writeConfig({ ...config, registries });
+    return true;
+  }
+
+  /**
+   * Decrypt a `secret:`-prefixed value if we hold the encryption key. Plaintext
+   * values pass through unchanged so dev configs keep working.
+   */
+  async function revealSecret(value: string | undefined): Promise<string | undefined> {
+    if (!value) return value;
+    if (!value.startsWith(SECRET_PREFIX)) return value;
+    if (!options.encryptionKey) return undefined;
+    return decryptSecret(value.slice(SECRET_PREFIX.length), options.encryptionKey);
+  }
+
+  /**
+   * Refresh a registry's OAuth access token using the stored refresh token.
+   * Persists the new access token (encrypted) and updates `expiresAt`. If the
+   * provider rotates the refresh token, that's encrypted and stored too.
+   * Returns `true` when the refresh succeeded. Callers should catch and fall
+   * back to full re-auth on failure.
+   */
+  async function refreshRegistryToken(nameOrUrl: string): Promise<boolean> {
+    const config = await readConfig();
+    const target = findRegistry(config.registries ?? [], nameOrUrl);
+    if (!target || typeof target === "string") return false;
+    const oauth = target.oauth;
+    if (!oauth?.refreshToken || !oauth.tokenEndpoint || !oauth.clientId) return false;
+
+    const refreshToken = await revealSecret(oauth.refreshToken);
+    const clientSecret = await revealSecret(oauth.clientSecret);
+    if (!refreshToken) return false;
+
+    const refreshed = await refreshAccessToken(oauth.tokenEndpoint, {
+      refreshToken,
+      clientId: oauth.clientId,
+      ...(clientSecret && { clientSecret }),
+    });
+
+    const expiresAt = refreshed.expiresIn
+      ? new Date(Date.now() + refreshed.expiresIn * 1000).toISOString()
+      : undefined;
+    const encAccess = await protectSecret(refreshed.accessToken);
+    const encRefresh = refreshed.refreshToken
+      ? await protectSecret(refreshed.refreshToken)
+      : undefined;
+
+    await updateRegistryEntry(nameOrUrl, (existing) => {
+      existing.auth = { type: "bearer", token: encAccess };
+      if (!existing.oauth) return;
+      if (encRefresh) existing.oauth.refreshToken = encRefresh;
+      if (expiresAt) existing.oauth.expiresAt = expiresAt;
+      else delete existing.oauth.expiresAt;
+    });
+    return true;
+  }
+
+  /**
+   * Run a registry op once; on 401 (`registry_auth_required`), try to refresh
+   * via the stored refresh token and retry exactly once. Any other AdkError
+   * propagates as-is.
+   */
+  async function callWithRefresh<T>(
+    nameOrUrl: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!(err instanceof AdkError) || err.code !== "registry_auth_required") throw err;
+      let refreshed = false;
+      try {
+        refreshed = await refreshRegistryToken(nameOrUrl);
+      } catch {
+        // Refresh failed — surface the original 401 below.
+      }
+      if (!refreshed) throw err;
+      return fn();
+    }
+  }
+
+  /**
+   * Throw a typed error if the registry has a recorded auth challenge and
+   * no usable credentials on the entry. Callers should invoke this before
+   * running any op that talks to the registry.
+   */
+  function assertRegistryAuthorized(entry: RegistryEntry): void {
+    if (!entry.authRequirement) return;
+    const hasUsableAuth =
+      entry.auth && entry.auth.type !== "none"
+        ? (entry.auth.type === "bearer" && !!entry.auth.token) ||
+          (entry.auth.type === "api-key" && !!entry.auth.key)
+        : false;
+    if (hasUsableAuth) return;
+
+    const name = entry.name ?? entry.url;
+    const scope = entry.authRequirement.scopes?.join(" ");
+    throw new AdkError({
+      code: "registry_auth_required",
+      message: `Registry "${name}" requires authentication.`,
+      hint: `Run: adk registry auth ${name} --token <token>${scope ? ` (scopes: ${scope})` : ""}`,
+      details: {
+        url: entry.url,
+        scheme: entry.authRequirement.scheme,
+        realm: entry.authRequirement.realm,
+        authorizationServers: entry.authRequirement.authorizationServers,
+        scopes: entry.authRequirement.scopes,
+        resourceMetadataUrl: entry.authRequirement.resourceMetadataUrl,
+      },
+    });
+  }
+
   const registry: AdkRegistryApi = {
-    async add(entry: RegistryEntry): Promise<void> {
+    async add(entry: RegistryEntry): Promise<{ authRequirement?: RegistryAuthRequirement }> {
       const config = await readConfig();
       const alias = entry.name ?? entry.url;
       const registries = (config.registries ?? []).filter(
         (r) => registryDisplayName(r) !== alias,
       );
 
-      // Probe the registry's MCP initialize response so we can auto-populate
-      // `proxy` when the server advertises it. Users who pass an explicit
-      // `proxy` on the entry always win — discovery only fills in blanks.
+      // Probe the registry before saving. Two things fall out of the probe:
+      //   1. Auth challenge — 401 + WWW-Authenticate points at RFC 9728
+      //      resource metadata; we persist it on `authRequirement` so
+      //      subsequent ops can refuse early with a friendly message.
+      //   2. Proxy capability — the MCP `initialize` response may advertise
+      //      `capabilities.registry.proxy`, which auto-populates `proxy`.
+      // Users who set `proxy` or `auth` explicitly on the entry always win:
+      // discovery only fills in blanks.
       let final: RegistryEntry = entry;
-      if (!entry.proxy) {
+      let authRequirement: RegistryAuthRequirement | undefined;
+
+      const hasUsableAuth =
+        entry.auth && entry.auth.type !== "none"
+          ? (entry.auth.type === "bearer" && !!entry.auth.token) ||
+            (entry.auth.type === "api-key" && !!entry.auth.key)
+          : false;
+
+      if (!hasUsableAuth) {
+        const fetchFn = options.fetch ?? globalThis.fetch;
+        const probe = await probeRegistryAuth(entry.url, fetchFn);
+        if (probe.ok === false) {
+          authRequirement = probe.requirement;
+          final = { ...final, authRequirement };
+        }
+      }
+
+      if (!entry.proxy && !authRequirement) {
         try {
           const probeConsumer = await createRegistryConsumer(
             { registries: [entry], refs: [] },
@@ -825,7 +1059,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             const discovered = await probeConsumer.discover(resolved.url);
             if (discovered.proxy?.mode) {
               final = {
-                ...entry,
+                ...final,
                 proxy: {
                   mode: discovered.proxy.mode,
                   ...(discovered.proxy.agent && { agent: discovered.proxy.agent }),
@@ -841,6 +1075,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
       registries.push(final);
       await writeConfig({ ...config, registries });
+      return authRequirement ? { authRequirement } : {};
     },
 
     async remove(nameOrUrl: string): Promise<boolean> {
@@ -891,19 +1126,25 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     },
 
     async browse(name: string, query?: string): Promise<AgentListEntry[]> {
-      const consumer = await buildConsumer(name);
       const config = await readConfig();
       const target = findRegistry(config.registries ?? [], name);
-      const url = target ? registryUrl(target) : name;
-      return consumer.browse(url, query);
+      if (target && typeof target !== "string") assertRegistryAuthorized(target);
+      return callWithRefresh(name, async () => {
+        const consumer = await buildConsumer(name);
+        const url = target ? registryUrl(target) : name;
+        return consumer.browse(url, query);
+      });
     },
 
     async inspect(name: string): Promise<RegistryConfiguration> {
-      const consumer = await buildConsumer(name);
       const config = await readConfig();
       const target = findRegistry(config.registries ?? [], name);
-      const url = target ? registryUrl(target) : name;
-      return consumer.discover(url);
+      if (target && typeof target !== "string") assertRegistryAuthorized(target);
+      return callWithRefresh(name, async () => {
+        const consumer = await buildConsumer(name);
+        const url = target ? registryUrl(target) : name;
+        return consumer.discover(url);
+      });
     },
 
     async test(name?: string): Promise<RegistryTestResult[]> {
@@ -917,12 +1158,29 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         targets.map(async (r): Promise<RegistryTestResult> => {
           const url = registryUrl(r);
           const rName = registryDisplayName(r);
+          if (typeof r !== "string" && r.authRequirement) {
+            const hasUsableAuth =
+              r.auth && r.auth.type !== "none"
+                ? (r.auth.type === "bearer" && !!r.auth.token) ||
+                  (r.auth.type === "api-key" && !!r.auth.key)
+                : false;
+            if (!hasUsableAuth) {
+              return {
+                name: rName,
+                url,
+                status: "error",
+                error: `auth required — run: adk registry auth ${rName} --token <token>`,
+              };
+            }
+          }
           try {
-            const consumer = await createRegistryConsumer(
-              { registries: [r] },
-              { token: options.token, fetch: options.fetch },
-            );
-            const disc = await consumer.discover(url);
+            // Route through buildConsumer so encrypted auth/headers get
+            // decrypted, then use callWithRefresh so a 401 triggers the
+            // stored refresh token before giving up.
+            const disc = await callWithRefresh(rName, async () => {
+              const consumer = await buildConsumer(rName);
+              return consumer.discover(url);
+            });
             return { name: rName, url, status: "active", issuer: disc.issuer };
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : "unknown";
@@ -936,6 +1194,302 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           ? r.value
           : { name: "unknown", url: "unknown", status: "error" as const, error: "unknown" },
       );
+    },
+
+    async auth(
+      nameOrUrl: string,
+      credential:
+        | { token: string; tokenUrl?: string }
+        | { apiKey: string; header?: string },
+    ): Promise<boolean> {
+      // Encrypt the secret value up-front so the write path is uniform;
+      // `buildConsumer` decrypts on the read side via `decryptConfigSecrets`.
+      const protectedValue =
+        "token" in credential
+          ? await protectSecret(credential.token)
+          : await protectSecret(credential.apiKey);
+
+      const updated = await updateRegistryEntry(nameOrUrl, (existing) => {
+        if ("token" in credential) {
+          existing.auth = {
+            type: "bearer",
+            token: protectedValue,
+            ...(credential.tokenUrl && { tokenUrl: credential.tokenUrl }),
+          };
+        } else {
+          existing.auth = {
+            type: "api-key",
+            key: protectedValue,
+            ...(credential.header && { header: credential.header }),
+          };
+        }
+        delete existing.authRequirement;
+      });
+      if (updated) await discoverProxyAfterAuth(nameOrUrl);
+      return updated;
+    },
+
+    async authLocal(
+      nameOrUrl: string,
+      opts?: {
+        onAuthorizeUrl?: (url: string) => void;
+        timeoutMs?: number;
+        force?: boolean;
+      },
+    ): Promise<{ complete: boolean }> {
+      const config = await readConfig();
+      const target = findRegistry(config.registries ?? [], nameOrUrl);
+      if (!target || typeof target === "string") {
+        throw new AdkError({
+          code: "registry_not_found",
+          message: `Registry not found: ${nameOrUrl}`,
+          hint: "Run `adk registry list` to see configured registries.",
+          details: { nameOrUrl },
+        });
+      }
+
+      // When the caller forces re-auth, wipe the existing credentials and
+      // re-probe so we know what scheme the registry wants now. Servers can
+      // rotate auth server metadata between runs.
+      if (opts?.force) {
+        await updateRegistryEntry(nameOrUrl, (existing) => {
+          delete existing.auth;
+          delete existing.oauth;
+        });
+        const fetchFn = options.fetch ?? globalThis.fetch;
+        const probe = await probeRegistryAuth(target.url, fetchFn);
+        if (probe.ok === false) {
+          await updateRegistryEntry(nameOrUrl, (existing) => {
+            existing.authRequirement = probe.requirement;
+          });
+          // Re-read so the flow below sees the fresh requirement.
+          const refreshed = await readConfig();
+          const refreshedTarget = findRegistry(refreshed.registries ?? [], nameOrUrl);
+          if (refreshedTarget && typeof refreshedTarget !== "string") {
+            Object.assign(target, refreshedTarget);
+          }
+        } else if (probe.ok === true) {
+          // Registry no longer requires auth — nothing to do.
+          await updateRegistryEntry(nameOrUrl, (existing) => {
+            delete existing.authRequirement;
+          });
+          return { complete: true };
+        }
+      }
+
+      // Already authenticated — nothing to do (unless forced above).
+      const hasUsableAuth =
+        target.auth && target.auth.type !== "none"
+          ? (target.auth.type === "bearer" && !!target.auth.token) ||
+            (target.auth.type === "api-key" && !!target.auth.key)
+          : false;
+      if (hasUsableAuth && !target.authRequirement) {
+        return { complete: true };
+      }
+
+      const req = target.authRequirement;
+      const port = options.oauthCallbackPort ?? 8919;
+      const timeout = opts?.timeoutMs ?? 300_000;
+      const displayName = target.name ?? target.url;
+      const { createServer } = await import("node:http");
+
+      // OAuth path — the registry advertised authorization servers via
+      // RFC 9728 protected-resource metadata. Walk the full flow:
+      // AS metadata → dynamic client registration → PKCE authorize →
+      // local callback → token exchange → persist access token.
+      if (req?.authorizationServers?.length) {
+        const authServer = req.authorizationServers[0]!;
+        const metadata =
+          (await discoverOAuthMetadata(authServer)) ??
+          (await tryFetchOAuthMetadata(authServer));
+        if (!metadata) {
+          throw new AdkError({
+            code: "registry_oauth_discovery_failed",
+            message: `Could not discover OAuth metadata at ${authServer}.`,
+            hint: "The authorization server must expose /.well-known/oauth-authorization-server.",
+            details: { authServer, registry: displayName },
+          });
+        }
+        if (!metadata.registration_endpoint) {
+          throw new AdkError({
+            code: "registry_oauth_no_registration",
+            message: `Authorization server ${authServer} does not support dynamic client registration.`,
+            hint: `Obtain a bearer token manually, then run: adk registry auth ${displayName} --token <token>`,
+            details: { authServer, registry: displayName },
+          });
+        }
+
+        const redirectUri = `http://localhost:${port}/callback`;
+        const registration = await dynamicClientRegistration(
+          metadata.registration_endpoint,
+          {
+            clientName: options.oauthClientName ?? "adk",
+            redirectUris: [redirectUri],
+            grantTypes: ["authorization_code"],
+          },
+        );
+
+        const state = crypto.randomUUID();
+        const { url: authorizeUrl, codeVerifier } = await buildOAuthAuthorizeUrl({
+          authorizationEndpoint: metadata.authorization_endpoint,
+          clientId: registration.clientId,
+          redirectUri,
+          scopes: req.scopes,
+          state,
+        });
+
+        return new Promise<{ complete: boolean }>((resolve, reject) => {
+          const server = createServer(async (reqIn, resOut) => {
+            const reqUrl = new URL(reqIn.url ?? "/", `http://localhost:${port}`);
+            if (reqUrl.pathname !== "/callback") {
+              resOut.writeHead(404);
+              resOut.end();
+              return;
+            }
+
+            const code = reqUrl.searchParams.get("code");
+            const returnedState = reqUrl.searchParams.get("state");
+            if (!code || returnedState !== state) {
+              const error = reqUrl.searchParams.get("error") ?? "missing code/state";
+              resOut.writeHead(400, { "Content-Type": "text/html" });
+              resOut.end(`<h1>Error</h1><p>${esc(error)}</p>`);
+              server.close();
+              reject(
+                new AdkError({
+                  code: "registry_oauth_denied",
+                  message: `OAuth callback rejected: ${error}`,
+                  hint: "Retry `adk registry auth` and complete the browser consent.",
+                  details: { registry: displayName, error },
+                }),
+              );
+              return;
+            }
+
+            try {
+              const tokens = await exchangeCodeForTokens(metadata.token_endpoint, {
+                code,
+                codeVerifier,
+                clientId: registration.clientId,
+                clientSecret: registration.clientSecret,
+                redirectUri,
+              });
+              const expiresAt = tokens.expiresIn
+                ? new Date(Date.now() + tokens.expiresIn * 1000).toISOString()
+                : undefined;
+              const encToken = await protectSecret(tokens.accessToken);
+              const encRefresh = tokens.refreshToken
+                ? await protectSecret(tokens.refreshToken)
+                : undefined;
+              const encClientSecret = registration.clientSecret
+                ? await protectSecret(registration.clientSecret)
+                : undefined;
+              await updateRegistryEntry(displayName, (existing) => {
+                existing.auth = { type: "bearer", token: encToken };
+                existing.oauth = {
+                  tokenEndpoint: metadata.token_endpoint,
+                  clientId: registration.clientId,
+                  ...(encClientSecret && { clientSecret: encClientSecret }),
+                  ...(encRefresh && { refreshToken: encRefresh }),
+                  ...(expiresAt && { expiresAt }),
+                  ...(req.scopes?.length && { scopes: req.scopes }),
+                };
+                delete existing.authRequirement;
+              });
+              await discoverProxyAfterAuth(displayName);
+              resOut.writeHead(200, { "Content-Type": "text/html" });
+              resOut.end(renderAuthSuccess(displayName));
+              server.close();
+              resolve({ complete: true });
+            } catch (err) {
+              resOut.writeHead(500, { "Content-Type": "text/html" });
+              resOut.end(
+                `<h1>Error</h1><p>${esc(err instanceof Error ? err.message : String(err))}</p>`,
+              );
+              server.close();
+              reject(err);
+            }
+          });
+
+          server.listen(port, () => {
+            opts?.onAuthorizeUrl?.(authorizeUrl);
+          });
+
+          const timer = setTimeout(() => {
+            server.close();
+            reject(new Error("OAuth callback timed out"));
+          }, timeout);
+          server.on("close", () => clearTimeout(timer));
+        });
+      }
+
+      // No OAuth metadata — serve a local HTTPS form asking for a token.
+      // Used when the registry returned 401 without pointing at an AS, or
+      // when the caller simply wants to paste a pre-issued token.
+      const fields: AuthChallengeField[] = [
+        {
+          name: "token",
+          label: "Bearer token",
+          description: req?.realm
+            ? `Token for realm "${req.realm}"`
+            : "Token sent as `Authorization: Bearer <token>`.",
+          secret: true,
+        },
+      ];
+
+      return new Promise<{ complete: boolean }>((resolve, reject) => {
+        const server = createServer(async (reqIn, resOut) => {
+          const reqUrl = new URL(reqIn.url ?? "/", `http://localhost:${port}`);
+
+          if (reqIn.method === "GET" && reqUrl.pathname === "/auth") {
+            resOut.writeHead(200, { "Content-Type": "text/html" });
+            resOut.end(renderCredentialForm(displayName, fields));
+            return;
+          }
+
+          if (reqIn.method === "POST" && reqUrl.pathname === "/auth") {
+            const chunks: Buffer[] = [];
+            for await (const chunk of reqIn) chunks.push(chunk as Buffer);
+            const body = Buffer.concat(chunks).toString();
+            const params = new URLSearchParams(body);
+            const token = params.get("token");
+            if (!token) {
+              resOut.writeHead(200, { "Content-Type": "text/html" });
+              resOut.end(renderCredentialForm(displayName, fields, "Token is required."));
+              return;
+            }
+            try {
+              await registry.auth(displayName, { token });
+              resOut.writeHead(200, { "Content-Type": "text/html" });
+              resOut.end(renderAuthSuccess(displayName));
+              server.close();
+              resolve({ complete: true });
+            } catch (err) {
+              resOut.writeHead(500, { "Content-Type": "text/html" });
+              resOut.end(
+                renderCredentialForm(
+                  displayName,
+                  fields,
+                  err instanceof Error ? err.message : String(err),
+                ),
+              );
+            }
+            return;
+          }
+
+          resOut.writeHead(404);
+          resOut.end();
+        });
+
+        server.listen(port, () => {
+          opts?.onAuthorizeUrl?.(`http://localhost:${port}/auth`);
+        });
+
+        const timer = setTimeout(() => {
+          server.close();
+          reject(new Error("Auth timed out"));
+        }, timeout);
+        server.on("close", () => clearTimeout(timer));
+      });
     },
   };
 

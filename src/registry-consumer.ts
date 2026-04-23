@@ -41,6 +41,8 @@ import type {
 import type { CallAgentRequest } from "./call-agent-schema.js";
 import type { FetchFn } from "./fetch-types.js";
 import type { SecuritySchemeSummary, CallAgentResponse } from "./types.js";
+import { AdkError } from "./adk-error.js";
+import { parseWwwAuthenticate } from "./mcp-client.js";
 import {
   isSecretUri,
   normalizeRef,
@@ -391,12 +393,19 @@ async function listFromMcpServer(
         ...(params && { params }),
       }),
     });
+    if (res.status === 401) throwRegistryAuthError(serverUrl, res);
     if (!res.ok) {
-      throw new Error(`MCP call to ${serverUrl} failed: ${res.status}`);
+      const body = await res.text().catch(() => "");
+      throwRegistryCallError(serverUrl, res.status, body);
     }
     const json = (await res.json()) as { result?: unknown; error?: { message: string } };
     if (json.error) {
-      throw new Error(`MCP RPC error: ${json.error.message}`);
+      throw new AdkError({
+        code: "registry_rpc_error",
+        message: `Registry at ${serverUrl} returned an RPC error: ${json.error.message}`,
+        hint: "Check the tool name and parameters, or inspect the registry.",
+        details: { url: serverUrl, rpcError: json.error.message },
+      });
     }
     return json.result;
   }
@@ -466,12 +475,19 @@ async function discoverRegistryViaMcp(
         ...(params && { params }),
       }),
     });
+    if (res.status === 401) throwRegistryAuthError(serverUrl, res);
     if (!res.ok) {
-      throw new Error(`MCP initialize to ${serverUrl} failed: ${res.status}`);
+      const body = await res.text().catch(() => "");
+      throwRegistryCallError(serverUrl, res.status, body);
     }
     const json = (await res.json()) as { result?: unknown; error?: { message: string } };
     if (json.error) {
-      throw new Error(`MCP RPC error: ${json.error.message}`);
+      throw new AdkError({
+        code: "registry_rpc_error",
+        message: `Registry at ${serverUrl} returned an RPC error: ${json.error.message}`,
+        hint: "Check the registry URL and that the server speaks MCP.",
+        details: { url: serverUrl, rpcError: json.error.message },
+      });
     }
     return json.result;
   }
@@ -514,6 +530,45 @@ async function discoverRegistryViaMcp(
 }
 
 /**
+ * Throw a typed auth error with context parsed from the challenge. Used when
+ * any MCP call returns 401, so callers see a friendly message pointing at
+ * `adk registry auth` rather than a bare "MCP call failed: 401".
+ */
+function throwRegistryAuthError(
+  serverUrl: string,
+  res: Response,
+): never {
+  const wwwAuth = res.headers.get("www-authenticate") ?? "";
+  const { scheme, params } = parseWwwAuthenticate(wwwAuth);
+  throw new AdkError({
+    code: "registry_auth_required",
+    message: `Registry at ${serverUrl} returned 401 Unauthorized.`,
+    hint: `Run: adk registry auth <name> --token <token>`,
+    details: {
+      url: serverUrl,
+      scheme,
+      realm: params.realm,
+      resourceMetadataUrl: params.resource_metadata,
+      status: 401,
+    },
+  });
+}
+
+/** Wrap a generic MCP failure (non-401) in an AdkError so CLI callers get a typed error. */
+function throwRegistryCallError(
+  serverUrl: string,
+  status: number,
+  body: string,
+): never {
+  throw new AdkError({
+    code: "registry_call_failed",
+    message: `Registry at ${serverUrl} returned ${status}.`,
+    hint: "Check the registry URL and that the server is reachable.",
+    details: { url: serverUrl, status, body: body.slice(0, 500) },
+  });
+}
+
+/**
  * Call a tool on a direct MCP server.
  */
 async function callMcpTool(
@@ -542,12 +597,19 @@ async function callMcpTool(
       params: { name: toolName, arguments: params },
     }),
   });
+  if (res.status === 401) throwRegistryAuthError(serverUrl, res);
   if (!res.ok) {
-    throw new Error(`MCP tool call failed: ${res.status}`);
+    const body = await res.text().catch(() => "");
+    throwRegistryCallError(serverUrl, res.status, body);
   }
   const json = (await res.json()) as { result?: unknown; error?: { message: string } };
   if (json.error) {
-    throw new Error(`MCP RPC error: ${json.error.message}`);
+    throw new AdkError({
+      code: "registry_rpc_error",
+      message: `Registry at ${serverUrl} returned an RPC error: ${json.error.message}`,
+      hint: "Check the tool name and parameters, or inspect the registry.",
+      details: { url: serverUrl, rpcError: json.error.message },
+    });
   }
 
   // Extract text content
@@ -977,19 +1039,19 @@ export async function createRegistryConsumer(
     },
 
     async browse(registryUrl?: string, query?: string): Promise<AgentListEntry[]> {
-      // List agents from a specific registry, or all registries if not specified
+      // List agents from a specific registry, or all registries if not specified.
+      // Errors from any target propagate — previously allSettled silently
+      // dropped rejections (including 401s), so browsing an unreachable or
+      // unauthenticated registry returned 0 agents with no indication why.
       const targets = registryUrl
         ? resolvedRegistries.filter(
             (r) => r.url === registryUrl || r.name === registryUrl,
           )
         : resolvedRegistries;
-      // Pass query to server for BM25 search
-      const results = await Promise.allSettled(
+      const results = await Promise.all(
         targets.map((t) => listFromRegistry(t, query)),
       );
-      return results.flatMap((r) =>
-        r.status === "fulfilled" ? r.value : [],
-      );
+      return results.flat();
     },
 
     async inspect(

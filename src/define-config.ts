@@ -58,6 +58,49 @@ export interface RegistryProxy {
   agent?: string;
 }
 
+/**
+ * OAuth state captured after `adk registry auth` completes a dynamic-client
+ * registration + authorization-code flow against a registry. Stored alongside
+ * `auth.token` so the access token can be refreshed without re-prompting the
+ * user. The `auth.token` slot holds the current access token; everything
+ * needed to refresh it lives here.
+ */
+export interface RegistryOAuthState {
+  /** Token endpoint used for code exchange / refresh. */
+  tokenEndpoint: string;
+  /** Client ID issued by dynamic client registration (RFC 7591). */
+  clientId: string;
+  /** Client secret from dynamic registration, when the server issued one. */
+  clientSecret?: string;
+  /** Refresh token returned by the token endpoint, if any. */
+  refreshToken?: string;
+  /** Absolute expiry (ISO 8601) derived from `expires_in` at exchange time. */
+  expiresAt?: string;
+  /** Scopes the access token was granted for. */
+  scopes?: string[];
+}
+
+/**
+ * Captured auth challenge from a registry that rejected an unauthenticated
+ * probe (RFC 6750 `WWW-Authenticate` + RFC 9728 protected-resource metadata).
+ * When present on a `RegistryEntry`, the registry has been seen to require
+ * credentials and ref ops will fail until `adk registry auth` is run.
+ */
+export interface RegistryAuthRequirement {
+  /** Auth scheme advertised in `WWW-Authenticate` (e.g. `Bearer`). */
+  scheme?: string;
+  /** Realm advertised in `WWW-Authenticate`. */
+  realm?: string;
+  /** RFC 9728 `resource_metadata` URL parsed from the challenge. */
+  resourceMetadataUrl?: string;
+  /** Authorization servers from the protected-resource metadata. */
+  authorizationServers?: string[];
+  /** Scopes supported by the resource. */
+  scopes?: string[];
+  /** Bearer-methods advertised by the resource (`header`, `body`, `query`). */
+  bearerMethodsSupported?: string[];
+}
+
 /** A registry endpoint the consumer connects to */
 export interface RegistryEntry {
   /** Registry URL (e.g., 'https://registry.slash.com') */
@@ -84,6 +127,21 @@ export interface RegistryEntry {
    * running locally. See {@link RegistryProxy}.
    */
   proxy?: RegistryProxy;
+
+  /**
+   * Populated by `adk registry add` when the probe returned 401. Cleared
+   * by `adk registry auth`. Registry ops refuse to run while this is set
+   * and no usable auth credentials are configured.
+   */
+  authRequirement?: RegistryAuthRequirement;
+
+  /**
+   * OAuth lifecycle state — refresh token, client credentials from dynamic
+   * registration, token endpoint, expiry. Populated by `adk registry auth`
+   * when the flow went through OAuth; absent for manually-supplied bearer
+   * tokens.
+   */
+  oauth?: RegistryOAuthState;
 }
 
 // ============================================
