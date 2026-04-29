@@ -5,6 +5,7 @@
  */
 
 import { dirname, resolve } from "node:path";
+import { AdkError } from "./adk-error.js";
 import type { AgentEvent, BaseEvent, CallAgentToolCallEvent, CustomEventMap, EventCallback, EventType, ListAgentsResult, ListAgentsToolCallEvent } from "./events.js";
 import { createEventBus } from "./events.js";
 import type { Logger } from "./logger.js";
@@ -38,6 +39,33 @@ const DEFAULT_SUPPORTED_ACTIONS: AgentAction[] = [
   "list_resources",
   "read_resources",
 ];
+
+function adkErrorFields(
+  err: unknown,
+): { code: string; hint: string; details: Record<string, unknown> } | null {
+  if (err instanceof AdkError) {
+    return { code: err.code, hint: err.hint, details: err.details };
+  }
+  if (!err || typeof err !== "object") return null;
+  const candidate = err as {
+    name?: unknown;
+    code?: unknown;
+    hint?: unknown;
+    details?: unknown;
+  };
+  return candidate.name === "AdkError" &&
+    typeof candidate.code === "string" &&
+    typeof candidate.hint === "string" &&
+    !!candidate.details &&
+    typeof candidate.details === "object" &&
+    !Array.isArray(candidate.details)
+    ? {
+        code: candidate.code,
+        hint: candidate.hint,
+        details: candidate.details as Record<string, unknown>,
+      }
+    : null;
+}
 
 /**
  * Estimate the token count for a tool schema when serialized to JSON.
@@ -760,10 +788,15 @@ export function createAgentRegistry(
                 })
                 .catch(() => {}); // don't let emit error mask tool error
 
+              const adkErr = adkErrorFields(err);
               return {
                 success: false,
                 error: err instanceof Error ? err.message : String(err),
-                code: "TOOL_EXECUTION_ERROR",
+                code: adkErr?.code ?? "TOOL_EXECUTION_ERROR",
+                ...(adkErr && {
+                  hint: adkErr.hint,
+                  details: adkErr.details,
+                }),
               } as CallAgentErrorResponse;
             }
 
@@ -784,11 +817,16 @@ export function createAgentRegistry(
             } as CallAgentExecuteToolResponse;
           } catch (outerErr) {
             // Catch-all for unexpected errors (e.g., emit failures)
+            const adkErr = adkErrorFields(outerErr);
             return {
               success: false,
               error:
                 outerErr instanceof Error ? outerErr.message : String(outerErr),
-              code: "TOOL_EXECUTION_ERROR",
+              code: adkErr?.code ?? "TOOL_EXECUTION_ERROR",
+              ...(adkErr && {
+                hint: adkErr.hint,
+                details: adkErr.details,
+              }),
             } as CallAgentErrorResponse;
           }
         }
