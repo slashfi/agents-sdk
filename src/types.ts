@@ -4,8 +4,8 @@
  * Defines the fundamental types for agent definitions, tools, and contexts.
  */
 
-import type { EventCallback, EventType } from "./events.js";
 import type { AgentAction, CallerType } from "./call-agent-schema.js";
+import type { EventCallback, EventType } from "./events.js";
 
 /** Internal listener entry stored on agents/tools */
 export interface ListenerEntry {
@@ -22,7 +22,15 @@ export interface ListenerEntry {
  * JSON Schema definition for tool input parameters.
  */
 export type JsonSchema = {
-  type: "object" | "array" | "string" | "number" | "integer" | "boolean" | "null" | string[];
+  type:
+    | "object"
+    | "array"
+    | "string"
+    | "number"
+    | "integer"
+    | "boolean"
+    | "null"
+    | string[];
   properties?: Record<string, JsonSchema>;
   items?: JsonSchema;
   required?: string[];
@@ -293,7 +301,7 @@ export type SecurityScheme =
  * directory-level overview (e.g., in list_agents responses).
  */
 export interface SecuritySchemeSummary {
-  type: SecurityScheme['type'];
+  type: SecurityScheme["type"];
   [key: string]: unknown;
 }
 
@@ -710,7 +718,7 @@ export interface AgentDefinition<TContext extends ToolContext = ToolContext> {
    * - 'direct': registry hosts and serves this agent's tools (default)
    * - 'redirect': registry catalogs this agent but clients connect to `upstream` directly
    */
-  mode?: 'direct' | 'redirect';
+  mode?: "direct" | "redirect";
 
   /**
    * Upstream URL for redirect-mode agents.
@@ -861,6 +869,8 @@ export interface CallAgentErrorResponse {
   success: false;
   error: string;
   code?: string;
+  hint?: string;
+  details?: Record<string, unknown>;
 }
 
 /** Union of all response types */
@@ -942,5 +952,10 @@ export type ServerSource =
   | string
   | { command: string; args?: string[]; env?: Record<string, string> }
   | { url: string; headers?: Record<string, string> }
-  | { spawn: string; args?: string[]; env?: Record<string, string>; port?: number; endpoint?: string };
-
+  | {
+      spawn: string;
+      args?: string[];
+      env?: Record<string, string>;
+      port?: number;
+      endpoint?: string;
+    };

@@ -17,10 +17,252 @@
  * ```
  */
 
+import { z } from "zod";
+import { AdkError } from "./adk-error.js";
+import { zodToOpenAiJsonSchema } from "./call-agent-schema.js";
 import type { Adk } from "./config-store.js";
 import type { RefEntry, RegistryEntry } from "./define-config.js";
 import { defineTool } from "./define.js";
-import type { ToolContext, ToolDefinition } from "./types.js";
+import type { JsonSchema, ToolContext, ToolDefinition } from "./types.js";
+
+const objectRecordSchema = z.record(z.unknown());
+const sourceRegistrySchema = z
+  .object({
+    url: z.string().min(1).describe("Registry MCP URL."),
+    agentPath: z.string().optional().describe("Agent path on that registry."),
+  })
+  .passthrough();
+const refScopeSchema = z
+  .string()
+  .optional()
+  .describe("Config scope to operate on.");
+const refNameSchema = z.string().min(1).describe("Local connection name.");
+
+const refAddOperationSchema = z
+  .object({
+    operation: z.literal("add"),
+    scope: refScopeSchema,
+    ref: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Canonical agent path, e.g. 'google-calendar'. Defaults to name when omitted.",
+      ),
+    name: refNameSchema
+      .optional()
+      .describe("Local connection name. Defaults to ref when omitted."),
+    scheme: z
+      .enum(["registry", "mcp", "https"])
+      .optional()
+      .describe(
+        "Connection type. Usually inferred from sourceRegistry or url.",
+      ),
+    url: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Direct MCP/HTTPS URL. Required for direct mcp/https refs."),
+    sourceRegistry: sourceRegistrySchema
+      .optional()
+      .describe(
+        "Registry that serves this agent. Required for registry-backed refs.",
+      ),
+    config: objectRecordSchema
+      .optional()
+      .describe("Optional per-instance config."),
+  })
+  .passthrough()
+  .superRefine((input, ctx) => {
+    if (!input.ref && !input.name) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["ref"],
+        message: "Either ref or name is required.",
+      });
+    }
+    if (input.scheme === "registry" && !input.sourceRegistry?.url) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sourceRegistry", "url"],
+        message: "scheme=registry requires sourceRegistry.url.",
+      });
+    }
+    if ((input.scheme === "mcp" || input.scheme === "https") && !input.url) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["url"],
+        message: `scheme=${input.scheme} requires url.`,
+      });
+    }
+    if (!input.url && !input.sourceRegistry?.url) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sourceRegistry"],
+        message:
+          "Connection target is required: provide sourceRegistry.url for a registry ref, or url for a direct mcp/https ref.",
+      });
+    }
+  });
+
+const refOperationSchemas = {
+  add: refAddOperationSchema,
+  remove: z
+    .object({
+      operation: z.literal("remove"),
+      scope: refScopeSchema,
+      name: refNameSchema,
+    })
+    .passthrough(),
+  list: z
+    .object({ operation: z.literal("list"), scope: refScopeSchema })
+    .passthrough(),
+  update: z
+    .object({
+      operation: z.literal("update"),
+      scope: refScopeSchema,
+      name: refNameSchema,
+      ref: z.string().optional(),
+      scheme: z.enum(["registry", "mcp", "https"]).optional(),
+      url: z.string().optional(),
+      sourceRegistry: sourceRegistrySchema.optional(),
+      config: objectRecordSchema.optional(),
+    })
+    .passthrough(),
+  inspect: z
+    .object({
+      operation: z.literal("inspect"),
+      scope: refScopeSchema,
+      name: refNameSchema,
+      full: z.boolean().optional(),
+    })
+    .passthrough(),
+  call: z
+    .object({
+      operation: z.literal("call"),
+      scope: refScopeSchema,
+      name: refNameSchema,
+      tool: z.string().min(1),
+      params: objectRecordSchema.optional(),
+    })
+    .passthrough(),
+  auth: z
+    .object({
+      operation: z.literal("auth"),
+      scope: refScopeSchema,
+      name: refNameSchema,
+      ref: z.string().optional(),
+      apiKey: z.string().optional(),
+      credentials: z.record(z.string()).optional(),
+      sourceRegistry: sourceRegistrySchema.optional(),
+    })
+    .passthrough(),
+  "auth-status": z
+    .object({
+      operation: z.literal("auth-status"),
+      scope: refScopeSchema,
+      name: refNameSchema,
+    })
+    .passthrough(),
+  "refresh-token": z
+    .object({
+      operation: z.literal("refresh-token"),
+      scope: refScopeSchema,
+      name: refNameSchema,
+    })
+    .passthrough(),
+  resources: z
+    .object({
+      operation: z.literal("resources"),
+      scope: refScopeSchema,
+      name: refNameSchema,
+    })
+    .passthrough(),
+  read: z
+    .object({
+      operation: z.literal("read"),
+      scope: refScopeSchema,
+      name: refNameSchema,
+      uris: z.array(z.string()),
+    })
+    .passthrough(),
+} as const;
+
+const refToolInputSchema = z.union([
+  refOperationSchemas.add,
+  refOperationSchemas.remove,
+  refOperationSchemas.list,
+  refOperationSchemas.update,
+  refOperationSchemas.inspect,
+  refOperationSchemas.call,
+  refOperationSchemas.auth,
+  refOperationSchemas["auth-status"],
+  refOperationSchemas["refresh-token"],
+  refOperationSchemas.resources,
+  refOperationSchemas.read,
+]);
+const refToolInputJsonSchema = zodToOpenAiJsonSchema(
+  refToolInputSchema,
+) as JsonSchema;
+
+function parseRefToolInput(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const op = typeof input.operation === "string" ? input.operation : undefined;
+  const schema =
+    op && op in refOperationSchemas
+      ? refOperationSchemas[op as keyof typeof refOperationSchemas]
+      : refToolInputSchema;
+  const result = schema.safeParse(input);
+  if (result.success) return result.data as Record<string, unknown>;
+
+  const operation = op ? `ref.${op}` : "ref";
+  throw new AdkError({
+    code: "TOOL_INPUT_INVALID",
+    message: `Invalid ${operation} input`,
+    hint: "The expected input schema is serialized in details.schema; operation-specific schema is in details.operationSchema.",
+    details: {
+      operation,
+      issues: result.error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message,
+      })),
+      received: input,
+      schema: refToolInputJsonSchema,
+      ...(op &&
+        op in refOperationSchemas && {
+          operationSchema: zodToOpenAiJsonSchema(
+            refOperationSchemas[op as keyof typeof refOperationSchemas],
+          ),
+        }),
+    },
+  });
+}
+
+function withScopeSchema(
+  schema: JsonSchema,
+  scopeSchema: JsonSchema,
+): JsonSchema {
+  const clone = JSON.parse(JSON.stringify(schema)) as JsonSchema;
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+
+    const record = value as Record<string, unknown>;
+    const properties = record.properties as Record<string, unknown> | undefined;
+    if (properties?.scope) {
+      properties.scope = scopeSchema;
+    }
+    for (const child of Object.values(record)) {
+      visit(child);
+    }
+  };
+  visit(clone);
+  return clone;
+}
 
 export interface AdkToolsHooks<TCtx extends ToolContext = ToolContext> {
   /**
@@ -68,97 +310,14 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(
     name: "ref",
     description:
       "Manage agent refs. Operations: add, remove, list, update, inspect, call, auth, auth-status, refresh-token, resources, read. For `add`, supply `ref` (canonical agent path, e.g. 'notion') and `name` (local identifier). If `name` is omitted on add, it defaults to `ref`. For every other operation, pass `name`.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        operation: {
-          type: "string",
-          enum: [
-            "add",
-            "remove",
-            "list",
-            "update",
-            "inspect",
-            "call",
-            "auth",
-            "auth-status",
-            "refresh-token",
-            "resources",
-            "read",
-          ],
-        },
-        scope: scopeSchema,
-        ref: {
-          type: "string",
-          description:
-            "Canonical agent path on the remote registry (e.g. 'notion', 'linear', 'github'). Used by `add` to identify which agent definition to connect to. Other operations use `name` instead. If you call `add` with only `name` and no `ref`, `ref` defaults to `name`.",
-        },
-        name: {
-          type: "string",
-          description:
-            "Local identifier for this ref, used by all operations to look up the entry. On `add`, defaults to `ref` when omitted.",
-        },
-        scheme: {
-          type: "string",
-          description:
-            "Connection scheme: 'mcp' (direct MCP server), 'https' (REST proxy), or 'registry' (discovered via a registry). Auto-inferred from `url` or `sourceRegistry` when omitted.",
-        },
-        url: {
-          type: "string",
-          description:
-            "Direct URL to the agent (e.g. https://mcp.notion.com/mcp). Required for 'mcp' and 'https' schemes.",
-        },
-        sourceRegistry: {
-          type: "object",
-          properties: {
-            url: { type: "string" },
-            agentPath: { type: "string" },
-          },
-          description:
-            "When scheme is 'registry', the registry + agent path to resolve through.",
-        },
-        config: {
-          type: "object",
-          description:
-            "Per-instance config passed to the agent (headers, credentials, etc.). Supports `{{secret-uri}}` templates.",
-        },
-        tool: {
-          type: "string",
-          description:
-            "For `call` operation: the tool name on the ref to invoke.",
-        },
-        params: {
-          type: "object",
-          description: "For `call` operation: arguments to pass to the tool.",
-        },
-        full: {
-          type: "boolean",
-          description:
-            "For `inspect` operation: include full agent definition.",
-        },
-        uris: {
-          type: "array",
-          items: { type: "string" },
-          description: "For `read` operation: the resource URIs to read.",
-        },
-        apiKey: {
-          type: "string",
-          description: "For `auth` operation: pre-provisioned API key.",
-        },
-        credentials: {
-          type: "object",
-          description:
-            "For `auth` operation: key-value map of credential fields (keys match field names from the auth challenge).",
-        },
-      },
-      required: ["operation"],
-    },
+    inputSchema: withScopeSchema(refToolInputJsonSchema, scopeSchema),
     execute: async (input: Record<string, unknown>, ctx) => {
+      const parsedInput = parseRefToolInput(input);
       const adk = await resolveScope(
-        input.scope as string | undefined,
+        parsedInput.scope as string | undefined,
         ctx as TCtx,
       );
-      const op = input.operation as string;
+      const op = parsedInput.operation as string;
 
       switch (op) {
         case "add": {
@@ -166,18 +325,24 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(
           // other defaults to it. The stored entry always has an explicit
           // `name`, so downstream auth/callback state can distinguish the
           // canonical ref from the local connection handle.
-          const refValue = (input.ref ?? input.name) as string | undefined;
+          const refValue = (parsedInput.ref ?? parsedInput.name) as
+            | string
+            | undefined;
           if (!refValue) {
             throw new Error(
               "ref.add: must supply either 'ref' (canonical agent path) or 'name' (local identifier); both may be the same string for the common single-instance case.",
             );
           }
-          const nameValue = (input.name ?? refValue) as string;
-          const entry: Record<string, unknown> = { ref: refValue, name: nameValue };
-          if (input.scheme) entry.scheme = input.scheme;
-          if (input.url) entry.url = input.url;
-          if (input.sourceRegistry) entry.sourceRegistry = input.sourceRegistry;
-          if (input.config) entry.config = input.config;
+          const nameValue = (parsedInput.name ?? refValue) as string;
+          const entry: Record<string, unknown> = {
+            ref: refValue,
+            name: nameValue,
+          };
+          if (parsedInput.scheme) entry.scheme = parsedInput.scheme;
+          if (parsedInput.url) entry.url = parsedInput.url;
+          if (parsedInput.sourceRegistry)
+            entry.sourceRegistry = parsedInput.sourceRegistry;
+          if (parsedInput.config) entry.config = parsedInput.config;
           const { security } = await adk.ref.add(entry as unknown as RefEntry);
           return {
             added: true,
@@ -187,25 +352,25 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(
           };
         }
         case "remove":
-          return { removed: await adk.ref.remove(input.name as string) };
+          return { removed: await adk.ref.remove(parsedInput.name as string) };
         case "list":
           return { refs: await adk.ref.list() };
         case "update":
           return {
             updated: await adk.ref.update(
-              input.name as string,
-              input as unknown as Partial<RefEntry>,
+              parsedInput.name as string,
+              parsedInput as unknown as Partial<RefEntry>,
             ),
           };
         case "inspect":
-          return await adk.ref.inspect(input.name as string, {
-            full: input.full as boolean,
+          return await adk.ref.inspect(parsedInput.name as string, {
+            full: parsedInput.full as boolean,
           });
         case "call":
           return await adk.ref.call(
-            input.name as string,
-            input.tool as string,
-            input.params as Record<string, unknown>,
+            parsedInput.name as string,
+            parsedInput.tool as string,
+            parsedInput.params as Record<string, unknown>,
           );
         case "auth": {
           const authOpts: {
@@ -213,27 +378,31 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(
             credentials?: Record<string, string>;
             stateContext?: Record<string, unknown>;
           } = {};
-          if (input.apiKey) authOpts.apiKey = input.apiKey as string;
-          if (input.credentials)
-            authOpts.credentials = input.credentials as Record<string, string>;
+          if (parsedInput.apiKey)
+            authOpts.apiKey = parsedInput.apiKey as string;
+          if (parsedInput.credentials)
+            authOpts.credentials = parsedInput.credentials as Record<
+              string,
+              string
+            >;
           if (opts.hooks?.getAuthStateContext) {
             authOpts.stateContext = await opts.hooks.getAuthStateContext(
-              input,
+              parsedInput,
               ctx as TCtx,
             );
           }
-          return await adk.ref.auth(input.name as string, authOpts);
+          return await adk.ref.auth(parsedInput.name as string, authOpts);
         }
         case "auth-status":
-          return await adk.ref.authStatus(input.name as string);
+          return await adk.ref.authStatus(parsedInput.name as string);
         case "refresh-token":
-          return await adk.ref.refreshToken(input.name as string);
+          return await adk.ref.refreshToken(parsedInput.name as string);
         case "resources":
-          return await adk.ref.resources(input.name as string);
+          return await adk.ref.resources(parsedInput.name as string);
         case "read":
           return await adk.ref.read(
-            input.name as string,
-            input.uris as string[],
+            parsedInput.name as string,
+            parsedInput.uris as string[],
           );
         default:
           throw new Error(`Unknown ref operation: ${op}`);

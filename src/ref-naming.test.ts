@@ -10,7 +10,7 @@
 import { describe, expect, test } from "bun:test";
 import { createAdkTools } from "./adk-tools";
 import type { FsStore } from "./agent-definitions/config";
-import { createAdk } from "./index";
+import { createAdk, createAgentRegistry, defineAgent } from "./index";
 import type { ToolContext } from "./types";
 
 function createMemoryFs(): FsStore {
@@ -325,6 +325,54 @@ describe("ref tool — add operation defaults ref to name", () => {
     // Nothing got written.
     const raw = await fs.readFile("consumer-config.json");
     expect(raw).toBeNull();
+  });
+
+  test("invalid add input returns schema details through registry call", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+    const refTool = makeRefTool(adk);
+    const registry = createAgentRegistry();
+    registry.register(
+      defineAgent({
+        path: "@config",
+        entrypoint: "Config agent",
+        tools: [refTool],
+        visibility: "public",
+      }),
+    );
+
+    const response = await registry.call({
+      action: "execute_tool",
+      path: "@config",
+      tool: "ref",
+      params: {
+        operation: "add",
+        ref: "google-calendar",
+      },
+    });
+
+    expect(response.success).toBe(false);
+    if (response.success) throw new Error("expected invalid input error");
+    expect(response.code).toBe("TOOL_INPUT_INVALID");
+    expect(response.error).toContain("Invalid ref.add input");
+    expect(response.details?.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "sourceRegistry",
+        }),
+      ]),
+    );
+    expect(response.details?.schema).toMatchObject({
+      anyOf: expect.any(Array),
+    });
+    expect(response.details?.operationSchema).toMatchObject({
+      type: "object",
+    });
+    expect(response.hint).toContain("details.schema");
+    expect(response.details).not.toHaveProperty("examples");
+    expect(JSON.stringify(response.details?.operationSchema)).toContain(
+      "sourceRegistry",
+    );
   });
 });
 
