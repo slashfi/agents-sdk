@@ -30,10 +30,11 @@ export interface AdkToolsHooks<TCtx extends ToolContext = ToolContext> {
    *
    * @example
    * ```ts
-   * getAuthStateContext: async (ctx) => ({ tid: ctx.tenantId, uid: ctx.userId })
+   * getAuthStateContext: async (input, ctx) => ({ tid: ctx.tenantId, uid: ctx.userId, name: input.name })
    * ```
    */
   getAuthStateContext?: (
+    input: Record<string, unknown>,
     ctx: TCtx,
   ) => Record<string, unknown> | Promise<Record<string, unknown>>;
 }
@@ -66,7 +67,7 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(
   const refTool = defineTool({
     name: "ref",
     description:
-      "Manage agent refs. Operations: add, remove, list, update, inspect, call, auth, auth-status, refresh-token, resources, read. For `add`, supply `ref` (canonical agent path, e.g. 'notion') and optionally `name` for a local alias; either one uniquely identifies the ref. For every other operation, pass `name` (the local identifier you used on add — defaults to `ref` when you didn't set it explicitly).",
+      "Manage agent refs. Operations: add, remove, list, update, inspect, call, auth, auth-status, refresh-token, resources, read. For `add`, supply `ref` (canonical agent path, e.g. 'notion') and `name` (local identifier). If `name` is omitted on add, it defaults to `ref`. For every other operation, pass `name`.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -95,7 +96,7 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(
         name: {
           type: "string",
           description:
-            "Local identifier for this ref, used by all operations except `add` to look up the entry. On `add`, `name` is optional — it only needs to differ from `ref` when you want multiple local instances of the same agent (e.g. `{ ref: 'notion', name: 'work-notion' }`). Omit it and the ref is identified by its canonical path.",
+            "Local identifier for this ref, used by all operations to look up the entry. On `add`, defaults to `ref` when omitted.",
         },
         scheme: {
           type: "string",
@@ -162,35 +163,26 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(
       switch (op) {
         case "add": {
           // Accept `ref` or `name` (or both). If only one is given, the
-          // other defaults to it. This matches the "Add a ref called X"
-          // natural-language phrasing — LLMs that pick `name` get the
-          // same behavior as ones that pick `ref`, eliminating
-          // non-determinism on the identifier field. Throws when both
-          // are missing, so misuse is loud instead of silently storing
-          // `{ ref: undefined }`.
+          // other defaults to it. The stored entry always has an explicit
+          // `name`, so downstream auth/callback state can distinguish the
+          // canonical ref from the local connection handle.
           const refValue = (input.ref ?? input.name) as string | undefined;
           if (!refValue) {
             throw new Error(
               "ref.add: must supply either 'ref' (canonical agent path) or 'name' (local identifier); both may be the same string for the common single-instance case.",
             );
           }
-          const entry: Record<string, unknown> = { ref: refValue };
+          const nameValue = (input.name ?? refValue) as string;
+          const entry: Record<string, unknown> = { ref: refValue, name: nameValue };
           if (input.scheme) entry.scheme = input.scheme;
           if (input.url) entry.url = input.url;
-          // Only store `name` when it's meaningfully different from
-          // `ref` (the multi-instance aliasing case). Avoids a
-          // redundant `{ name: 'notion', ref: 'notion' }` stored shape.
-          const nameValue = input.name as string | undefined;
-          if (nameValue && nameValue !== refValue) {
-            entry.name = nameValue;
-          }
           if (input.sourceRegistry) entry.sourceRegistry = input.sourceRegistry;
           if (input.config) entry.config = input.config;
           const { security } = await adk.ref.add(entry as unknown as RefEntry);
           return {
             added: true,
             ref: refValue,
-            name: (entry.name ?? refValue) as string,
+            name: nameValue,
             security,
           };
         }
@@ -226,6 +218,7 @@ export function createAdkTools<TCtx extends ToolContext = ToolContext>(
             authOpts.credentials = input.credentials as Record<string, string>;
           if (opts.hooks?.getAuthStateContext) {
             authOpts.stateContext = await opts.hooks.getAuthStateContext(
+              input,
               ctx as TCtx,
             );
           }

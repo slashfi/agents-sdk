@@ -20,6 +20,7 @@
 import type { FsStore } from "./agent-definitions/config.js";
 import type {
   ConsumerConfig,
+  RefAddInput,
   RefEntry,
   RegistryEntry,
   ResolvedRef,
@@ -248,10 +249,10 @@ type AdkRefCallFn = keyof AdkAgentRegistry extends never
     <A extends AgentPath, T extends ToolsOf<A>>(name: A, tool: T, params: ParamsOf<A, T>) => Promise<CallAgentResponse>;
 
 export interface AdkRefApi {
-  add(entry: RefEntry): Promise<{ security: SecuritySchemeSummary | null }>;
+  add(entry: RefAddInput): Promise<{ security: SecuritySchemeSummary | null }>;
   remove(name: string): Promise<boolean>;
   list(): Promise<ResolvedRef[]>;
-  get(name: string): Promise<RefEntry | null>;
+  get(name: string): Promise<ResolvedRef | null>;
   update(name: string, updates: Partial<RefEntry>): Promise<boolean>;
   inspect(name: string, options?: { full?: boolean }): Promise<AgentInspection | null>;
   call: AdkRefCallFn;
@@ -332,11 +333,12 @@ function refName(entry: RefEntry): string {
  * Refs may be stored as `@foo` or `foo` depending on how they were added;
  * this ensures lookups work regardless of which form the caller uses.
  */
-function findRef(refs: RefEntry[], name: string): RefEntry | undefined {
+function findRef(refs: RefEntry[], name: string): ResolvedRef | undefined {
   const match = refs.find((r) => refName(r) === name);
-  if (match) return match;
+  if (match) return normalizeRef(match);
   const alt = name.startsWith("@") ? name.slice(1) : `@${name}`;
-  return refs.find((r) => refName(r) === alt);
+  const altMatch = refs.find((r) => refName(r) === alt);
+  return altMatch ? normalizeRef(altMatch) : undefined;
 }
 
 /**
@@ -502,7 +504,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     const config = await readConfig();
     const refs = (config.refs ?? []).map((r): RefEntry => {
       if (refName(r) !== name) return r;
-      return { ...r, config: { ...r.config, [key]: stored } };
+      const normalized = normalizeRef(r);
+      return { ...normalized, config: { ...normalized.config, [key]: stored } };
     });
     await writeConfig({ ...config, refs });
   }
@@ -815,7 +818,11 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     operation: string,
     params: Record<string, unknown>,
   ): Promise<T> {
-    const consumer = await buildConsumerForRef({ ref: "", sourceRegistry: { url: reg.url, agentPath: agent } } as RefEntry);
+    const consumer = await buildConsumerForRef({
+      ref: "",
+      name: "",
+      sourceRegistry: { url: reg.url, agentPath: agent },
+    });
     const resolved = consumer.registries().find((r) => r.url === reg.url);
     if (!resolved) throw new Error(`Registry ${reg.url} not resolvable for proxy forwarding`);
 
@@ -1498,11 +1505,22 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
   // ==========================================
 
   const ref: AdkRefApi = {
-    async add(entry: RefEntry): Promise<{ security: SecuritySchemeSummary | null }> {
+    async add(entryInput: RefAddInput): Promise<{ security: SecuritySchemeSummary | null }> {
       let security: SecuritySchemeSummary | null = null;
 
       const config = await readConfig();
       const hasRegistries = (config.registries ?? []).length > 0;
+      const name = entryInput.name ?? entryInput.ref;
+      let entry: RefEntry = { ...entryInput, name };
+
+      if ((config.refs ?? []).some((r) => refNameMatches(r, name))) {
+        throw new AdkError({
+          code: "REF_INVALID",
+          message: `Cannot add ref "${entry.ref}" as "${name}": a ref with that name already exists`,
+          hint: "Choose a different name, or remove/update the existing ref first.",
+          details: { ref: entry.ref, name },
+        });
+      }
 
       // Auto-infer scheme from context
       if (!entry.scheme) {
@@ -1599,9 +1617,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         }
       }
 
-      const name = refName(entry);
-      const refs = (config.refs ?? []).filter((r) => refName(r) !== name);
-      refs.push(entry);
+      const refs = [...(config.refs ?? []), entry];
       await writeConfig({ ...config, refs });
 
       return { security };
@@ -1622,7 +1638,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       return (config.refs ?? []).map(normalizeRef);
     },
 
-    async get(name: string): Promise<RefEntry | null> {
+    async get(name: string): Promise<ResolvedRef | null> {
       const config = await readConfig();
       return findRef(config.refs ?? [], name) ?? null;
     },
@@ -1636,14 +1652,21 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         found = true;
         const updated = { ...r };
         if (updates.url) updated.url = updates.url;
-        // Rename: prefer `name`, fall back to legacy `as`. When the
-        // caller passes `name`, clear the legacy `as` so the stored
-        // entry has one source of truth.
         if (updates.name !== undefined) {
+          const duplicate = config.refs?.some(
+            (candidate) =>
+              !refNameMatches(candidate, name) &&
+              refNameMatches(candidate, updates.name as string),
+          );
+          if (duplicate) {
+            throw new AdkError({
+              code: "REF_INVALID",
+              message: `Cannot rename ref "${name}" to "${updates.name}": a ref with that name already exists`,
+              hint: "Choose a different name, or remove/update the existing ref first.",
+              details: { name, newName: updates.name },
+            });
+          }
           updated.name = updates.name;
-          if (updated.as !== undefined) updated.as = undefined;
-        } else if (updates.as !== undefined) {
-          updated.as = updates.as;
         }
         if (updates.scheme) updated.scheme = updates.scheme;
         if (updates.config) updated.config = { ...updated.config, ...updates.config };
@@ -2120,7 +2143,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         // so callers can include extra context (tenant/user IDs).
         const statePayload = {
           ...opts?.stateContext,
-          ref: name,
+          ref: entry.ref,
+          name,
           ts: Date.now(),
         };
         const state = btoa(JSON.stringify(statePayload));

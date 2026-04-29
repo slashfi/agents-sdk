@@ -110,7 +110,7 @@ Registry operations:
   adk registry auth <name> [--token <t>] [--api-key <k>] [--header <h>]
 
 Ref operations:
-  adk ref add <ref> [--registry <name>] [--as <alias>] [--url <url>] [--scheme mcp|https|registry]
+  adk ref add <ref> [--name <name>] [--registry <name>] [--url <url>] [--scheme mcp|https|registry]
   adk ref remove <name>
   adk ref list
   adk ref inspect <name> [--full]
@@ -351,15 +351,14 @@ async function runRef() {
   switch (op) {
     case "add": {
       const refArg = args[2];
-      if (!refArg) { console.error("Usage: adk ref add <ref> [--registry <name>] [--as <alias>]"); process.exit(1); }
-      const entry: Record<string, unknown> = { ref: refArg };
-      const alias = getArg("--as");
+      if (!refArg) { console.error("Usage: adk ref add <ref> [--name <name>] [--registry <name>]"); process.exit(1); }
+      const name = getArg("--name") ?? refArg;
+      const entry: Record<string, unknown> = { ref: refArg, name };
       const url = getArg("--url");
       const registryName = getArg("--registry");
       // Auto-detect: if no --registry and no --url, try default registry
       const effectiveRegistry = registryName ?? (url ? undefined : "public");
       const scheme = getArg("--scheme") ?? (effectiveRegistry ? "registry" : undefined);
-      if (alias) entry.as = alias;
       if (url) entry.url = url;
       if (scheme) entry.scheme = scheme;
       if (effectiveRegistry) {
@@ -370,15 +369,15 @@ async function runRef() {
       }
       try {
         const { security } = await adk.ref.add(entry as import("./define-config.js").RefEntry);
-        console.log(`Added ref: ${alias ?? refArg}`);
+        console.log(`Added ref: ${name}`);
         if (security && security.type !== "none") {
           console.log(`\n  Auth required: ${security.type}`);
-          console.log(`  Run: adk ref auth ${alias ?? refArg}`);
+          console.log(`  Run: adk ref auth ${name}`);
         }
 
         // Materialize local docs
         const configDir = process.env.ADK_CONFIG_DIR ?? join(homedir(), ".adk");
-        const refDisplayName = alias ?? refArg;
+        const refDisplayName = name;
         try {
           const result = await materializeRef(adk, refDisplayName, configDir);
           if (result.toolCount > 0) {
