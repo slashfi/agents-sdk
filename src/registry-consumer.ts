@@ -12,7 +12,7 @@
  *
  * const config = defineConfig({
  *   registries: ['https://registry.slash.com'],
- *   refs: ['notion', { ref: 'postgres', as: 'prod-db', config: { url: '...' } }],
+ *   refs: ['notion', { ref: 'postgres', name: 'prod-db', config: { url: '...' } }],
  * });
  *
  * const consumer = await createRegistryConsumer(config);

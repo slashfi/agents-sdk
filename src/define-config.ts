@@ -16,8 +16,8 @@
  *   ],
  *   refs: [
  *     'notion',
- *     { ref: 'postgres', as: 'prod-db', config: { url: 'https://twin.slash.com/secrets/crdb-url' } },
- *     { ref: 'postgres', as: 'staging', config: { url: 'https://twin.slash.com/secrets/staging-url' } },
+ *     { ref: 'postgres', name: 'prod-db', config: { url: 'https://twin.slash.com/secrets/crdb-url' } },
+ *     { ref: 'postgres', name: 'staging', config: { url: 'https://twin.slash.com/secrets/staging-url' } },
  *   ],
  * });
  * ```
@@ -158,26 +158,16 @@ export type RefEntry = {
 
       /**
        * Local identifier for this ref. Used by all operations
-       * (call/remove/auth/update/…) to look up the entry. If omitted,
-       * the canonical `ref` string is used as the identifier — the
-       * common case "one local instance per agent" requires only
-       * `{ ref: 'notion', ... }`. Set `name` to a different value only
-       * when you need multiple local instances of the same remote
-       * agent (e.g. `{ ref: 'notion', name: 'work-notion' }`).
+       * (call/remove/auth/update/…) to look up the entry. Add paths
+       * default this to `ref` when omitted.
        */
-      name?: string;
+      name: string;
 
       /** Connection scheme */
       scheme?: 'mcp' | 'https' | 'registry';
 
       /** Direct URL to the agent (e.g. https://mcp.notion.com/mcp) */
       url?: string;
-
-      /**
-       * @deprecated Use `name` instead. `as` is preserved for reading
-       * old consumer-config.json files; new writes emit `name`.
-       */
-      as?: string;
 
       /** Per-instance config (headers, secrets, etc. — values support {{secret-uri}} templates) */
       config?: RefConfig;
@@ -188,6 +178,9 @@ export type RefEntry = {
       /** Connection status — set by validation/test, used to filter active entries */
       status?: 'active' | 'inactive' | 'error';
     };
+
+/** Input accepted by add paths. `name` defaults to `ref` when omitted. */
+export type RefAddInput = Omit<RefEntry, "name"> & { name?: string };
 
 // ============================================
 // Consumer Config
@@ -259,15 +252,13 @@ export interface ResolvedConfig {
 /**
  * Normalize a ref entry to its full form.
  *
- * Local identifier resolution order: `entry.name` → `entry.as` (legacy)
- * → `entry.ref` (canonical). This order makes the tool/API surface
- * consistent with the `ref.add({ ref, name })` contract while still
- * reading old `{ ref, as }` entries from pre-0.74 consumer-config.json.
+ * Add paths default `name` to `ref` before writing. `normalizeRef` keeps the
+ * same invariant for in-memory/test configs that omit `name`.
  */
 export function normalizeRef(entry: RefEntry): ResolvedRef {
   return {
     ...entry,
-    name: entry.name ?? entry.as ?? entry.ref,
+    name: entry.name ?? entry.ref,
     config: entry.config ?? {},
   };
 }

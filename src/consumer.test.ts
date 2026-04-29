@@ -111,7 +111,7 @@ describe("Registry Consumer E2E", () => {
       registries: [`http://localhost:${PORT}`],
       refs: [
         { ref: "@math" },
-        { ref: "@echo", as: "my-echo", config: { greeting: "hello" } },
+        { ref: "@echo", name: "my-echo", config: { greeting: "hello" } },
       ],
     };
 
@@ -151,12 +151,12 @@ describe("Registry Consumer E2E", () => {
     );
   });
 
-  test("multi-instance refs with as: alias", async () => {
+  test("multi-instance refs with name aliases", async () => {
     const config = {
       registries: [`http://localhost:${PORT}`],
       refs: [
-        { ref: "@echo", as: "echo-1", config: { prefix: "first" } },
-        { ref: "@echo", as: "echo-2", config: { prefix: "second" } },
+        { ref: "@echo", name: "echo-1", config: { prefix: "first" } },
+        { ref: "@echo", name: "echo-2", config: { prefix: "second" } },
       ],
     };
 
@@ -240,10 +240,10 @@ describe("normalizeRef", () => {
     });
   });
 
-  test("object ref with alias", () => {
+  test("object ref with name", () => {
     const result = normalizeRef({
       ref: "postgres",
-      as: "prod-db",
+      name: "prod-db",
       config: { url: "https://twin.slash.com/secrets/db" },
     });
     expect(result.ref).toBe("postgres");
@@ -253,7 +253,7 @@ describe("normalizeRef", () => {
     });
   });
 
-  test("object ref without alias uses ref as name", () => {
+  test("object ref without name uses ref as name", () => {
     const result = normalizeRef({ ref: "github" });
     expect(result.name).toBe("github");
   });

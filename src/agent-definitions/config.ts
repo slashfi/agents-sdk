@@ -108,9 +108,9 @@ export function createConfigAgent(
           type: "string",
           description: 'Agent ref name (e.g. "notion", "linear")',
         },
-        as: {
+        name: {
           type: "string",
-          description: "Local alias (for multi-instance refs)",
+          description: "Local ref name. Defaults to ref when omitted.",
         },
         url: {
           type: "string",
@@ -132,7 +132,7 @@ export function createConfigAgent(
     execute: async (
       input: {
         ref: string;
-        as?: string;
+        name?: string;
         url?: string;
         config?: Record<string, string>;
         registry?: string;
@@ -141,28 +141,27 @@ export function createConfigAgent(
     ) => {
       const fs = getStore(ctx);
       const currentConfig = await readConfig(fs);
+      const name = input.name ?? input.ref;
 
-      const entry: RefEntry = {
+      const entry = {
         ref: input.ref,
-        ...(input.as && { as: input.as }),
+        name,
         ...(input.url && { url: input.url }),
         ...(input.config && { config: input.config }),
         ...(input.registry && { registry: input.registry }),
-      };
+      } as RefEntry;
 
-      // Upsert: find existing ref by name/alias, replace or append
-      const name = input.as ?? input.ref;
       const refs = currentConfig.refs ?? [];
-      const existingIdx = refs.findIndex((r) => {
+      const altName = name.startsWith("@") ? name.slice(1) : `@${name}`;
+      const duplicate = refs.some((r) => {
         const normalized = normalizeRef(r);
-        return normalized.name === name;
+        return normalized.name === name || normalized.name === altName;
       });
 
-      if (existingIdx >= 0) {
-        refs[existingIdx] = entry;
-      } else {
-        refs.push(entry);
+      if (duplicate) {
+        throw new Error(`Cannot add ref "${input.ref}" as "${name}": a ref with that name already exists`);
       }
+      refs.push(entry);
 
       currentConfig.refs = refs;
       await writeConfig(fs, currentConfig);
@@ -178,13 +177,13 @@ export function createConfigAgent(
   // ---- remove_ref ----
   const removeRefTool = defineTool({
     name: "remove_ref",
-    description: "Remove an agent ref from the consumer config by name or alias.",
+    description: "Remove an agent ref from the consumer config by name.",
     inputSchema: {
       type: "object" as const,
       properties: {
         name: {
           type: "string",
-          description: "Ref name or alias to remove",
+          description: "Ref name to remove",
         },
       },
       required: ["name"],

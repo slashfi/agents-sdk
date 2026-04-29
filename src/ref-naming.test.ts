@@ -1,15 +1,10 @@
 /**
  * Tests for the `ref` naming contract introduced in 0.74:
  *
- *   - `RefEntry` gains an optional `name?` field for the local identifier.
- *     The legacy `as?` field still parses for backward compat.
- *   - `normalizeRef` resolves the identifier as `name ?? as ?? ref`, so
- *     all lookup paths (get, list, update, remove) accept entries written
- *     in either shape.
- *   - `createRefTool` (the adk-tools.ts MCP tool) drops `as` from its
- *     schema and defaults `ref` to `name` on add, so "Add a ref called X"
- *     via an LLM that picks either field lands on the same stored
- *     `{ ref: 'X' }` entry.
+ *   - `name` is the local identifier for every stored ref entry.
+ *   - Add paths default `name` to `ref` when omitted.
+ *   - `as` is not part of the stored or public ref shape.
+ *   - Adding a duplicate `name` is a loud error, not a replace.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -42,7 +37,7 @@ async function readJson<T = unknown>(fs: FsStore, path: string): Promise<T> {
 // ─── RefEntry: name field on write ───────────────────────────────────
 
 describe("ref.add — identifier field", () => {
-  test("single-instance case stores only `ref` (no `name`/`as`)", async () => {
+  test("single-instance case stores explicit `name` equal to `ref`", async () => {
     const fs = createMemoryFs();
     const adk = createAdk(fs);
 
@@ -58,8 +53,7 @@ describe("ref.add — identifier field", () => {
     );
     expect(parsed.refs).toHaveLength(1);
     expect(parsed.refs[0].ref).toBe("test-ref");
-    expect(parsed.refs[0].name).toBeUndefined();
-    expect(parsed.refs[0].as).toBeUndefined();
+    expect(parsed.refs[0].name).toBe("test-ref");
   });
 
   test("aliasing case stores both `ref` and `name`", async () => {
@@ -79,14 +73,40 @@ describe("ref.add — identifier field", () => {
     );
     expect(parsed.refs[0].ref).toBe("notion");
     expect(parsed.refs[0].name).toBe("work-notion");
-    // Legacy `as` field is never emitted on new writes.
-    expect(parsed.refs[0].as).toBeUndefined();
+  });
+
+  test("adding a duplicate name rejects instead of replacing", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+
+    await adk.ref.add({
+      ref: "notion",
+      name: "work",
+      scheme: "mcp",
+      url: "http://localhost:12345",
+    });
+
+    await expect(
+      adk.ref.add({
+        ref: "linear",
+        name: "work",
+        scheme: "mcp",
+        url: "http://localhost:12346",
+      }),
+    ).rejects.toThrow(/already exists/);
+
+    const parsed = await readJson<{ refs: Array<Record<string, unknown>> }>(
+      fs,
+      "consumer-config.json",
+    );
+    expect(parsed.refs).toHaveLength(1);
+    expect(parsed.refs[0].ref).toBe("notion");
   });
 });
 
 // ─── Lookup compatibility: new `name` field works end-to-end ─────────
 
-describe("ref lookup — name/as/ref resolution", () => {
+describe("ref lookup — name/ref resolution", () => {
   test("entries written with `name` are findable by `name`", async () => {
     const fs = createMemoryFs();
     const adk = createAdk(fs);
@@ -119,9 +139,7 @@ describe("ref lookup — name/as/ref resolution", () => {
     expect(refs[0]?.name).toBe("work-notion");
   });
 
-  test("legacy entries written with `as` remain findable by `as`", async () => {
-    // Simulate a consumer-config.json produced by a pre-0.74 client that
-    // still writes the `as` field. The read path must still resolve it.
+  test("entries without `name` normalize to `ref`", async () => {
     const fs = createMemoryFs();
     await fs.writeFile(
       "consumer-config.json",
@@ -129,7 +147,6 @@ describe("ref lookup — name/as/ref resolution", () => {
         refs: [
           {
             ref: "notion",
-            as: "work-notion",
             scheme: "mcp",
             url: "http://localhost:12345",
           },
@@ -138,55 +155,25 @@ describe("ref lookup — name/as/ref resolution", () => {
     );
     const adk = createAdk(fs);
 
-    const entry = await adk.ref.get("work-notion");
-    expect(entry).not.toBeNull();
-    expect(entry?.ref).toBe("notion");
-    expect(entry?.as).toBe("work-notion");
-  });
-
-  test("when both `name` and `as` are present, `name` wins", async () => {
-    const fs = createMemoryFs();
-    await fs.writeFile(
-      "consumer-config.json",
-      JSON.stringify({
-        refs: [
-          {
-            ref: "notion",
-            name: "new-identifier",
-            as: "legacy-identifier",
-            scheme: "mcp",
-            url: "http://localhost:12345",
-          },
-        ],
-      }),
-    );
-    const adk = createAdk(fs);
-
-    const byNew = await adk.ref.get("new-identifier");
-    expect(byNew).not.toBeNull();
-    expect(byNew?.ref).toBe("notion");
+    const refs = await adk.ref.list();
+    expect(refs[0]?.name).toBe("notion");
+    expect(await adk.ref.get("notion")).not.toBeNull();
   });
 });
 
-// ─── ref.update: renaming clears the legacy `as` field ───────────────
+// ─── ref.update: name is the only rename field ───────────────────────
 
-describe("ref.update — name/as handling", () => {
-  test("passing `name` in updates sets name and clears legacy `as`", async () => {
+describe("ref.update — name handling", () => {
+  test("passing `name` in updates sets name", async () => {
     const fs = createMemoryFs();
-    await fs.writeFile(
-      "consumer-config.json",
-      JSON.stringify({
-        refs: [
-          {
-            ref: "notion",
-            as: "old-alias",
-            scheme: "mcp",
-            url: "http://localhost:12345",
-          },
-        ],
-      }),
-    );
     const adk = createAdk(fs);
+
+    await adk.ref.add({
+      ref: "notion",
+      name: "old-alias",
+      scheme: "mcp",
+      url: "http://localhost:12345",
+    });
 
     const ok = await adk.ref.update("old-alias", { name: "new-alias" });
     expect(ok).toBe(true);
@@ -196,35 +183,29 @@ describe("ref.update — name/as handling", () => {
       "consumer-config.json",
     );
     expect(parsed.refs[0].name).toBe("new-alias");
-    expect(parsed.refs[0].as).toBeUndefined();
     expect(parsed.refs[0].ref).toBe("notion");
   });
 
-  test("passing only `as` updates the legacy field (pre-0.74 callers)", async () => {
+  test("renaming to an existing name rejects", async () => {
     const fs = createMemoryFs();
-    await fs.writeFile(
-      "consumer-config.json",
-      JSON.stringify({
-        refs: [
-          {
-            ref: "notion",
-            as: "first",
-            scheme: "mcp",
-            url: "http://localhost:12345",
-          },
-        ],
-      }),
-    );
     const adk = createAdk(fs);
 
-    const ok = await adk.ref.update("first", { as: "second" });
-    expect(ok).toBe(true);
+    await adk.ref.add({
+      ref: "notion",
+      name: "first",
+      scheme: "mcp",
+      url: "http://localhost:12345",
+    });
+    await adk.ref.add({
+      ref: "linear",
+      name: "second",
+      scheme: "mcp",
+      url: "http://localhost:12346",
+    });
 
-    const parsed = await readJson<{ refs: Array<Record<string, unknown>> }>(
-      fs,
-      "consumer-config.json",
+    await expect(adk.ref.update("first", { name: "second" })).rejects.toThrow(
+      /already exists/,
     );
-    expect(parsed.refs[0].as).toBe("second");
   });
 });
 
@@ -232,10 +213,8 @@ describe("ref.update — name/as handling", () => {
 //
 // When an LLM is prompted with "Add a ref called X", its tool-call
 // arguments can land on either `{ ref: 'X', … }` or `{ name: 'X', … }`
-// depending on sampling. Pre-0.74, the former stored `{ ref: 'X' }`
-// and the latter stored `{ ref: undefined }` (broken lookup). The
-// `add` handler now defaults `ref ??= name` so both paths converge on
-// the same stored entry.
+// depending on sampling. The `add` handler defaults the missing field so
+// both paths converge on the same stored `{ ref: 'X', name: 'X' }` entry.
 
 describe("ref tool — add operation defaults ref to name", () => {
   function makeRefTool(adk: ReturnType<typeof createAdk>) {
@@ -267,8 +246,7 @@ describe("ref tool — add operation defaults ref to name", () => {
     );
     expect(parsed.refs).toHaveLength(1);
     expect(parsed.refs[0].ref).toBe("test-identity-ref");
-    // name was not stored because it equals ref (single-instance case)
-    expect(parsed.refs[0].name).toBeUndefined();
+    expect(parsed.refs[0].name).toBe("test-identity-ref");
 
     const entry = await adk.ref.get("test-identity-ref");
     expect(entry).not.toBeNull();
@@ -295,7 +273,7 @@ describe("ref tool — add operation defaults ref to name", () => {
       "consumer-config.json",
     );
     expect(parsed.refs[0].ref).toBe("test-identity-ref");
-    expect(parsed.refs[0].name).toBeUndefined();
+    expect(parsed.refs[0].name).toBe("test-identity-ref");
   });
 
   test("LLM sends `ref` + different `name` → stored as canonical + alias", async () => {
@@ -347,5 +325,52 @@ describe("ref tool — add operation defaults ref to name", () => {
     // Nothing got written.
     const raw = await fs.readFile("consumer-config.json");
     expect(raw).toBeNull();
+  });
+});
+
+describe("ref tool — auth state hook", () => {
+  test("passes tool input to getAuthStateContext", async () => {
+    const authCalls: Array<{
+      name: string;
+      opts: { stateContext?: Record<string, unknown> };
+    }> = [];
+    const adk = {
+      ref: {
+        auth: async (
+          name: string,
+          opts: { stateContext?: Record<string, unknown> },
+        ) => {
+          authCalls.push({ name, opts });
+          return { complete: true };
+        },
+      },
+    } as unknown as ReturnType<typeof createAdk>;
+    const tools = createAdkTools({
+      resolveScope: () => adk,
+      hooks: {
+        getAuthStateContext: async (input) => ({
+          name: input.name,
+          ref: input.ref,
+        }),
+      },
+    });
+    const refTool = tools.find((t) => t.name === "ref");
+    if (!refTool) throw new Error("ref tool not found");
+
+    await refTool.execute(
+      {
+        operation: "auth",
+        ref: "google-gmail",
+        name: "work2",
+      },
+      {} as ToolContext,
+    );
+
+    expect(authCalls).toHaveLength(1);
+    expect(authCalls[0]?.name).toBe("work2");
+    expect(authCalls[0]?.opts.stateContext).toEqual({
+      ref: "google-gmail",
+      name: "work2",
+    });
   });
 });

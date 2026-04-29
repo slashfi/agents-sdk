@@ -326,7 +326,7 @@ export async function syncAllRefs(
   for (const refEntry of refs) {
     const name = typeof refEntry === "string"
       ? refEntry
-      : (refEntry as any).as ?? (refEntry as any).ref ?? (refEntry as any).name;
+      : (refEntry as any).name ?? (refEntry as any).ref;
     if (!name) continue;
     if (opts?.filter && name !== opts.filter) continue;
     names.push(name);

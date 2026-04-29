@@ -307,6 +307,7 @@ export type {
   RegistryAuth,
   RegistryEntry,
   RefConfig,
+  RefAddInput,
   RefEntry,
   ConsumerConfig,
   ResolvedRegistry,
