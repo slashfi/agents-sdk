@@ -2194,18 +2194,38 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
-      const consumer = await buildConsumerForRef(entry);
-      const result = await consumer.inspect(
-        entry.sourceRegistry?.agentPath ?? entry.ref,
-        entry.sourceRegistry?.url,
-        opts,
-      );
+      // Registry-proxied refs: ask the remote @config for the agent
+      // definition. The registry only knows the proxy stub; the
+      // authoritative tool schemas (and full security scheme) live on
+      // the proxy host. Without this, `inspect` returns either an
+      // empty result or a stripped-down stub for proxy-mode refs,
+      // which silently breaks `materializeRef` (no tool docs / types
+      // get written for e.g. google-gmail, google-calendar) and any
+      // other caller that depends on `inspect` for tool listings.
+      const proxy = await resolveProxyForRef(entry);
+      const result = proxy
+        ? await forwardRefOpToProxy<AgentInspection | null>(
+            proxy.reg,
+            proxy.agent,
+            "inspect",
+            { name, ...(opts?.full !== undefined && { full: opts.full }) },
+          )
+        : await (async () => {
+            const consumer = await buildConsumerForRef(entry);
+            return consumer.inspect(
+              entry.sourceRegistry?.agentPath ?? entry.ref,
+              entry.sourceRegistry?.url,
+              opts,
+            );
+          })();
 
       // Side-effect: refresh the registry cache so subsequent ref.list()
       // / ref.get() calls see the latest description and tool summaries
       // without another network round-trip. Strips inputSchema (caller's
       // `result` is unaffected — it still carries the full data).
-      await upsertRegistryCacheEntry(name, buildCacheEntry(entry.ref, result));
+      if (result) {
+        await upsertRegistryCacheEntry(name, buildCacheEntry(entry.ref, result));
+      }
 
       return result;
     },
