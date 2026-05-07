@@ -17,7 +17,9 @@
  * ```
  */
 
+import { AdkError } from "./adk-error.js";
 import type { FsStore } from "./agent-definitions/config.js";
+import { decryptSecret, encryptSecret } from "./crypto.js";
 import type {
   ConsumerConfig,
   RefAddInput,
@@ -27,30 +29,67 @@ import type {
   ResolvedRegistry,
 } from "./define-config.js";
 import { normalizeRef } from "./define-config.js";
+import type { RegistryAuthRequirement } from "./define-config.js";
 import type { FetchFn } from "./fetch-types.js";
 import type { Logger } from "./logger.js";
-import { createRegistryConsumer } from "./registry-consumer.js";
-import type {
-  AgentListEntry,
-  AgentInspection,
-  RegistryConfiguration,
-  RegistryConsumer,
-} from "./registry-consumer.js";
-import type { CallAgentResponse, SecuritySchemeSummary } from "./types.js";
-import { decryptSecret, encryptSecret } from "./crypto.js";
-import { AdkError } from "./adk-error.js";
 import {
+  buildOAuthAuthorizeUrl,
   discoverOAuthMetadata,
   dynamicClientRegistration,
-  buildOAuthAuthorizeUrl,
   exchangeCodeForTokens,
   probeRegistryAuth,
   refreshAccessToken,
 } from "./mcp-client.js";
-import type { RegistryAuthRequirement } from "./define-config.js";
+import { createRegistryConsumer } from "./registry-consumer.js";
+import type {
+  AgentInspection,
+  AgentListEntry,
+  RegistryConfiguration,
+  RegistryConsumer,
+} from "./registry-consumer.js";
+import type { CallAgentResponse, SecuritySchemeSummary } from "./types.js";
 
 const CONFIG_PATH = "consumer-config.json";
+const REGISTRY_CACHE_PATH = "registry-cache.json";
 const SECRET_PREFIX = "secret:";
+
+// ============================================
+// Registry cache types
+// ============================================
+
+/**
+ * Slim tool summary stored in the registry cache. Mirrors the shape returned
+ * by `consumer.inspect()` (sans `inputSchema` and `fullTokens`) so the LLM
+ * can discover an agent's surface without a network round-trip.
+ */
+export interface RegistryCacheToolSummary {
+  name: string;
+  description?: string;
+}
+
+/**
+ * Per-ref cache entry. Updated as a side-effect of `ref.add()` and
+ * `ref.inspect()` whenever the registry response carries description or tool
+ * information. Identity-relative (lives next to the consumer-config that
+ * issued the registry call), so permission-filtered views stay consistent.
+ */
+export interface RegistryCacheEntry {
+  /** Canonical agent path (e.g. `notion`). Stored for sanity/debug. */
+  ref: string;
+  description?: string;
+  tools?: RegistryCacheToolSummary[];
+  /** ISO timestamp of the most recent registry round-trip that wrote this. */
+  fetchedAt: string;
+}
+
+/**
+ * On-disk shape of `registry-cache.json`. Keyed by `RefEntry.name` (local
+ * identifier) — the same key consumer-config uses, so hydration is a 1:1
+ * lookup.
+ */
+export interface RegistryCache {
+  refs: Record<string, RegistryCacheEntry>;
+}
 
 // ============================================
 // Types
@@ -128,7 +167,9 @@ export interface RegistryTestResult {
 }
 
 export interface AdkRegistryApi {
-  add(entry: RegistryEntry): Promise<{ authRequirement?: RegistryAuthRequirement }>;
+  add(
+    entry: RegistryEntry,
+  ): Promise<{ authRequirement?: RegistryAuthRequirement }>;
   remove(nameOrUrl: string): Promise<boolean>;
   list(): Promise<RegistryEntry[]>;
   get(name: string): Promise<RegistryEntry | null>;
@@ -230,7 +271,7 @@ export interface AuthStartResult {
  * When populated, call() rejects unknown agent paths and tool names at compile time.
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface AdkAgentRegistry {}
+export type AdkAgentRegistry = {};
 
 /** @internal Helper types for conditional call() signature */
 type AgentPath = keyof AdkAgentRegistry;
@@ -244,9 +285,17 @@ type ParamsOf<
 
 type AdkRefCallFn = keyof AdkAgentRegistry extends never
   ? // No registry — loose fallback
-    (name: string, tool: string, params?: Record<string, unknown>) => Promise<CallAgentResponse>
+    (
+      name: string,
+      tool: string,
+      params?: Record<string, unknown>,
+    ) => Promise<CallAgentResponse>
   : // Registry populated — strict typed overload
-    <A extends AgentPath, T extends ToolsOf<A>>(name: A, tool: T, params: ParamsOf<A, T>) => Promise<CallAgentResponse>;
+    <A extends AgentPath, T extends ToolsOf<A>>(
+      name: A,
+      tool: T,
+      params: ParamsOf<A, T>,
+    ) => Promise<CallAgentResponse>;
 
 export interface AdkRefApi {
   add(entry: RefAddInput): Promise<{ security: SecuritySchemeSummary | null }>;
@@ -254,7 +303,10 @@ export interface AdkRefApi {
   list(): Promise<ResolvedRef[]>;
   get(name: string): Promise<ResolvedRef | null>;
   update(name: string, updates: Partial<RefEntry>): Promise<boolean>;
-  inspect(name: string, options?: { full?: boolean }): Promise<AgentInspection | null>;
+  inspect(
+    name: string,
+    options?: { full?: boolean },
+  ): Promise<AgentInspection | null>;
   call: AdkRefCallFn;
   resources(name: string): Promise<CallAgentResponse>;
   read(name: string, uris: string[]): Promise<CallAgentResponse>;
@@ -265,37 +317,43 @@ export interface AdkRefApi {
    * Call adk.handleCallback() when the callback arrives, or use
    * adk.ref.authLocal() to spin up a local server and block.
    */
-  auth(name: string, opts?: {
-    /** For API key / bearer auth: the key/token value (single-key shorthand) */
-    apiKey?: string;
-    /**
-     * Credentials map for multi-field auth. Keys match the `name` field
-     * from AuthChallengeField (e.g. { "api_key": "xxx", "app_key": "yyy" }).
-     * For single-key apiKey or http bearer, `apiKey` shorthand also works.
-     */
-    credentials?: Record<string, string>;
-    /** Extra context to encode in the OAuth state (e.g., tenant/user IDs for multi-tenant callbacks) */
-    stateContext?: Record<string, unknown>;
-    /** Additional scopes to request (e.g., optional scopes declared by the agent) */
-    scopes?: string[];
-    /**
-     * Opt out of proxy routing when the ref's source registry has
-     * `proxy: { mode: 'optional' }`. Ignored for `mode: 'required'`.
-     * Defaults to `false` — if a registry offers a proxy we use it.
-     */
-    preferLocal?: boolean;
-  }): Promise<AuthStartResult>;
+  auth(
+    name: string,
+    opts?: {
+      /** For API key / bearer auth: the key/token value (single-key shorthand) */
+      apiKey?: string;
+      /**
+       * Credentials map for multi-field auth. Keys match the `name` field
+       * from AuthChallengeField (e.g. { "api_key": "xxx", "app_key": "yyy" }).
+       * For single-key apiKey or http bearer, `apiKey` shorthand also works.
+       */
+      credentials?: Record<string, string>;
+      /** Extra context to encode in the OAuth state (e.g., tenant/user IDs for multi-tenant callbacks) */
+      stateContext?: Record<string, unknown>;
+      /** Additional scopes to request (e.g., optional scopes declared by the agent) */
+      scopes?: string[];
+      /**
+       * Opt out of proxy routing when the ref's source registry has
+       * `proxy: { mode: 'optional' }`. Ignored for `mode: 'required'`.
+       * Defaults to `false` — if a registry offers a proxy we use it.
+       */
+      preferLocal?: boolean;
+    },
+  ): Promise<AuthStartResult>;
   /**
    * Run the full OAuth flow locally: start auth, spin up a callback
    * server, open the browser, wait for the redirect, exchange tokens.
    * Resolves when auth is complete or times out.
    */
-  authLocal(name: string, opts?: {
-    /** Called with the authorize URL (e.g. to open in browser) */
-    onAuthorizeUrl?: (url: string) => void;
-    /** Timeout in ms (default 300_000 = 5 min) */
-    timeoutMs?: number;
-  }): Promise<{ complete: boolean }>;
+  authLocal(
+    name: string,
+    opts?: {
+      /** Called with the authorize URL (e.g. to open in browser) */
+      onAuthorizeUrl?: (url: string) => void;
+      /** Timeout in ms (default 300_000 = 5 min) */
+      timeoutMs?: number;
+    },
+  ): Promise<{ complete: boolean }>;
   /**
    * Refresh an OAuth access token using a stored refresh_token.
    * Returns the new access_token, or null if refresh is not possible
@@ -317,7 +375,11 @@ export interface Adk {
    * Parse the callback query params and pass them here.
    * @returns the ref name and whether auth is complete
    */
-  handleCallback(params: { code: string; state: string }): Promise<{ refName: string; complete: boolean; stateContext?: Record<string, unknown> }>;
+  handleCallback(params: { code: string; state: string }): Promise<{
+    refName: string;
+    complete: boolean;
+    stateContext?: Record<string, unknown>;
+  }>;
 }
 
 // ============================================
@@ -379,9 +441,19 @@ async function decryptConfigSecrets(
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj)) {
     if (typeof value === "string" && value.startsWith(SECRET_PREFIX)) {
-      result[key] = await decryptSecret(value.slice(SECRET_PREFIX.length), encryptionKey);
-    } else if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-      result[key] = await decryptConfigSecrets(value as Record<string, unknown>, encryptionKey);
+      result[key] = await decryptSecret(
+        value.slice(SECRET_PREFIX.length),
+        encryptionKey,
+      );
+    } else if (
+      value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value)
+    ) {
+      result[key] = await decryptConfigSecrets(
+        value as Record<string, unknown>,
+        encryptionKey,
+      );
     } else {
       result[key] = value;
     }
@@ -399,7 +471,7 @@ async function decryptConfigSecrets(
  * Fallback: _httpStatus from tool result body
  */
 function isUnauthorized(result: unknown): boolean {
-  if (!result || typeof result !== 'object') return false;
+  if (!result || typeof result !== "object") return false;
   const r = result as Record<string, unknown>;
   // Primary: HTTP status forwarded by the registry and set by callRegistry
   if (r.httpStatus === 401) return true;
@@ -414,19 +486,29 @@ function isUnauthorized(result: unknown): boolean {
 // ============================================
 
 const esc = (s: string) =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 
-function renderCredentialForm(name: string, fields: AuthChallengeField[], error?: string): string {
-  const fieldHtml = fields.map((f) => `
+function renderCredentialForm(
+  name: string,
+  fields: AuthChallengeField[],
+  error?: string,
+): string {
+  const fieldHtml = fields
+    .map(
+      (f) => `
       <div class="field">
         <label for="${esc(f.name)}">${esc(f.label)}</label>
         ${f.description ? `<p class="desc">${esc(f.description)}</p>` : ""}
         <input id="${esc(f.name)}" name="${esc(f.name)}" type="${f.secret ? "password" : "text"}" required autocomplete="off" spellcheck="false" />
-      </div>`).join("");
+      </div>`,
+    )
+    .join("");
 
-  const errorHtml = error
-    ? `<div class="error">${esc(error)}</div>`
-    : "";
+  const errorHtml = error ? `<div class="error">${esc(error)}</div>` : "";
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -478,7 +560,6 @@ p{font-size:14px;color:#a3a3a3}
 }
 
 export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
-
   async function readConfig(): Promise<ConsumerConfig> {
     const content = await fs.readFile(CONFIG_PATH);
     if (!content) return {};
@@ -493,11 +574,115 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2));
   }
 
+  // -------------------------------------------------------------------------
+  // Registry cache helpers
+  //
+  // The cache is purely an internal optimization for the adk's read paths
+  // (`ref.list()`, `ref.get()`). Writes happen as side-effects of methods
+  // that already call the registry (`ref.add()`, `ref.inspect()`); the
+  // public surface never grows new methods. Cache failures (missing file,
+  // malformed JSON, fs errors during write) are swallowed so the registry
+  // cache can never break a registry operation.
+  // -------------------------------------------------------------------------
+
+  async function readRegistryCache(): Promise<RegistryCache> {
+    try {
+      const content = await fs.readFile(REGISTRY_CACHE_PATH);
+      if (!content) return { refs: {} };
+      const parsed = JSON.parse(content) as RegistryCache;
+      return { refs: parsed.refs ?? {} };
+    } catch {
+      return { refs: {} };
+    }
+  }
+
+  async function writeRegistryCache(cache: RegistryCache): Promise<void> {
+    try {
+      await fs.writeFile(REGISTRY_CACHE_PATH, JSON.stringify(cache, null, 2));
+    } catch {
+      // Best-effort. A failed cache write should never break the operation
+      // that triggered it.
+    }
+  }
+
+  /**
+   * Project an inspect/list response into the slim shape we cache. Drops
+   * `inputSchema` (too large) and `fullTokens` (registry-internal). Returns
+   * undefined if the response carries nothing worth caching.
+   */
+  function buildCacheEntry(
+    ref: string,
+    info:
+      | {
+          description?: string;
+          tools?: Array<{ name: string; description?: string }>;
+          toolSummaries?: Array<{ name: string; description?: string }>;
+        }
+      | null
+      | undefined,
+  ): RegistryCacheEntry | undefined {
+    if (!info) return undefined;
+    const toolSource = info.tools ?? info.toolSummaries;
+    const tools = toolSource?.map((t) => {
+      const slim: RegistryCacheToolSummary = { name: t.name };
+      if (t.description !== undefined) slim.description = t.description;
+      return slim;
+    });
+    if (info.description === undefined && (!tools || tools.length === 0)) {
+      return undefined;
+    }
+    const entry: RegistryCacheEntry = {
+      ref,
+      fetchedAt: new Date().toISOString(),
+    };
+    if (info.description !== undefined) entry.description = info.description;
+    if (tools && tools.length > 0) entry.tools = tools;
+    return entry;
+  }
+
+  async function upsertRegistryCacheEntry(
+    name: string,
+    entry: RegistryCacheEntry | undefined,
+  ): Promise<void> {
+    if (!entry) return;
+    const cache = await readRegistryCache();
+    cache.refs[name] = entry;
+    await writeRegistryCache(cache);
+  }
+
+  async function removeRegistryCacheEntry(name: string): Promise<void> {
+    const cache = await readRegistryCache();
+    if (!(name in cache.refs)) return;
+    delete cache.refs[name];
+    await writeRegistryCache(cache);
+  }
+
+  /**
+   * Hydrate a `ResolvedRef` with cached registry metadata when available.
+   * Pure: never mutates input. Leaves `description` / `tools` undefined when
+   * the cache has no entry, so callers can apply their own UX fallback.
+   */
+  function hydrateFromCache(
+    ref: ResolvedRef,
+    cache: RegistryCache,
+  ): ResolvedRef {
+    const cached = cache.refs[ref.name];
+    if (!cached) return ref;
+    const next: ResolvedRef = { ...ref };
+    if (cached.description !== undefined) next.description = cached.description;
+    if (cached.tools !== undefined) next.tools = cached.tools;
+    return next;
+  }
+
   /**
    * Store a secret value in a ref's config, encrypted if encryptionKey is set.
    * The value is stored inline as "secret:<encrypted>" in consumer-config.json.
    */
-  async function storeRefSecret(name: string, key: string, value: string): Promise<void> {
+  async function storeRefSecret(
+    name: string,
+    key: string,
+    value: string,
+  ): Promise<void> {
     const stored = options.encryptionKey
       ? `${SECRET_PREFIX}${await encryptSecret(value, options.encryptionKey)}`
       : value;
@@ -510,13 +695,19 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     await writeConfig({ ...config, refs });
   }
 
-  async function readRefSecret(name: string, key: string): Promise<string | null> {
+  async function readRefSecret(
+    name: string,
+    key: string,
+  ): Promise<string | null> {
     const config = await readConfig();
     const entry = findRef(config.refs ?? [], name);
     const value = entry?.config?.[key];
     if (typeof value !== "string") return null;
     if (value.startsWith(SECRET_PREFIX) && options.encryptionKey) {
-      return decryptSecret(value.slice(SECRET_PREFIX.length), options.encryptionKey);
+      return decryptSecret(
+        value.slice(SECRET_PREFIX.length),
+        options.encryptionKey,
+      );
     }
     return value;
   }
@@ -601,23 +792,36 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     createdAt: number;
   }
 
-  async function readPendingOAuth(): Promise<Record<string, PendingOAuthState>> {
+  async function readPendingOAuth(): Promise<
+    Record<string, PendingOAuthState>
+  > {
     const content = await fs.readFile(PENDING_OAUTH_PATH);
     if (!content) return {};
-    try { return JSON.parse(content); } catch { return {}; }
+    try {
+      return JSON.parse(content);
+    } catch {
+      return {};
+    }
   }
 
-  async function writePendingOAuth(pending: Record<string, PendingOAuthState>): Promise<void> {
+  async function writePendingOAuth(
+    pending: Record<string, PendingOAuthState>,
+  ): Promise<void> {
     await fs.writeFile(PENDING_OAUTH_PATH, JSON.stringify(pending, null, 2));
   }
 
-  async function storePendingOAuth(state: string, data: PendingOAuthState): Promise<void> {
+  async function storePendingOAuth(
+    state: string,
+    data: PendingOAuthState,
+  ): Promise<void> {
     const pending = await readPendingOAuth();
     pending[state] = data;
     await writePendingOAuth(pending);
   }
 
-  async function consumePendingOAuth(state: string): Promise<PendingOAuthState | null> {
+  async function consumePendingOAuth(
+    state: string,
+  ): Promise<PendingOAuthState | null> {
     const pending = await readPendingOAuth();
     const data = pending[state] ?? null;
     if (data) {
@@ -646,7 +850,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     let reqId = 0;
     let sessionId: string | undefined;
     async function rpc(method: string, rpcParams?: Record<string, unknown>) {
-      const reqHeaders = { ...headers, ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}) };
+      const reqHeaders = {
+        ...headers,
+        ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
+      };
       const res = await globalThis.fetch(url, {
         method: "POST",
         headers: reqHeaders,
@@ -658,7 +865,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         }),
       });
       if (!res.ok) {
-        throw new Error(`MCP ${method} failed (${res.status}): ${await res.text().catch(() => "unknown")}`);
+        throw new Error(
+          `MCP ${method} failed (${res.status}): ${await res.text().catch(() => "unknown")}`,
+        );
       }
 
       const contentType = res.headers.get("content-type") ?? "";
@@ -676,18 +885,23 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             try {
               const json = JSON.parse(line.slice(6));
               if (json.id === reqId) {
-                if (json.error) throw new Error(`MCP RPC error: ${json.error.message}`);
+                if (json.error)
+                  throw new Error(`MCP RPC error: ${json.error.message}`);
                 return json.result;
               }
             } catch (e) {
-              if (e instanceof Error && e.message.startsWith("MCP RPC")) throw e;
+              if (e instanceof Error && e.message.startsWith("MCP RPC"))
+                throw e;
             }
           }
         }
         return undefined;
       }
 
-      const json = await res.json() as { result?: unknown; error?: { message: string } };
+      const json = (await res.json()) as {
+        result?: unknown;
+        error?: { message: string };
+      };
       if (json.error) throw new Error(`MCP RPC error: ${json.error.message}`);
       return json.result;
     }
@@ -700,17 +914,34 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       });
       await rpc("notifications/initialized").catch(() => {});
 
-      const result = await rpc("tools/call", { name: toolName, arguments: params }) as
-        { content?: Array<{ type: string; text?: string }>; isError?: boolean };
+      const result = (await rpc("tools/call", {
+        name: toolName,
+        arguments: params,
+      })) as {
+        content?: Array<{ type: string; text?: string }>;
+        isError?: boolean;
+      };
 
       const textContent = result?.content?.find((c) => c.type === "text");
       if (textContent?.text) {
-        try { return { success: true, result: JSON.parse(textContent.text) } as CallAgentResponse; }
-        catch { return { success: true, result: textContent.text } as CallAgentResponse; }
+        try {
+          return {
+            success: true,
+            result: JSON.parse(textContent.text),
+          } as CallAgentResponse;
+        } catch {
+          return {
+            success: true,
+            result: textContent.text,
+          } as CallAgentResponse;
+        }
       }
       return { success: true, result } as CallAgentResponse;
     } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) } as CallAgentResponse;
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      } as CallAgentResponse;
     }
   }
 
@@ -720,11 +951,13 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
   }
 
   /** Try fetching a URL directly as OAuth metadata (it may already be a discovery URL). */
-  async function tryFetchOAuthMetadata(url: string): Promise<import("./mcp-client.js").OAuthServerMetadata | null> {
+  async function tryFetchOAuthMetadata(
+    url: string,
+  ): Promise<import("./mcp-client.js").OAuthServerMetadata | null> {
     try {
       const res = await globalThis.fetch(url);
       if (!res.ok) return null;
-      const data = await res.json() as Record<string, unknown>;
+      const data = (await res.json()) as Record<string, unknown>;
       if (data.authorization_endpoint && data.token_endpoint) {
         return data as unknown as import("./mcp-client.js").OAuthServerMetadata;
       }
@@ -778,7 +1011,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
    * Build a consumer that includes the ref's sourceRegistry if present.
    * This ensures calls/inspect route to the correct registry endpoint.
    */
-  async function buildConsumerForRef(entry: RefEntry): Promise<RegistryConsumer> {
+  async function buildConsumerForRef(
+    entry: RefEntry,
+  ): Promise<RegistryConsumer> {
     const config = await readConfig();
     let registries = config.registries ?? [];
 
@@ -816,7 +1051,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
    * Resolve the correct registry for a ref.
    * If the ref has a sourceRegistry, use that; otherwise fall back to the first registry.
    */
-  function resolveRegistryForRef(consumer: RegistryConsumer, entry: RefEntry): ResolvedRegistry {
+  function resolveRegistryForRef(
+    consumer: RegistryConsumer,
+    entry: RefEntry,
+  ): ResolvedRegistry {
     const regs = consumer.registries();
     if (entry.sourceRegistry?.url) {
       const match = regs.find((r) => r.url === entry.sourceRegistry!.url);
@@ -837,7 +1075,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
    * the ref is sourced from a raw URL (no registry), in which case proxy routing
    * does not apply.
    */
-  async function findRegistryEntryForRef(entry: RefEntry): Promise<RegistryEntry | null> {
+  async function findRegistryEntryForRef(
+    entry: RefEntry,
+  ): Promise<RegistryEntry | null> {
     const sourceUrl = entry.sourceRegistry?.url;
     if (!sourceUrl) return null;
     const config = await readConfig();
@@ -890,7 +1130,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       sourceRegistry: { url: reg.url, agentPath: agent },
     });
     const resolved = consumer.registries().find((r) => r.url === reg.url);
-    if (!resolved) throw new Error(`Registry ${reg.url} not resolvable for proxy forwarding`);
+    if (!resolved)
+      throw new Error(
+        `Registry ${reg.url} not resolvable for proxy forwarding`,
+      );
 
     const response = await consumer.callRegistry(resolved, {
       action: "execute_tool",
@@ -900,8 +1143,13 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     });
 
     if (!response.success) {
-      const errResponse = response as { success: false; error?: string; code?: string };
-      const msg = errResponse.error ?? `Proxy ${agent}.ref(${operation}) failed`;
+      const errResponse = response as {
+        success: false;
+        error?: string;
+        code?: string;
+      };
+      const msg =
+        errResponse.error ?? `Proxy ${agent}.ref(${operation}) failed`;
       throw new Error(msg);
     }
     return (response as { success: true; result: unknown }).result as T;
@@ -970,7 +1218,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const rName = registryDisplayName(r);
       if (rName !== nameOrUrl && registryUrl(r) !== nameOrUrl) return r;
       found = true;
-      const existing: RegistryEntry = typeof r === "string" ? { url: r } : { ...r };
+      const existing: RegistryEntry =
+        typeof r === "string" ? { url: r } : { ...r };
       mutate(existing);
       return existing;
     });
@@ -983,11 +1232,16 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
    * Decrypt a `secret:`-prefixed value if we hold the encryption key. Plaintext
    * values pass through unchanged so dev configs keep working.
    */
-  async function revealSecret(value: string | undefined): Promise<string | undefined> {
+  async function revealSecret(
+    value: string | undefined,
+  ): Promise<string | undefined> {
     if (!value) return value;
     if (!value.startsWith(SECRET_PREFIX)) return value;
     if (!options.encryptionKey) return undefined;
-    return decryptSecret(value.slice(SECRET_PREFIX.length), options.encryptionKey);
+    return decryptSecret(
+      value.slice(SECRET_PREFIX.length),
+      options.encryptionKey,
+    );
   }
 
   /**
@@ -1002,7 +1256,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     const target = findRegistry(config.registries ?? [], nameOrUrl);
     if (!target || typeof target === "string") return false;
     const oauth = target.oauth;
-    if (!oauth?.refreshToken || !oauth.tokenEndpoint || !oauth.clientId) return false;
+    if (!oauth?.refreshToken || !oauth.tokenEndpoint || !oauth.clientId)
+      return false;
 
     const refreshToken = await revealSecret(oauth.refreshToken);
     const clientSecret = await revealSecret(oauth.clientSecret);
@@ -1044,7 +1299,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     try {
       return await fn();
     } catch (err) {
-      if (!(err instanceof AdkError) || err.code !== "registry_auth_required") throw err;
+      if (!(err instanceof AdkError) || err.code !== "registry_auth_required")
+        throw err;
       let refreshed = false;
       try {
         refreshed = await refreshRegistryToken(nameOrUrl);
@@ -1088,7 +1344,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
   }
 
   const registry: AdkRegistryApi = {
-    async add(entry: RegistryEntry): Promise<{ authRequirement?: RegistryAuthRequirement }> {
+    async add(
+      entry: RegistryEntry,
+    ): Promise<{ authRequirement?: RegistryAuthRequirement }> {
       const config = await readConfig();
       const alias = entry.name ?? entry.url;
       const registries = (config.registries ?? []).filter(
@@ -1135,7 +1393,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
                 ...final,
                 proxy: {
                   mode: discovered.proxy.mode,
-                  ...(discovered.proxy.agent && { agent: discovered.proxy.agent }),
+                  ...(discovered.proxy.agent && {
+                    agent: discovered.proxy.agent,
+                  }),
                 },
               };
             }
@@ -1156,7 +1416,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       if (!config.registries?.length) return false;
       const before = config.registries.length;
       const registries = config.registries.filter(
-        (r) => registryDisplayName(r) !== nameOrUrl && registryUrl(r) !== nameOrUrl,
+        (r) =>
+          registryDisplayName(r) !== nameOrUrl && registryUrl(r) !== nameOrUrl,
       );
       if (registries.length === before) return false;
       await writeConfig({ ...config, registries });
@@ -1177,7 +1438,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       return typeof target === "string" ? { url: target } : target;
     },
 
-    async update(name: string, updates: Partial<RegistryEntry>): Promise<boolean> {
+    async update(
+      name: string,
+      updates: Partial<RegistryEntry>,
+    ): Promise<boolean> {
       const config = await readConfig();
       if (!config.registries?.length) return false;
       let found = false;
@@ -1185,11 +1449,13 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         const rName = registryDisplayName(r);
         if (rName !== name && registryUrl(r) !== name) return r;
         found = true;
-        const existing: RegistryEntry = typeof r === "string" ? { url: r } : { ...r };
+        const existing: RegistryEntry =
+          typeof r === "string" ? { url: r } : { ...r };
         if (updates.url) existing.url = updates.url;
         if (updates.name) existing.name = updates.name;
         if (updates.auth) existing.auth = updates.auth;
-        if (updates.headers) existing.headers = { ...existing.headers, ...updates.headers };
+        if (updates.headers)
+          existing.headers = { ...existing.headers, ...updates.headers };
         if (updates.proxy !== undefined) existing.proxy = updates.proxy;
         return existing;
       });
@@ -1201,7 +1467,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     async browse(name: string, query?: string): Promise<AgentListEntry[]> {
       const config = await readConfig();
       const target = findRegistry(config.registries ?? [], name);
-      if (target && typeof target !== "string") assertRegistryAuthorized(target);
+      if (target && typeof target !== "string")
+        assertRegistryAuthorized(target);
       return callWithRefresh(name, async () => {
         const consumer = await buildConsumer(name);
         const url = target ? registryUrl(target) : name;
@@ -1212,7 +1479,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     async inspect(name: string): Promise<RegistryConfiguration> {
       const config = await readConfig();
       const target = findRegistry(config.registries ?? [], name);
-      if (target && typeof target !== "string") assertRegistryAuthorized(target);
+      if (target && typeof target !== "string")
+        assertRegistryAuthorized(target);
       return callWithRefresh(name, async () => {
         const consumer = await buildConsumer(name);
         const url = target ? registryUrl(target) : name;
@@ -1224,7 +1492,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const config = await readConfig();
       const registries = config.registries ?? [];
       const targets = name
-        ? registries.filter((r) => registryDisplayName(r) === name || registryUrl(r) === name)
+        ? registries.filter(
+            (r) => registryDisplayName(r) === name || registryUrl(r) === name,
+          )
         : registries;
 
       const results = await Promise.allSettled(
@@ -1265,7 +1535,12 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       return results.map((r) =>
         r.status === "fulfilled"
           ? r.value
-          : { name: "unknown", url: "unknown", status: "error" as const, error: "unknown" },
+          : {
+              name: "unknown",
+              url: "unknown",
+              status: "error" as const,
+              error: "unknown",
+            },
       );
     },
 
@@ -1337,7 +1612,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           });
           // Re-read so the flow below sees the fresh requirement.
           const refreshed = await readConfig();
-          const refreshedTarget = findRegistry(refreshed.registries ?? [], nameOrUrl);
+          const refreshedTarget = findRegistry(
+            refreshed.registries ?? [],
+            nameOrUrl,
+          );
           if (refreshedTarget && typeof refreshedTarget !== "string") {
             Object.assign(target, refreshedTarget);
           }
@@ -1403,17 +1681,21 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         );
 
         const state = crypto.randomUUID();
-        const { url: authorizeUrl, codeVerifier } = await buildOAuthAuthorizeUrl({
-          authorizationEndpoint: metadata.authorization_endpoint,
-          clientId: registration.clientId,
-          redirectUri,
-          scopes: req.scopes,
-          state,
-        });
+        const { url: authorizeUrl, codeVerifier } =
+          await buildOAuthAuthorizeUrl({
+            authorizationEndpoint: metadata.authorization_endpoint,
+            clientId: registration.clientId,
+            redirectUri,
+            scopes: req.scopes,
+            state,
+          });
 
         return new Promise<{ complete: boolean }>((resolve, reject) => {
           const server = createServer(async (reqIn, resOut) => {
-            const reqUrl = new URL(reqIn.url ?? "/", `http://localhost:${port}`);
+            const reqUrl = new URL(
+              reqIn.url ?? "/",
+              `http://localhost:${port}`,
+            );
             if (reqUrl.pathname !== "/callback") {
               resOut.writeHead(404);
               resOut.end();
@@ -1423,7 +1705,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             const code = reqUrl.searchParams.get("code");
             const returnedState = reqUrl.searchParams.get("state");
             if (!code || returnedState !== state) {
-              const error = reqUrl.searchParams.get("error") ?? "missing code/state";
+              const error =
+                reqUrl.searchParams.get("error") ?? "missing code/state";
               resOut.writeHead(400, { "Content-Type": "text/html" });
               resOut.end(`<h1>Error</h1><p>${esc(error)}</p>`);
               server.close();
@@ -1439,13 +1722,16 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             }
 
             try {
-              const tokens = await exchangeCodeForTokens(metadata.token_endpoint, {
-                code,
-                codeVerifier,
-                clientId: registration.clientId,
-                clientSecret: registration.clientSecret,
-                redirectUri,
-              });
+              const tokens = await exchangeCodeForTokens(
+                metadata.token_endpoint,
+                {
+                  code,
+                  codeVerifier,
+                  clientId: registration.clientId,
+                  clientSecret: registration.clientSecret,
+                  redirectUri,
+                },
+              );
               const expiresAt = tokens.expiresIn
                 ? new Date(Date.now() + tokens.expiresIn * 1000).toISOString()
                 : undefined;
@@ -1527,7 +1813,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             const token = params.get("token");
             if (!token) {
               resOut.writeHead(200, { "Content-Type": "text/html" });
-              resOut.end(renderCredentialForm(displayName, fields, "Token is required."));
+              resOut.end(
+                renderCredentialForm(displayName, fields, "Token is required."),
+              );
               return;
             }
             try {
@@ -1571,7 +1859,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
   // ==========================================
 
   const ref: AdkRefApi = {
-    async add(entryInput: RefAddInput): Promise<{ security: SecuritySchemeSummary | null }> {
+    async add(
+      entryInput: RefAddInput,
+    ): Promise<{ security: SecuritySchemeSummary | null }> {
       let security: SecuritySchemeSummary | null = null;
 
       const config = await readConfig();
@@ -1593,7 +1883,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         if (entry.sourceRegistry?.url) {
           entry = { ...entry, scheme: "registry" };
         } else if (entry.url) {
-          entry = { ...entry, scheme: entry.url.startsWith("http") ? "https" : "mcp" };
+          entry = {
+            ...entry,
+            scheme: entry.url.startsWith("http") ? "https" : "mcp",
+          };
         } else {
           throw new AdkError({
             code: "REF_INVALID",
@@ -1623,6 +1916,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         });
       }
 
+      let cacheEntry: RegistryCacheEntry | undefined;
       if (hasRegistries || entry.sourceRegistry?.url) {
         try {
           const consumer = await buildConsumerForRef(entry);
@@ -1631,11 +1925,11 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
           const requiresValidation = !!entry.sourceRegistry;
           if (requiresValidation) {
-            const hasContent = info && (
-              info.description ||
-              (info.tools && info.tools.length > 0) ||
-              (info.toolSummaries && info.toolSummaries.length > 0)
-            );
+            const hasContent =
+              info &&
+              (info.description ||
+                (info.tools && info.tools.length > 0) ||
+                (info.toolSummaries && info.toolSummaries.length > 0));
             if (!hasContent) {
               // Inspect returned empty — fall back to browse to check if agent exists
               const registryUrl = entry.sourceRegistry?.url;
@@ -1644,7 +1938,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
                 try {
                   const agents = await consumer.browse(registryUrl);
                   const stripAt = (s: string) => s.replace(/^@/, "");
-                  const refKey = stripAt(entry.sourceRegistry?.agentPath ?? entry.ref);
+                  const refKey = stripAt(
+                    entry.sourceRegistry?.agentPath ?? entry.ref,
+                  );
                   foundInBrowse = agents.some(
                     (a) => a.path === entry.ref || stripAt(a.path) === refKey,
                   );
@@ -1658,7 +1954,11 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
                   code: "REF_NOT_FOUND",
                   message: `Agent "${entry.ref}" not found on ${registryHint}`,
                   hint: "Check available agents with: adk registry browse",
-                  details: { ref: entry.ref, sourceRegistry: entry.sourceRegistry, scheme: entry.scheme },
+                  details: {
+                    ref: entry.ref,
+                    sourceRegistry: entry.sourceRegistry,
+                    scheme: entry.scheme,
+                  },
                 });
               }
             }
@@ -1667,17 +1967,22 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           if (info?.security) security = info.security;
           const agentMode = (info as any)?.mode;
           if (agentMode) (entry as any).mode = agentMode;
-          if (info?.upstream && !entry.url && agentMode !== 'api') {
+          if (info?.upstream && !entry.url && agentMode !== "api") {
             entry.url = info.upstream as string;
             entry.scheme = entry.scheme ?? "mcp";
           }
+
+          cacheEntry = buildCacheEntry(entry.ref, info);
         } catch (err) {
           if (err instanceof AdkError) throw err;
           throw new AdkError({
             code: "REGISTRY_UNREACHABLE",
             message: `Could not reach registry to validate "${entry.ref}"`,
             hint: "Check your registry connection with: adk registry test",
-            details: { ref: entry.ref, error: err instanceof Error ? err.message : String(err) },
+            details: {
+              ref: entry.ref,
+              error: err instanceof Error ? err.message : String(err),
+            },
             cause: err,
           });
         }
@@ -1685,6 +1990,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
       const refs = [...(config.refs ?? []), entry];
       await writeConfig({ ...config, refs });
+      await upsertRegistryCacheEntry(name, cacheEntry);
 
       return { security };
     },
@@ -1696,17 +2002,28 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const refs = config.refs.filter((r) => !refNameMatches(r, name));
       if (refs.length === before) return false;
       await writeConfig({ ...config, refs });
+      await removeRegistryCacheEntry(name);
       return true;
     },
 
     async list(): Promise<ResolvedRef[]> {
-      const config = await readConfig();
-      return (config.refs ?? []).map(normalizeRef);
+      const [config, cache] = await Promise.all([
+        readConfig(),
+        readRegistryCache(),
+      ]);
+      return (config.refs ?? [])
+        .map(normalizeRef)
+        .map((r) => hydrateFromCache(r, cache));
     },
 
     async get(name: string): Promise<ResolvedRef | null> {
-      const config = await readConfig();
-      return findRef(config.refs ?? [], name) ?? null;
+      const [config, cache] = await Promise.all([
+        readConfig(),
+        readRegistryCache(),
+      ]);
+      const found = findRef(config.refs ?? [], name);
+      if (!found) return null;
+      return hydrateFromCache(found, cache);
     },
 
     async update(name: string, updates: Partial<RefEntry>): Promise<boolean> {
@@ -1735,8 +2052,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           updated.name = updates.name;
         }
         if (updates.scheme) updated.scheme = updates.scheme;
-        if (updates.config) updated.config = { ...updated.config, ...updates.config };
-        if (updates.sourceRegistry) updated.sourceRegistry = updates.sourceRegistry;
+        if (updates.config)
+          updated.config = { ...updated.config, ...updates.config };
+        if (updates.sourceRegistry)
+          updated.sourceRegistry = updates.sourceRegistry;
         return updated;
       });
       if (!found) return false;
@@ -1744,38 +2063,63 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       return true;
     },
 
-    async inspect(name: string, opts?: { full?: boolean }): Promise<AgentInspection | null> {
+    async inspect(
+      name: string,
+      opts?: { full?: boolean },
+    ): Promise<AgentInspection | null> {
       const config = await readConfig();
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
       const consumer = await buildConsumerForRef(entry);
-      return consumer.inspect(
+      const result = await consumer.inspect(
         entry.sourceRegistry?.agentPath ?? entry.ref,
         entry.sourceRegistry?.url,
         opts,
       );
+
+      // Side-effect: refresh the registry cache so subsequent ref.list()
+      // / ref.get() calls see the latest description and tool summaries
+      // without another network round-trip. Strips inputSchema (caller's
+      // `result` is unaffected — it still carries the full data).
+      await upsertRegistryCacheEntry(name, buildCacheEntry(entry.ref, result));
+
+      return result;
     },
 
-    async call(name: string, tool: string, params?: Record<string, unknown>): Promise<CallAgentResponse> {
+    async call(
+      name: string,
+      tool: string,
+      params?: Record<string, unknown>,
+    ): Promise<CallAgentResponse> {
       const config = await readConfig();
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
-      let accessToken = await readRefSecret(name, "access_token")
-        ?? await readRefSecret(name, "api_key")
-        ?? await readRefSecret(name, "token");
+      const accessToken =
+        (await readRefSecret(name, "access_token")) ??
+        (await readRefSecret(name, "api_key")) ??
+        (await readRefSecret(name, "token"));
 
       // Resolve custom headers from config (e.g. { "X-API-Key": "secret:..." })
       const refConfig = (entry.config ?? {}) as Record<string, unknown>;
-      const rawHeaders = refConfig.headers as Record<string, string> | undefined;
+      const rawHeaders = refConfig.headers as
+        | Record<string, string>
+        | undefined;
       let resolvedHeaders: Record<string, string> | undefined;
-      if (rawHeaders && typeof rawHeaders === 'object') {
+      if (rawHeaders && typeof rawHeaders === "object") {
         resolvedHeaders = {};
         for (const [k, v] of Object.entries(rawHeaders)) {
-          if (typeof v === 'string' && v.startsWith(SECRET_PREFIX) && options.encryptionKey) {
-            resolvedHeaders[k] = await decryptSecret(v.slice(SECRET_PREFIX.length), options.encryptionKey);
-          } else if (typeof v === 'string') {
+          if (
+            typeof v === "string" &&
+            v.startsWith(SECRET_PREFIX) &&
+            options.encryptionKey
+          ) {
+            resolvedHeaders[k] = await decryptSecret(
+              v.slice(SECRET_PREFIX.length),
+              options.encryptionKey,
+            );
+          } else if (typeof v === "string") {
             resolvedHeaders[k] = v;
           }
         }
@@ -1784,9 +2128,15 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const doCall = async (token: string | null) => {
         // Direct MCP only for redirect/proxy agents with an MCP upstream.
         // API-mode agents must go through the registry (it does REST translation).
-        const agentMode = (entry as any).mode ?? 'redirect';
-        if (token && entry.url && agentMode !== 'api') {
-          return callMcpDirect(entry.url, tool, params ?? {}, token, resolvedHeaders);
+        const agentMode = (entry as any).mode ?? "redirect";
+        if (token && entry.url && agentMode !== "api") {
+          return callMcpDirect(
+            entry.url,
+            tool,
+            params ?? {},
+            token,
+            resolvedHeaders,
+          );
         }
 
         const consumer = await buildConsumerForRef(entry);
@@ -1855,13 +2205,20 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       // server-side so local inspection would always return "missing").
       const proxy = await resolveProxyForRef(entry);
       if (proxy) {
-        return forwardRefOpToProxy<RefAuthStatus>(proxy.reg, proxy.agent, "auth-status", { name });
+        return forwardRefOpToProxy<RefAuthStatus>(
+          proxy.reg,
+          proxy.agent,
+          "auth-status",
+          { name },
+        );
       }
 
       let security: SecuritySchemeSummary | null = null;
       try {
         const consumer = await buildConsumerForRef(entry);
-        const info = await consumer.inspect(entry.sourceRegistry?.agentPath ?? entry.ref);
+        const info = await consumer.inspect(
+          entry.sourceRegistry?.agentPath ?? entry.ref,
+        );
         if (info?.security) security = info.security;
       } catch {
         // Can't reach registry
@@ -1889,12 +2246,15 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         };
         const hasRegistration = !!securityExt.dynamicRegistration;
 
-        let oauthMetadata: import("./mcp-client.js").OAuthServerMetadata | null = null;
+        let oauthMetadata:
+          | import("./mcp-client.js").OAuthServerMetadata
+          | null = null;
         let needsSecret = false;
         if (securityExt.discoveryUrl) {
           oauthMetadata = await tryFetchOAuthMetadata(securityExt.discoveryUrl);
           if (oauthMetadata) {
-            const authMethods = oauthMetadata.token_endpoint_auth_methods_supported ?? [];
+            const authMethods =
+              oauthMetadata.token_endpoint_auth_methods_supported ?? [];
             needsSecret = !authMethods.includes("none");
           }
         }
@@ -1921,15 +2281,22 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         };
       } else if (security.type === "apiKey") {
         const apiKeySec = security as {
-          name?: string; headers?: Record<string, { description?: string }>;
+          name?: string;
+          headers?: Record<string, { description?: string }>;
         };
         const toStorageKey = (headerName: string) =>
-          headerName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+          headerName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "_")
+            .replace(/^_|_$/g, "");
 
         // config.headers: { "Header-Name": "value" } — check by header name (case-insensitive)
-        const configHeaders = (entry?.config as Record<string, unknown> | undefined)?.headers as
-          Record<string, unknown> | undefined;
-        const configHeaderKeys = configHeaders ? Object.keys(configHeaders) : [];
+        const configHeaders = (
+          entry?.config as Record<string, unknown> | undefined
+        )?.headers as Record<string, unknown> | undefined;
+        const configHeaderKeys = configHeaders
+          ? Object.keys(configHeaders)
+          : [];
         const hasConfigHeader = (name: string) =>
           configHeaderKeys.some((k) => k.toLowerCase() === name.toLowerCase());
 
@@ -1943,7 +2310,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         for (const headerName of declaredHeaders) {
           const storageKey = toStorageKey(headerName);
           const inConfigHeaders = hasConfigHeader(headerName);
-          const inLegacyKeys = configKeys.includes(storageKey) || configKeys.includes("api_key");
+          const inLegacyKeys =
+            configKeys.includes(storageKey) || configKeys.includes("api_key");
           fields[storageKey] = {
             required: true,
             automated: false,
@@ -1977,19 +2345,22 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       return { name, security, complete, fields };
     },
 
-    async auth(name: string, opts?: {
-      apiKey?: string;
-      credentials?: Record<string, string>;
-      /** Extra context to encode in the OAuth state (e.g., tenant/user IDs for multi-tenant callbacks) */
-      stateContext?: Record<string, unknown>;
-      /** Additional scopes to request (e.g., optional scopes declared by the agent) */
-      scopes?: string[];
-      /**
-       * Opt out of proxy routing when the ref's source registry has
-       * `proxy: { mode: 'optional' }`. Ignored for `mode: 'required'`.
-       */
-      preferLocal?: boolean;
-    }): Promise<AuthStartResult> {
+    async auth(
+      name: string,
+      opts?: {
+        apiKey?: string;
+        credentials?: Record<string, string>;
+        /** Extra context to encode in the OAuth state (e.g., tenant/user IDs for multi-tenant callbacks) */
+        stateContext?: Record<string, unknown>;
+        /** Additional scopes to request (e.g., optional scopes declared by the agent) */
+        scopes?: string[];
+        /**
+         * Opt out of proxy routing when the ref's source registry has
+         * `proxy: { mode: 'optional' }`. Ignored for `mode: 'required'`.
+         */
+        preferLocal?: boolean;
+      },
+    ): Promise<AuthStartResult> {
       const config = await readConfig();
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
@@ -1998,14 +2369,21 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       // agent. The registry owns the client_id/secret and returns an authorize
       // URL pointing at the registry's OAuth callback domain, so the user
       // completes the flow against the registry instead of localhost.
-      const proxy = await resolveProxyForRef(entry, { preferLocal: opts?.preferLocal });
+      const proxy = await resolveProxyForRef(entry, {
+        preferLocal: opts?.preferLocal,
+      });
       if (proxy) {
         const params: Record<string, unknown> = { name };
         if (opts?.apiKey !== undefined) params.apiKey = opts.apiKey;
         if (opts?.credentials) params.credentials = opts.credentials;
         if (opts?.scopes) params.scopes = opts.scopes;
         if (opts?.stateContext) params.stateContext = opts.stateContext;
-        return forwardRefOpToProxy<AuthStartResult>(proxy.reg, proxy.agent, "auth", params);
+        return forwardRefOpToProxy<AuthStartResult>(
+          proxy.reg,
+          proxy.agent,
+          "auth",
+          params,
+        );
       }
 
       const status = await ref.authStatus(name);
@@ -2018,20 +2396,31 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
       if (security.type === "apiKey") {
         const apiKeySec = security as {
-          name?: string; prefix?: string;
+          name?: string;
+          prefix?: string;
           headers?: Record<string, { description?: string }>;
         };
 
         const toStorageKey = (headerName: string) =>
-          headerName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+          headerName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "_")
+            .replace(/^_|_$/g, "");
 
         // Check existing config.headers
-        const existingHeaders = ((entry.config ?? {}) as Record<string, unknown>).headers as
-          Record<string, string> | undefined;
+        const existingHeaders = (
+          (entry.config ?? {}) as Record<string, unknown>
+        ).headers as Record<string, string> | undefined;
 
         // Collect declared headers: from security.headers or security.name
-        const declaredHeaders: Array<{ headerName: string; description?: string }> = apiKeySec.headers
-          ? Object.entries(apiKeySec.headers).map(([h, meta]) => ({ headerName: h, description: meta.description }))
+        const declaredHeaders: Array<{
+          headerName: string;
+          description?: string;
+        }> = apiKeySec.headers
+          ? Object.entries(apiKeySec.headers).map(([h, meta]) => ({
+              headerName: h,
+              description: meta.description,
+            }))
           : apiKeySec.name
             ? [{ headerName: apiKeySec.name }]
             : [];
@@ -2043,12 +2432,16 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           for (const { headerName, description } of declaredHeaders) {
             const storageKey = toStorageKey(headerName);
             // Check: credentials param → existing config.headers → legacy config key → resolve callback
-            const value = opts?.credentials?.[storageKey]
-              ?? opts?.credentials?.[headerName]
-              ?? (existingHeaders && Object.entries(existingHeaders).find(([k]) => k.toLowerCase() === headerName.toLowerCase())?.[1])
-              ?? opts?.apiKey
-              ?? await readRefSecret(name, storageKey)
-              ?? await tryResolve(storageKey);
+            const value =
+              opts?.credentials?.[storageKey] ??
+              opts?.credentials?.[headerName] ??
+              (existingHeaders &&
+                Object.entries(existingHeaders).find(
+                  ([k]) => k.toLowerCase() === headerName.toLowerCase(),
+                )?.[1]) ??
+              opts?.apiKey ??
+              (await readRefSecret(name, storageKey)) ??
+              (await tryResolve(storageKey));
 
             if (value) {
               resolvedHeaders[headerName] = value;
@@ -2070,23 +2463,30 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           const encKey = options.encryptionKey;
           const headersToStore: Record<string, string> = {};
           for (const [h, v] of Object.entries(resolvedHeaders)) {
-            headersToStore[h] = encKey ? `${SECRET_PREFIX}${await encryptSecret(v, encKey)}` : v;
+            headersToStore[h] = encKey
+              ? `${SECRET_PREFIX}${await encryptSecret(v, encKey)}`
+              : v;
           }
           await ref.update(name, { config: { headers: headersToStore } });
           return { type: "apiKey", complete: true };
         }
 
         // Fallback: no headers declared → generic api_key
-        const key = opts?.credentials?.["api_key"] ?? opts?.apiKey ?? await tryResolve("api_key");
+        const key =
+          opts?.credentials?.["api_key"] ??
+          opts?.apiKey ??
+          (await tryResolve("api_key"));
         if (!key) {
           return {
             type: "apiKey",
             complete: false,
-            fields: [{
-              name: "api_key",
-              label: "API Key",
-              secret: true,
-            }],
+            fields: [
+              {
+                name: "api_key",
+                label: "API Key",
+                secret: true,
+              },
+            ],
           };
         }
         await storeRefSecret(name, "api_key", key);
@@ -2098,12 +2498,24 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         const isBasic = httpSec.scheme === "basic";
 
         if (isBasic) {
-          const username = opts?.credentials?.["username"] ?? await tryResolve("username");
-          const password = opts?.credentials?.["password"] ?? await tryResolve("password");
+          const username =
+            opts?.credentials?.["username"] ?? (await tryResolve("username"));
+          const password =
+            opts?.credentials?.["password"] ?? (await tryResolve("password"));
           if (!username || !password) {
             const missingFields: AuthChallengeField[] = [];
-            if (!username) missingFields.push({ name: "username", label: "Username", secret: false });
-            if (!password) missingFields.push({ name: "password", label: "Password", secret: true });
+            if (!username)
+              missingFields.push({
+                name: "username",
+                label: "Username",
+                secret: false,
+              });
+            if (!password)
+              missingFields.push({
+                name: "password",
+                label: "Password",
+                secret: true,
+              });
             return { type: "http", complete: false, fields: missingFields };
           }
           // Store as base64 encoded basic auth token
@@ -2113,7 +2525,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         }
 
         // Bearer token
-        const token = opts?.credentials?.["token"] ?? opts?.apiKey ?? await tryResolve("token");
+        const token =
+          opts?.credentials?.["token"] ??
+          opts?.apiKey ??
+          (await tryResolve("token"));
         if (!token) {
           return {
             type: "http",
@@ -2126,7 +2541,16 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       }
 
       if (security.type === "oauth2") {
-        const flows = (security as { flows?: { authorizationCode?: { authorizationUrl?: string; tokenUrl?: string } } }).flows;
+        const flows = (
+          security as {
+            flows?: {
+              authorizationCode?: {
+                authorizationUrl?: string;
+                tokenUrl?: string;
+              };
+            };
+          }
+        ).flows;
         const authCodeFlow = flows?.authorizationCode;
         if (!authCodeFlow?.authorizationUrl) {
           return {
@@ -2147,7 +2571,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         }
         // Fallback: construct metadata from the security scheme's explicit URLs
         if (!metadata && authCodeFlow.tokenUrl) {
-          const flowScopes = (authCodeFlow as Record<string, unknown>).scopes as Record<string, string> | undefined;
+          const flowScopes = (authCodeFlow as Record<string, unknown>).scopes as
+            | Record<string, string>
+            | undefined;
           metadata = {
             issuer: new URL(authUrl).origin,
             authorization_endpoint: authUrl,
@@ -2172,18 +2598,24 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         let clientSecret: string | undefined = fromHelper?.clientSecret;
 
         if (!clientId && metadata.registration_endpoint) {
-          const supportedAuthMethods = metadata.token_endpoint_auth_methods_supported ?? ["none"];
+          const supportedAuthMethods =
+            metadata.token_endpoint_auth_methods_supported ?? ["none"];
           const preferredMethod = supportedAuthMethods.includes("none")
             ? "none"
-            : supportedAuthMethods[0] ?? "client_secret_post";
+            : (supportedAuthMethods[0] ?? "client_secret_post");
 
-          const securityClientName = (security as { clientName?: string }).clientName;
-          const reg = await dynamicClientRegistration(metadata.registration_endpoint, {
-            clientName: securityClientName ?? options.oauthClientName ?? "adk",
-            redirectUris: [redirectUri],
-            grantTypes: ["authorization_code"],
-            tokenEndpointAuthMethod: preferredMethod,
-          });
+          const securityClientName = (security as { clientName?: string })
+            .clientName;
+          const reg = await dynamicClientRegistration(
+            metadata.registration_endpoint,
+            {
+              clientName:
+                securityClientName ?? options.oauthClientName ?? "adk",
+              redirectUris: [redirectUri],
+              grantTypes: ["authorization_code"],
+              tokenEndpointAuthMethod: preferredMethod,
+            },
+          );
           clientId = reg.clientId;
           clientSecret = reg.clientSecret;
           await storeRefSecret(name, "client_id", clientId);
@@ -2196,10 +2628,18 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           // Return fields telling the caller what OAuth credentials to provide
           const missingFields: AuthChallengeField[] = [];
           if (!clientId) {
-            missingFields.push({ name: "client_id", label: "Client ID", secret: false });
+            missingFields.push({
+              name: "client_id",
+              label: "Client ID",
+              secret: false,
+            });
           }
           // Always ask for client_secret alongside client_id — most providers need it
-          missingFields.push({ name: "client_secret", label: "Client Secret", secret: true });
+          missingFields.push({
+            name: "client_secret",
+            label: "Client Secret",
+            secret: true,
+          });
           return { type: "oauth2", complete: false, fields: missingFields };
         }
 
@@ -2213,32 +2653,42 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         };
         const state = btoa(JSON.stringify(statePayload));
 
-        const securityExt2 = security as { requiredScopes?: string[]; optionalScopes?: string[]; authorizationParams?: Record<string, string> };
-        const flowScopes = (authCodeFlow as Record<string, unknown>).scopes as Record<string, string> | undefined;
+        const securityExt2 = security as {
+          requiredScopes?: string[];
+          optionalScopes?: string[];
+          authorizationParams?: Record<string, string>;
+        };
+        const flowScopes = (authCodeFlow as Record<string, unknown>).scopes as
+          | Record<string, string>
+          | undefined;
         const agentScopes = [
           ...(securityExt2.requiredScopes ?? []),
           ...(flowScopes ? Object.keys(flowScopes) : []),
           ...(opts?.scopes ?? []),
         ].filter((v, i, a) => a.indexOf(v) === i);
-        const scopes = agentScopes.length > 0
-          ? [
-              ...agentScopes,
-              ...(metadata.scopes_supported?.includes('openid') ? ['openid'] : []),
-            ]
-          : metadata.scopes_supported;
+        const scopes =
+          agentScopes.length > 0
+            ? [
+                ...agentScopes,
+                ...(metadata.scopes_supported?.includes("openid")
+                  ? ["openid"]
+                  : []),
+              ]
+            : metadata.scopes_supported;
 
         // Read provider-specific authorization params from the agent's security section
         // (e.g., { access_type: 'offline', prompt: 'consent' } for Google)
         const authorizationParams = securityExt2.authorizationParams;
 
-        const { url: authorizeUrl, codeVerifier } = await buildOAuthAuthorizeUrl({
-          authorizationEndpoint: metadata.authorization_endpoint,
-          clientId,
-          redirectUri,
-          scopes,
-          state,
-          extraParams: authorizationParams,
-        });
+        const { url: authorizeUrl, codeVerifier } =
+          await buildOAuthAuthorizeUrl({
+            authorizationEndpoint: metadata.authorization_endpoint,
+            clientId,
+            redirectUri,
+            scopes,
+            state,
+            extraParams: authorizationParams,
+          });
 
         // Persist pending state so handleCallback works across processes
         await storePendingOAuth(state, {
@@ -2257,10 +2707,13 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       return { type: security.type, complete: false };
     },
 
-    async authLocal(name: string, opts?: {
-      onAuthorizeUrl?: (url: string) => void;
-      timeoutMs?: number;
-    }): Promise<{ complete: boolean }> {
+    async authLocal(
+      name: string,
+      opts?: {
+        onAuthorizeUrl?: (url: string) => void;
+        timeoutMs?: number;
+      },
+    ): Promise<{ complete: boolean }> {
       // `ref.auth` is already proxy-aware — for proxied refs it returns
       // the authorizeUrl that the registry minted against its own
       // callback domain. Everything below is identical for local and
@@ -2283,7 +2736,11 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       // owns the credential store, so the user needs to submit via
       // whatever UI the registry exposes. Supporting this through the
       // proxy would need a remote form endpoint — out of scope here.
-      if (result.fields && result.fields.length > 0 && result.type !== "oauth2") {
+      if (
+        result.fields &&
+        result.fields.length > 0 &&
+        result.type !== "oauth2"
+      ) {
         if (proxy) {
           throw new Error(
             `Ref "${name}" is sourced from a proxied registry; submit credentials through ${proxy.agent} instead of a local form.`,
@@ -2320,19 +2777,23 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
                   resolve({ complete: true });
                 } else {
                   res.writeHead(200, { "Content-Type": "text/html" });
-                  res.end(renderCredentialForm(
-                    name,
-                    authResult.fields ?? result.fields!,
-                    "Some credentials were missing or invalid.",
-                  ));
+                  res.end(
+                    renderCredentialForm(
+                      name,
+                      authResult.fields ?? result.fields!,
+                      "Some credentials were missing or invalid.",
+                    ),
+                  );
                 }
               } catch (err) {
                 res.writeHead(500, { "Content-Type": "text/html" });
-                res.end(renderCredentialForm(
-                  name,
-                  result.fields!,
-                  err instanceof Error ? err.message : String(err),
-                ));
+                res.end(
+                  renderCredentialForm(
+                    name,
+                    result.fields!,
+                    err instanceof Error ? err.message : String(err),
+                  ),
+                );
               }
               return;
             }
@@ -2379,7 +2840,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           const state = reqUrl.searchParams.get("state");
 
           if (!code || !state) {
-            const error = reqUrl.searchParams.get("error") ?? "missing code/state";
+            const error =
+              reqUrl.searchParams.get("error") ?? "missing code/state";
             res.writeHead(400, { "Content-Type": "text/html" });
             res.end(`<h1>Error</h1><p>${error}</p>`);
             server.close();
@@ -2395,7 +2857,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             resolve({ complete: cbResult.complete });
           } catch (err) {
             res.writeHead(500, { "Content-Type": "text/html" });
-            res.end(`<h1>Error</h1><p>${err instanceof Error ? err.message : String(err)}</p>`);
+            res.end(
+              `<h1>Error</h1><p>${err instanceof Error ? err.message : String(err)}</p>`,
+            );
             server.close();
             reject(err);
           }
@@ -2440,9 +2904,17 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
       const status = await ref.authStatus(name);
       const security = status.security;
-      const flows = security && "flows" in security
-        ? (security as { flows?: Record<string, { tokenUrl?: string; refreshUrl?: string }> }).flows
-        : undefined;
+      const flows =
+        security && "flows" in security
+          ? (
+              security as {
+                flows?: Record<
+                  string,
+                  { tokenUrl?: string; refreshUrl?: string }
+                >;
+              }
+            ).flows
+          : undefined;
       const authCodeFlow = flows?.authorizationCode;
       const tokenUrl = authCodeFlow?.refreshUrl ?? authCodeFlow?.tokenUrl;
       if (!tokenUrl) return null;
@@ -2469,7 +2941,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
       if (!res.ok) return null;
 
-      const data = await res.json() as Record<string, unknown>;
+      const data = (await res.json()) as Record<string, unknown>;
       const newAccessToken = data.access_token as string | undefined;
       if (!newAccessToken) return null;
 
@@ -2487,7 +2959,14 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
   // Top-level callback handler
   // ==========================================
 
-  async function handleCallback(params: { code: string; state: string }): Promise<{ refName: string; complete: boolean; stateContext?: Record<string, unknown> }> {
+  async function handleCallback(params: {
+    code: string;
+    state: string;
+  }): Promise<{
+    refName: string;
+    complete: boolean;
+    stateContext?: Record<string, unknown>;
+  }> {
     const pending = await consumePendingOAuth(params.state);
     if (!pending) {
       throw new Error(`No pending OAuth flow for state "${params.state}".`);
@@ -2503,13 +2982,19 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
     await storeRefSecret(pending.refName, "access_token", tokens.accessToken);
     if (tokens.refreshToken) {
-      await storeRefSecret(pending.refName, "refresh_token", tokens.refreshToken);
+      await storeRefSecret(
+        pending.refName,
+        "refresh_token",
+        tokens.refreshToken,
+      );
     }
 
     let stateContext: Record<string, unknown> | undefined;
     try {
       stateContext = JSON.parse(atob(params.state));
-    } catch { /* state wasn't base64 JSON — legacy format */ }
+    } catch {
+      /* state wasn't base64 JSON — legacy format */
+    }
 
     return { refName: pending.refName, complete: true, stateContext };
   }

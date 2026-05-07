@@ -53,7 +53,7 @@ export type RegistryAuth =
  *   local credentials.
  */
 export interface RegistryProxy {
-  mode: 'required' | 'optional';
+  mode: "required" | "optional";
   /** Agent path to forward to. Defaults to `@config`. */
   agent?: string;
 }
@@ -119,7 +119,7 @@ export interface RegistryEntry {
   publisher?: string;
 
   /** Connection status — set by validation/test, used to filter active entries */
-  status?: 'active' | 'inactive' | 'error';
+  status?: "active" | "inactive" | "error";
 
   /**
    * If set, ref ops for refs sourced from this registry are forwarded
@@ -153,31 +153,57 @@ export type RefConfig = Record<string, unknown>;
 
 /** A ref entry — describes how to connect to an agent */
 export type RefEntry = {
-      /** Canonical agent path on the remote registry (e.g. `notion`, `linear`). */
-      ref: string;
+  /** Canonical agent path on the remote registry (e.g. `notion`, `linear`). */
+  ref: string;
 
-      /**
-       * Local identifier for this ref. Used by all operations
-       * (call/remove/auth/update/…) to look up the entry. Add paths
-       * default this to `ref` when omitted.
-       */
-      name: string;
+  /**
+   * Local identifier for this ref. Used by all operations
+   * (call/remove/auth/update/…) to look up the entry. Add paths
+   * default this to `ref` when omitted.
+   */
+  name: string;
 
-      /** Connection scheme */
-      scheme?: 'mcp' | 'https' | 'registry';
+  /** Connection scheme */
+  scheme?: "mcp" | "https" | "registry";
 
-      /** Direct URL to the agent (e.g. https://mcp.notion.com/mcp) */
-      url?: string;
+  /** Direct URL to the agent (e.g. https://mcp.notion.com/mcp) */
+  url?: string;
 
-      /** Per-instance config (headers, secrets, etc. — values support {{secret-uri}} templates) */
-      config?: RefConfig;
+  /** Per-instance config (headers, secrets, etc. — values support {{secret-uri}} templates) */
+  config?: RefConfig;
 
-      /** The registry where this ref was discovered */
-      sourceRegistry?: { url: string; agentPath: string };
+  /** The registry where this ref was discovered */
+  sourceRegistry?: { url: string; agentPath: string };
 
-      /** Connection status — set by validation/test, used to filter active entries */
-      status?: 'active' | 'inactive' | 'error';
-    };
+  /** Connection status — set by validation/test, used to filter active entries */
+  status?: "active" | "inactive" | "error";
+
+  /**
+   * Human-readable description from the registry.
+   *
+   * Not stored in `consumer-config.json`. Hydrated into the in-memory
+   * `RefEntry` by `ref.list()` / `ref.get()` from `registry-cache.json`,
+   * which the adk maintains as a side-effect of `ref.add()` / `ref.inspect()`.
+   *
+   * `undefined` when the cache has no entry yet (e.g. first session for an
+   * existing user, or a freshly cleared cache). Consumers that need a fallback
+   * should apply their own (commonly `description ?? name`).
+   */
+  description?: string;
+
+  /**
+   * Slim tool summaries from the registry. Populated alongside `description`
+   * by the same cache lifecycle. Tool input schemas are intentionally
+   * omitted — they are too large to cache and callers fetch them on demand
+   * via `ref.inspect(name, { full: true })`.
+   *
+   * `undefined` when the cache has no entry yet.
+   */
+  tools?: Array<{
+    name: string;
+    description?: string;
+  }>;
+};
 
 /** Input accepted by add paths. `name` defaults to `ref` when omitted. */
 export type RefAddInput = Omit<RefEntry, "name"> & { name?: string };

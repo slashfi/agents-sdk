@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { FsStore } from "./agent-definitions/config";
 import {
   createAdk,
   createAdkTools,
@@ -8,7 +9,6 @@ import {
   defineTool,
 } from "./index";
 import type { AgentServer } from "./index";
-import type { FsStore } from "./agent-definitions/config";
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -146,7 +146,8 @@ describe("ADK ref sourceRegistry routing", () => {
     // Inspect should find the agent on the source server
     const info = await adk.ref.inspect("@math");
     expect(info).toBeDefined();
-    const toolCount = (info?.tools?.length ?? 0) + (info?.toolSummaries?.length ?? 0);
+    const toolCount =
+      (info?.tools?.length ?? 0) + (info?.toolSummaries?.length ?? 0);
     expect(toolCount).toBeGreaterThan(0);
   });
 });
@@ -158,9 +159,9 @@ describe("ADK ref.add validation", () => {
     const fs = createMemoryFs();
     const adk = createAdk(fs);
 
-    await expect(
-      adk.ref.add({ ref: "@something" }),
-    ).rejects.toThrow("could not determine connection type");
+    await expect(adk.ref.add({ ref: "@something" })).rejects.toThrow(
+      "could not determine connection type",
+    );
   });
 
   test("throws when scheme is 'registry' without sourceRegistry", async () => {
@@ -254,7 +255,10 @@ describe("ADK ref.call() auto-refresh on 401", () => {
       execute: async () => {
         callCount++;
         if (callCount === 1) {
-          return { content: [{ type: "text", text: '{"error":"401 Unauthorized"}' }], _httpStatus: 401 };
+          return {
+            content: [{ type: "text", text: '{"error":"401 Unauthorized"}' }],
+            _httpStatus: 401,
+          };
         }
         return { data: "success", callNumber: callCount };
       },
@@ -352,19 +356,29 @@ describe("ADK ref.call() full auto-refresh flow", () => {
         const body = await req.text();
         const params = new URLSearchParams(body);
         if (params.get("grant_type") !== "refresh_token") {
-          return new Response(JSON.stringify({ error: "unsupported_grant_type" }), { status: 400 });
+          return new Response(
+            JSON.stringify({ error: "unsupported_grant_type" }),
+            { status: 400 },
+          );
         }
         if (params.get("refresh_token") !== "my-refresh-token") {
-          return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+          return new Response(JSON.stringify({ error: "invalid_grant" }), {
+            status: 400,
+          });
         }
         if (params.get("client_id") !== "my-client-id") {
-          return new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 });
+          return new Response(JSON.stringify({ error: "invalid_client" }), {
+            status: 401,
+          });
         }
-        return new Response(JSON.stringify({
-          access_token: "refreshed-token",
-          token_type: "Bearer",
-          expires_in: 3600,
-        }), { headers: { "Content-Type": "application/json" } });
+        return new Response(
+          JSON.stringify({
+            access_token: "refreshed-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
       },
     });
 
@@ -377,12 +391,18 @@ describe("ADK ref.call() full auto-refresh flow", () => {
         toolCallCount++;
         const token = input?.accessToken;
         if (token === "expired-token" || !token) {
-          return { content: [{ type: "text", text: '{"error":"401 Unauthorized"}' }], _httpStatus: 401 };
+          return {
+            content: [{ type: "text", text: '{"error":"401 Unauthorized"}' }],
+            _httpStatus: 401,
+          };
         }
         if (token === "refreshed-token") {
           return { message: "success", token };
         }
-        return { content: [{ type: "text", text: '{"error":"403 Forbidden"}' }], _httpStatus: 403 };
+        return {
+          content: [{ type: "text", text: '{"error":"403 Forbidden"}' }],
+          _httpStatus: 403,
+        };
       },
     });
 
@@ -420,12 +440,20 @@ describe("ADK ref.call() full auto-refresh flow", () => {
     tokenRefreshCount = 0;
 
     const fs = createMemoryFs();
-    const adk = createAdk(fs, { encryptionKey: "test-key-32-chars-long-enough!!" });
+    const adk = createAdk(fs, {
+      encryptionKey: "test-key-32-chars-long-enough!!",
+    });
 
-    await adk.registry.add({ name: "oauth-reg", url: `http://localhost:${REG_PORT}` });
+    await adk.registry.add({
+      name: "oauth-reg",
+      url: `http://localhost:${REG_PORT}`,
+    });
     await adk.ref.add({
       ref: "oauth-api",
-      sourceRegistry: { url: `http://localhost:${REG_PORT}`, agentPath: "oauth-api" },
+      sourceRegistry: {
+        url: `http://localhost:${REG_PORT}`,
+        agentPath: "oauth-api",
+      },
     });
 
     // Store credentials directly
@@ -599,7 +627,9 @@ describe("ADK registry proxy routing", () => {
       proxy: { mode: "optional", agent: "@custom" },
     });
 
-    const entry = (await adk.registry.list()).find((r) => r.name === "cloud-explicit");
+    const entry = (await adk.registry.list()).find(
+      (r) => r.name === "cloud-explicit",
+    );
     expect(entry?.proxy?.mode).toBe("optional");
     expect(entry?.proxy?.agent).toBe("@custom");
   });
@@ -694,10 +724,9 @@ describe("ADK registry auth lifecycle", () => {
           if (grant === "refresh_token") {
             tokenRefreshCount++;
             if (body.get("refresh_token") !== "refresh-token-v1") {
-              return new Response(
-                JSON.stringify({ error: "invalid_grant" }),
-                { status: 400 },
-              );
+              return new Response(JSON.stringify({ error: "invalid_grant" }), {
+                status: 400,
+              });
             }
             // Rotate to a new access token so the test can tell refresh ran.
             activeAccessToken = "access-token-v2";
@@ -716,7 +745,9 @@ describe("ADK registry auth lifecycle", () => {
           const expected = `Bearer ${activeAccessToken}`;
           if (auth !== expected) {
             return new Response(
-              JSON.stringify({ error: { code: "UNAUTHORIZED", message: "No token" } }),
+              JSON.stringify({
+                error: { code: "UNAUTHORIZED", message: "No token" },
+              }),
               {
                 status: 401,
                 headers: {
@@ -744,7 +775,11 @@ describe("ADK registry auth lifecycle", () => {
                     type: "text",
                     text: JSON.stringify({
                       agents: [
-                        { path: "@test-agent", description: "An agent", toolCount: 1 },
+                        {
+                          path: "@test-agent",
+                          description: "An agent",
+                          toolCount: 1,
+                        },
                       ],
                     }),
                   },
@@ -766,7 +801,9 @@ describe("ADK registry auth lifecycle", () => {
 
   test("registry.add records auth challenge; browse refuses; auth() unlocks", async () => {
     const fs = createMemoryFs();
-    const adk = createAdk(fs, { encryptionKey: "test-key-32-chars-long-enough!!" });
+    const adk = createAdk(fs, {
+      encryptionKey: "test-key-32-chars-long-enough!!",
+    });
 
     const addResult = await adk.registry.add({ name: "test", url: MCP_URL });
 
@@ -795,7 +832,9 @@ describe("ADK registry auth lifecycle", () => {
 
   test("browse 401 triggers refresh via stored refresh_token and retries", async () => {
     const fs = createMemoryFs();
-    const adk = createAdk(fs, { encryptionKey: "test-key-32-chars-long-enough!!" });
+    const adk = createAdk(fs, {
+      encryptionKey: "test-key-32-chars-long-enough!!",
+    });
 
     // Reset server-side token so the next refresh rotates predictably.
     activeAccessToken = "access-token-v1";
@@ -836,5 +875,283 @@ describe("ADK registry auth lifecycle", () => {
 
     const stored = await adk.registry.get("test");
     expect((stored?.auth as { token: string }).token).toMatch(/^secret:/);
+  });
+});
+
+// ─── ADK ref registry cache ──────────────────────────────────────
+
+describe("ADK ref registry cache", () => {
+  let server: AgentServer;
+  const PORT = 19940;
+
+  // Agents configured with descriptions so the registry's describe_tools
+  // response carries metadata for the cache to capture.
+  const cachedMathAgent = defineAgent({
+    path: "@cached-math",
+    entrypoint: "Math agent",
+    tools: [add],
+    visibility: "public",
+    config: { description: "Adds numbers together" },
+  });
+
+  const cachedEchoAgent = defineAgent({
+    path: "@cached-echo",
+    entrypoint: "Echo agent",
+    tools: [echo],
+    visibility: "public",
+    config: { description: "Echoes back the input" },
+  });
+
+  beforeAll(async () => {
+    const registry = createAgentRegistry();
+    registry.register(cachedMathAgent);
+    registry.register(cachedEchoAgent);
+    server = createAgentServer(registry, { port: PORT });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  test("ref.add populates registry-cache.json with description and slim tools", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+
+    await adk.registry.add({
+      url: `http://localhost:${PORT}`,
+      name: "main",
+    });
+    await adk.ref.add({
+      ref: "@cached-math",
+      scheme: "registry",
+      sourceRegistry: {
+        url: `http://localhost:${PORT}`,
+        agentPath: "@cached-math",
+      },
+    });
+
+    const cacheRaw = await fs.readFile("registry-cache.json");
+    expect(cacheRaw).not.toBeNull();
+    const cache = JSON.parse(cacheRaw!);
+    const entry = cache.refs["@cached-math"];
+    expect(entry).toBeDefined();
+    expect(entry.ref).toBe("@cached-math");
+    expect(entry.description).toBe("Adds numbers together");
+    expect(entry.tools).toBeDefined();
+    expect(entry.tools.length).toBeGreaterThan(0);
+    expect(entry.tools[0].name).toBe("add");
+    expect(entry.tools[0].description).toBe("Add two numbers");
+    // inputSchema MUST NOT leak into the cache — that's our whole point.
+    expect(entry.tools[0]).not.toHaveProperty("inputSchema");
+    expect(typeof entry.fetchedAt).toBe("string");
+  });
+
+  test("ref.list hydrates description and tools from cache", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+
+    await adk.registry.add({
+      url: `http://localhost:${PORT}`,
+      name: "main",
+    });
+    await adk.ref.add({
+      ref: "@cached-math",
+      scheme: "registry",
+      sourceRegistry: {
+        url: `http://localhost:${PORT}`,
+        agentPath: "@cached-math",
+      },
+    });
+
+    const refs = await adk.ref.list();
+    expect(refs).toHaveLength(1);
+    expect(refs[0].name).toBe("@cached-math");
+    expect(refs[0].description).toBe("Adds numbers together");
+    expect(refs[0].tools).toBeDefined();
+    expect(refs[0].tools?.[0].name).toBe("add");
+  });
+
+  test("ref.list returns description undefined when cache is empty", async () => {
+    const fs = createMemoryFs();
+    // Seed a ref directly into consumer-config without a cache entry — this is
+    // the "existing user, fresh cache" case (e.g. before the backfill runs).
+    await fs.writeFile(
+      "consumer-config.json",
+      JSON.stringify({
+        refs: [
+          {
+            ref: "@cached-math",
+            name: "@cached-math",
+            scheme: "registry",
+            sourceRegistry: {
+              url: `http://localhost:${PORT}`,
+              agentPath: "@cached-math",
+            },
+          },
+        ],
+      }),
+    );
+
+    const adk = createAdk(fs);
+    const refs = await adk.ref.list();
+    expect(refs).toHaveLength(1);
+    expect(refs[0].description).toBeUndefined();
+    expect(refs[0].tools).toBeUndefined();
+  });
+
+  test("ref.get hydrates a single ref from the cache", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+
+    await adk.registry.add({
+      url: `http://localhost:${PORT}`,
+      name: "main",
+    });
+    await adk.ref.add({
+      ref: "@cached-math",
+      scheme: "registry",
+      sourceRegistry: {
+        url: `http://localhost:${PORT}`,
+        agentPath: "@cached-math",
+      },
+    });
+
+    const ref = await adk.ref.get("@cached-math");
+    expect(ref).not.toBeNull();
+    expect(ref?.description).toBe("Adds numbers together");
+    expect(ref?.tools?.[0].name).toBe("add");
+  });
+
+  test("ref.inspect refreshes the cache for the inspected ref", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+
+    await adk.registry.add({
+      url: `http://localhost:${PORT}`,
+      name: "main",
+    });
+    // Seed without registry add-time inspect (use bare config seeding) so the
+    // cache starts empty and we can see ref.inspect populate it.
+    await fs.writeFile(
+      "consumer-config.json",
+      JSON.stringify({
+        registries: [{ url: `http://localhost:${PORT}`, name: "main" }],
+        refs: [
+          {
+            ref: "@cached-math",
+            name: "@cached-math",
+            scheme: "registry",
+            sourceRegistry: {
+              url: `http://localhost:${PORT}`,
+              agentPath: "@cached-math",
+            },
+          },
+        ],
+      }),
+    );
+
+    // Cache is empty before inspect.
+    const beforeRefs = await adk.ref.list();
+    expect(beforeRefs[0].description).toBeUndefined();
+
+    // Inspect populates the cache.
+    const info = await adk.ref.inspect("@cached-math");
+    expect(info).toBeDefined();
+
+    const afterRefs = await adk.ref.list();
+    expect(afterRefs[0].description).toBe("Adds numbers together");
+    expect(afterRefs[0].tools?.[0].name).toBe("add");
+  });
+
+  test("ref.inspect with full: true does not leak inputSchema into the cache", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+
+    await adk.registry.add({
+      url: `http://localhost:${PORT}`,
+      name: "main",
+    });
+    await adk.ref.add({
+      ref: "@cached-math",
+      scheme: "registry",
+      sourceRegistry: {
+        url: `http://localhost:${PORT}`,
+        agentPath: "@cached-math",
+      },
+    });
+
+    // Caller gets the full schema in the response…
+    const full = await adk.ref.inspect("@cached-math", { full: true });
+    expect(full?.tools?.[0]).toHaveProperty("inputSchema");
+
+    // …but the cache stays slim.
+    const cacheRaw = await fs.readFile("registry-cache.json");
+    const cache = JSON.parse(cacheRaw!);
+    const entry = cache.refs["@cached-math"];
+    expect(entry.tools[0]).not.toHaveProperty("inputSchema");
+  });
+
+  test("ref.remove drops the cache entry", async () => {
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+
+    await adk.registry.add({
+      url: `http://localhost:${PORT}`,
+      name: "main",
+    });
+    await adk.ref.add({
+      ref: "@cached-math",
+      scheme: "registry",
+      sourceRegistry: {
+        url: `http://localhost:${PORT}`,
+        agentPath: "@cached-math",
+      },
+    });
+    await adk.ref.add({
+      ref: "@cached-echo",
+      scheme: "registry",
+      sourceRegistry: {
+        url: `http://localhost:${PORT}`,
+        agentPath: "@cached-echo",
+      },
+    });
+
+    let cache = JSON.parse((await fs.readFile("registry-cache.json"))!);
+    expect(Object.keys(cache.refs)).toEqual(
+      expect.arrayContaining(["@cached-math", "@cached-echo"]),
+    );
+
+    await adk.ref.remove("@cached-math");
+
+    cache = JSON.parse((await fs.readFile("registry-cache.json"))!);
+    expect(cache.refs["@cached-math"]).toBeUndefined();
+    expect(cache.refs["@cached-echo"]).toBeDefined();
+  });
+
+  test("malformed registry-cache.json is treated as empty (does not break list)", async () => {
+    const fs = createMemoryFs();
+    await fs.writeFile(
+      "consumer-config.json",
+      JSON.stringify({
+        refs: [
+          {
+            ref: "@cached-math",
+            name: "@cached-math",
+            scheme: "registry",
+            sourceRegistry: {
+              url: `http://localhost:${PORT}`,
+              agentPath: "@cached-math",
+            },
+          },
+        ],
+      }),
+    );
+    await fs.writeFile("registry-cache.json", "{ this is not json");
+
+    const adk = createAdk(fs);
+    const refs = await adk.ref.list();
+    expect(refs).toHaveLength(1);
+    expect(refs[0].description).toBeUndefined();
   });
 });
