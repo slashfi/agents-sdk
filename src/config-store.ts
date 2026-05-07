@@ -103,12 +103,6 @@ export interface RegistryCacheEntry {
    * entry's `config` — no network round-trip needed. Absent when the
    * scheme couldn't be fetched (e.g. registry was offline at add
    * time); fall back to whatever heuristic the caller chooses.
-   *
-   * Note on proxy refs: when the entry is in `proxy` mode the
-   * security scheme is exposed by the *proxy*, and the answer to
-   * "is this callable?" lives server-side — `authFields` is omitted
-   * locally and hosts should treat proxy refs as authoritative
-   * regardless of entry-side fields.
    */
   authFields?: Record<string, RegistryCacheAuthField>;
   /** ISO timestamp of the most recent registry round-trip that wrote this. */
@@ -151,8 +145,6 @@ export interface RefAuthCompleteOptions {
  * we evaluate satisfaction against the entry's current `config`.
  *
  * Behavior:
- *   - `mode: 'proxy'` refs → always true. Auth lives server-side; the
- *     proxy is the source of truth, no entry-side fields involved.
  *   - Cache miss (no `authFields` for this ref yet) → returns `null`,
  *     signaling "I don't know — caller should fall back to its own
  *     heuristic or call `auth-status` to populate the cache".
@@ -173,7 +165,6 @@ export function isRefAuthComplete(
   opts?: RefAuthCompleteOptions,
 ): boolean | null {
   if (typeof entry === "string") return false;
-  if ((entry as { mode?: unknown }).mode === "proxy") return true;
   const authFields = cacheEntry?.authFields;
   if (!authFields) return null;
   const config = entry.config ?? {};
@@ -432,12 +423,6 @@ export interface AdkRefApi {
       stateContext?: Record<string, unknown>;
       /** Additional scopes to request (e.g., optional scopes declared by the agent) */
       scopes?: string[];
-      /**
-       * Opt out of proxy routing when the ref's source registry has
-       * `proxy: { mode: 'optional' }`. Ignored for `mode: 'required'`.
-       * Defaults to `false` — if a registry offers a proxy we use it.
-       */
-      preferLocal?: boolean;
     },
   ): Promise<AuthStartResult>;
   /**
@@ -1189,96 +1174,6 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
   }
 
   // ==========================================
-  // Proxy Routing
-  // ==========================================
-
-  /**
-   * Find the configured RegistryEntry for a ref, consulting `sourceRegistry`
-   * first and falling back to the first registry in config. Returns `null` when
-   * the ref is sourced from a raw URL (no registry), in which case proxy routing
-   * does not apply.
-   */
-  async function findRegistryEntryForRef(
-    entry: RefEntry,
-  ): Promise<RegistryEntry | null> {
-    const sourceUrl = entry.sourceRegistry?.url;
-    if (!sourceUrl) return null;
-    const config = await readConfig();
-    const match = (config.registries ?? []).find((r) => {
-      if (typeof r === "string") return r === sourceUrl;
-      return r.url === sourceUrl;
-    });
-    if (!match || typeof match === "string") return null;
-    return match;
-  }
-
-  /**
-   * Returns the proxy settings for a ref when its source registry has
-   * `proxy` configured. `null` means "run locally".
-   *
-   * Callers pass `{ preferLocal: true }` to opt out of `mode: 'optional'`
-   * proxying when they already hold credentials locally. `mode: 'required'`
-   * cannot be bypassed — the registry owns auth server-side and there is
-   * nothing useful the local SDK can do.
-   */
-  async function resolveProxyForRef(
-    entry: RefEntry,
-    opts?: { preferLocal?: boolean },
-  ): Promise<{ reg: RegistryEntry; agent: string } | null> {
-    const reg = await findRegistryEntryForRef(entry);
-    if (!reg?.proxy) return null;
-    if (reg.proxy.mode === "optional" && opts?.preferLocal) return null;
-    return { reg, agent: reg.proxy.agent ?? "@config" };
-  }
-
-  /**
-   * Forward an `@config ref` operation to the proxy agent on a remote registry.
-   *
-   * The remote side speaks the standard adk-tools surface, so the call shape is
-   * identical to what the local `ref` API would do — the only difference is
-   * that tokens and secrets live server-side. `callRegistry` returns the
-   * standard CallAgentResponse envelope: `{ success: true, result }` on
-   * success or `{ success: false, error }` on failure. We unwrap once and
-   * throw on error so callers get a result that matches the local signature.
-   */
-  async function forwardRefOpToProxy<T>(
-    reg: RegistryEntry,
-    agent: string,
-    operation: string,
-    params: Record<string, unknown>,
-  ): Promise<T> {
-    const consumer = await buildConsumerForRef({
-      ref: "",
-      name: "",
-      sourceRegistry: { url: reg.url, agentPath: agent },
-    });
-    const resolved = consumer.registries().find((r) => r.url === reg.url);
-    if (!resolved)
-      throw new Error(
-        `Registry ${reg.url} not resolvable for proxy forwarding`,
-      );
-
-    const response = await consumer.callRegistry(resolved, {
-      action: "execute_tool",
-      path: agent,
-      tool: "ref",
-      params: { operation, ...params },
-    });
-
-    if (!response.success) {
-      const errResponse = response as {
-        success: false;
-        error?: string;
-        code?: string;
-      };
-      const msg =
-        errResponse.error ?? `Proxy ${agent}.ref(${operation}) failed`;
-      throw new Error(msg);
-    }
-    return (response as { success: true; result: unknown }).result as T;
-  }
-
-  // ==========================================
   // Registry API
   // ==========================================
 
@@ -1290,39 +1185,6 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
   async function protectSecret(value: string): Promise<string> {
     if (!options.encryptionKey) return value;
     return `${SECRET_PREFIX}${await encryptSecret(value, options.encryptionKey)}`;
-  }
-
-  /**
-   * Re-probe a registry with the current stored credentials to see whether it
-   * advertises `capabilities.registry.proxy` in its MCP `initialize` response,
-   * and persist the proxy config when it does. Safe to call after a successful
-   * `auth()` / `authLocal()` — on the add path we skip the proxy probe when
-   * auth is required, so this is the second chance to back-fill it.
-   *
-   * Respects explicit user config: if `proxy` is already set, we leave it
-   * alone. Any discovery failure is swallowed — proxy is an optimization,
-   * not a correctness requirement.
-   */
-  async function discoverProxyAfterAuth(nameOrUrl: string): Promise<void> {
-    const config = await readConfig();
-    const target = findRegistry(config.registries ?? [], nameOrUrl);
-    if (!target || typeof target === "string") return;
-    if (target.proxy) return;
-
-    try {
-      const consumer = await buildConsumer(nameOrUrl);
-      const discovered = await consumer.discover(target.url);
-      if (!discovered.proxy?.mode) return;
-      await updateRegistryEntry(nameOrUrl, (existing) => {
-        if (existing.proxy) return;
-        existing.proxy = {
-          mode: discovered.proxy!.mode,
-          ...(discovered.proxy!.agent && { agent: discovered.proxy!.agent }),
-        };
-      });
-    } catch {
-      // Proxy probe is best-effort — auth itself already succeeded.
-    }
   }
 
   /**
@@ -1476,14 +1338,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         (r) => registryDisplayName(r) !== alias,
       );
 
-      // Probe the registry before saving. Two things fall out of the probe:
-      //   1. Auth challenge — 401 + WWW-Authenticate points at RFC 9728
-      //      resource metadata; we persist it on `authRequirement` so
-      //      subsequent ops can refuse early with a friendly message.
-      //   2. Proxy capability — the MCP `initialize` response may advertise
-      //      `capabilities.registry.proxy`, which auto-populates `proxy`.
-      // Users who set `proxy` or `auth` explicitly on the entry always win:
-      // discovery only fills in blanks.
+      // Probe the registry before saving. If it returns 401 with a
+      // WWW-Authenticate / RFC 9728 resource metadata pointer, persist
+      // that on `authRequirement` so subsequent ops can refuse early
+      // with a friendly message.
       let final: RegistryEntry = entry;
       let authRequirement: RegistryAuthRequirement | undefined;
 
@@ -1499,33 +1357,6 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         if (probe.ok === false) {
           authRequirement = probe.requirement;
           final = { ...final, authRequirement };
-        }
-      }
-
-      if (!entry.proxy && !authRequirement) {
-        try {
-          const probeConsumer = await createRegistryConsumer(
-            { registries: [entry], refs: [] },
-            { token: options.token, fetch: options.fetch },
-          );
-          const resolved = probeConsumer.registries()[0];
-          if (resolved) {
-            const discovered = await probeConsumer.discover(resolved.url);
-            if (discovered.proxy?.mode) {
-              final = {
-                ...final,
-                proxy: {
-                  mode: discovered.proxy.mode,
-                  ...(discovered.proxy.agent && {
-                    agent: discovered.proxy.agent,
-                  }),
-                },
-              };
-            }
-          }
-        } catch {
-          // Discovery is best-effort — offline, unreachable, or non-adk
-          // registries simply skip proxy auto-configuration.
         }
       }
 
@@ -1579,7 +1410,6 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         if (updates.auth) existing.auth = updates.auth;
         if (updates.headers)
           existing.headers = { ...existing.headers, ...updates.headers };
-        if (updates.proxy !== undefined) existing.proxy = updates.proxy;
         return existing;
       });
       if (!found) return false;
@@ -1696,7 +1526,6 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         }
         delete existing.authRequirement;
       });
-      if (updated) await discoverProxyAfterAuth(nameOrUrl);
       return updated;
     },
 
@@ -1877,7 +1706,6 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
                 };
                 delete existing.authRequirement;
               });
-              await discoverProxyAfterAuth(displayName);
               resOut.writeHead(200, { "Content-Type": "text/html" });
               resOut.end(renderAuthSuccess(displayName));
               server.close();
@@ -2324,18 +2152,6 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
-      // Registry-proxied refs: ask the remote @config for state (secrets live
-      // server-side so local inspection would always return "missing").
-      const proxy = await resolveProxyForRef(entry);
-      if (proxy) {
-        return forwardRefOpToProxy<RefAuthStatus>(
-          proxy.reg,
-          proxy.agent,
-          "auth-status",
-          { name },
-        );
-      }
-
       let security: SecuritySchemeSummary | null = null;
       try {
         const consumer = await buildConsumerForRef(entry);
@@ -2492,37 +2308,11 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         stateContext?: Record<string, unknown>;
         /** Additional scopes to request (e.g., optional scopes declared by the agent) */
         scopes?: string[];
-        /**
-         * Opt out of proxy routing when the ref's source registry has
-         * `proxy: { mode: 'optional' }`. Ignored for `mode: 'required'`.
-         */
-        preferLocal?: boolean;
       },
     ): Promise<AuthStartResult> {
       const config = await readConfig();
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
-
-      // Registry-proxied auth: forward the start-of-flow to the remote @config
-      // agent. The registry owns the client_id/secret and returns an authorize
-      // URL pointing at the registry's OAuth callback domain, so the user
-      // completes the flow against the registry instead of localhost.
-      const proxy = await resolveProxyForRef(entry, {
-        preferLocal: opts?.preferLocal,
-      });
-      if (proxy) {
-        const params: Record<string, unknown> = { name };
-        if (opts?.apiKey !== undefined) params.apiKey = opts.apiKey;
-        if (opts?.credentials) params.credentials = opts.credentials;
-        if (opts?.scopes) params.scopes = opts.scopes;
-        if (opts?.stateContext) params.stateContext = opts.stateContext;
-        return forwardRefOpToProxy<AuthStartResult>(
-          proxy.reg,
-          proxy.agent,
-          "auth",
-          params,
-        );
-      }
 
       const status = await ref.authStatus(name);
       const security = status.security;
@@ -2852,38 +2642,19 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         timeoutMs?: number;
       },
     ): Promise<{ complete: boolean }> {
-      // `ref.auth` is already proxy-aware — for proxied refs it returns
-      // the authorizeUrl that the registry minted against its own
-      // callback domain. Everything below is identical for local and
-      // proxied refs except the last step (polling for the callback),
-      // which only makes sense when we own the redirect URI.
       const result = await ref.auth(name);
       if (result.complete) return { complete: true };
-
-      const config = await readConfig();
-      const entry = findRef(config.refs ?? [], name);
-      const proxy = entry ? await resolveProxyForRef(entry) : null;
 
       const port = options.oauthCallbackPort ?? 8919;
       const timeout = opts?.timeoutMs ?? 300_000;
       const { createServer } = await import("node:http");
 
       // API key / HTTP auth — local credential form.
-      //
-      // We refuse to serve the form for a proxied ref: the registry
-      // owns the credential store, so the user needs to submit via
-      // whatever UI the registry exposes. Supporting this through the
-      // proxy would need a remote form endpoint — out of scope here.
       if (
         result.fields &&
         result.fields.length > 0 &&
         result.type !== "oauth2"
       ) {
-        if (proxy) {
-          throw new Error(
-            `Ref "${name}" is sourced from a proxied registry; submit credentials through ${proxy.agent} instead of a local form.`,
-          );
-        }
         return new Promise<{ complete: boolean }>((resolve, reject) => {
           const server = createServer(async (req, res) => {
             const reqUrl = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -2962,13 +2733,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         opts.onAuthorizeUrl(result.authorizeUrl);
       }
 
-      // Proxied refs: the registry owns the callback endpoint, so there's
-      // nothing to poll here. Callers poll `ref.authStatus` on their own
-      // schedule once the user finishes the remote consent screen.
-      if (proxy) return { complete: false };
-
-      // Local refs: spin up the callback server on oauthCallbackPort and
-      // block until the OAuth provider redirects back.
+      // Spin up the callback server on oauthCallbackPort and block
+      // until the OAuth provider redirects back.
       return new Promise<{ complete: boolean }>((resolve, reject) => {
         const server = createServer(async (req, res) => {
           const reqUrl = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -3013,20 +2779,6 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     },
 
     async refreshToken(name: string): Promise<{ accessToken: string } | null> {
-      // Registry-proxied refs: the remote @config holds the refresh_token.
-      const entryForProxy = await ref.get(name);
-      if (entryForProxy) {
-        const proxy = await resolveProxyForRef(entryForProxy);
-        if (proxy) {
-          return forwardRefOpToProxy<{ accessToken: string } | null>(
-            proxy.reg,
-            proxy.agent,
-            "refresh-token",
-            { name },
-          );
-        }
-      }
-
       // Read stored refresh_token
       const refreshToken = await readRefSecret(name, "refresh_token");
       if (!refreshToken) return null;

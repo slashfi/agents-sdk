@@ -80,7 +80,7 @@ function wantsHelp(): boolean {
 
 const HELP_SECTIONS: Record<string, string> = {
   registry: `Registry operations:
-  adk registry add <url> --name <name> [--auth-type bearer|api-key|none] [--proxy [--proxy-agent @config]]
+  adk registry add <url> --name <name> [--auth-type bearer|api-key|none]
   adk registry remove <name>
   adk registry list
   adk registry browse <name> [--query <q>]
@@ -128,7 +128,7 @@ Usage:
   adk version | --version | -v       Print the installed adk SDK version
 
 Registry operations:
-  adk registry add <url> --name <name> [--auth-type bearer|api-key|none] [--proxy [--proxy-agent @config]]
+  adk registry add <url> --name <name> [--auth-type bearer|api-key|none]
   adk registry remove <name>
   adk registry list
   adk registry browse <name> [--query <q>]
@@ -209,40 +209,13 @@ async function runRegistry() {
       const auth = authType && authType !== "none"
         ? { type: authType as "bearer" | "api-key" }
         : undefined;
-      // Proxy modifier: when set, ref ops for agents sourced from this
-      // registry are forwarded to a server-side adk-tools agent instead of
-      // running locally. Use for cloud-hosted registries that own OAuth
-      // client creds / user tokens (e.g. Twin).
-      //
-      // If the registry advertises `capabilities.registry.proxy` in its
-      // MCP initialize response, `adk.registry.add` auto-populates this
-      // field during probe — these flags are only for explicit opt-in or
-      // override.
-      const wantProxy = hasFlag("--proxy") || hasFlag("--proxy-required");
-      const proxyOptional = hasFlag("--proxy-optional");
-      const proxyAgent = getArg("--proxy-agent") ?? undefined;
-      const proxy = wantProxy || proxyOptional
-        ? {
-            mode: (proxyOptional ? "optional" : "required") as "required" | "optional",
-            ...(proxyAgent && { agent: proxyAgent }),
-          }
-        : undefined;
       const displayName = name ?? new URL(url).hostname;
       const addResult = await adk.registry.add({
         url,
         name: displayName,
         ...(auth && { auth }),
-        ...(proxy && { proxy }),
       });
-      // Discovery on the add path may have auto-populated proxy; read back.
-      const stored = (await adk.registry.list()).find(
-        (r) => r.name === displayName || r.url === url,
-      );
-      const effectiveProxy = stored?.proxy ?? proxy;
-      const source = !proxy && stored?.proxy ? " (auto-detected)" : "";
-      console.log(
-        `Added registry: ${displayName}${effectiveProxy ? ` (proxy: ${effectiveProxy.mode} → ${effectiveProxy.agent ?? "@config"}${source})` : ""}`,
-      );
+      console.log(`Added registry: ${displayName}`);
       if (addResult.authRequirement) {
         const req = addResult.authRequirement;
         console.log(`\n  \x1b[33m!\x1b[0m Auth required: ${req.scheme ?? "Bearer"}${req.realm ? ` (realm: ${req.realm})` : ""}`);
@@ -274,7 +247,6 @@ async function runRegistry() {
         console.log(`  ${r.name ?? r.url}`);
         console.log(`    ${r.url}`);
         if (r.auth) console.log(`    auth: ${r.auth.type}`);
-        if (r.proxy) console.log(`    proxy: ${r.proxy.mode} → ${r.proxy.agent ?? "@config"}`);
         console.log();
       }
       break;
