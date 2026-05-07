@@ -288,20 +288,58 @@ export async function materializeRef(
   }
 
   // 2. Fetch and write resources (skills)
+  //
+  // `list_resources` returns URIs only — content is omitted to keep the
+  // listing payload small. We have to follow up with `read_resources(uris)`
+  // to actually fetch the body. Then the per-resource field is `content`,
+  // not `text` (per `CallAgentReadResourcesResponse`).
+  //
+  // Response shape varies depending on the call path: direct calls return
+  // `{success, agentPath, resources}` while proxied calls return
+  // `{success, result: {success, agentPath, resources}}` (the proxy wraps
+  // the inner registry response). Unwrap both shapes the same way.
   try {
-    const resourcesResult = await adk.ref.resources(refName);
-    const response = resourcesResult as any;
-    if (response?.result?.resources) {
-      for (const resource of response.result.resources) {
-        if (resource.uri && resource.text) {
-          const filename = resource.uri.split("/").pop() ?? "resource.md";
-          ensureWrite(join(skillsDir, filename), resource.text);
-          skillCount++;
-        }
+    type ResourceListEntry = {
+      uri?: string;
+      name?: string;
+      mimeType?: string;
+    };
+    type ResourceReadEntry = ResourceListEntry & {
+      content?: string;
+      error?: string;
+    };
+    const unwrapResources = <T>(raw: unknown): T[] => {
+      const r = raw as Record<string, unknown> | null | undefined;
+      if (!r) return [];
+      if (Array.isArray(r.resources)) return r.resources as T[];
+      const inner = r.result as Record<string, unknown> | undefined;
+      if (inner && Array.isArray(inner.resources))
+        return inner.resources as T[];
+      return [];
+    };
+
+    const listed = unwrapResources<ResourceListEntry>(
+      await adk.ref.resources(refName),
+    );
+    const uris = listed
+      .map((r) => r.uri)
+      .filter((u): u is string => typeof u === "string" && u.length > 0);
+
+    if (uris.length > 0) {
+      const fetched = unwrapResources<ResourceReadEntry>(
+        await adk.ref.read(refName, uris),
+      );
+      for (const resource of fetched) {
+        if (!resource.uri) continue;
+        if (typeof resource.content !== "string") continue;
+        const filename = resource.uri.split("/").pop() || "resource.md";
+        ensureWrite(join(skillsDir, filename), resource.content);
+        skillCount++;
       }
     }
   } catch {
-    // resources fetch failed — might not be supported
+    // resources fetch failed — registry might not support resources, or
+    // ref isn't authenticated yet. Best-effort only.
   }
 
   return { toolCount, skillCount, typesGenerated, docsGenerated };

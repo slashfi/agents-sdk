@@ -22,8 +22,9 @@
  * ```
  */
 
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { createAdk } from "./config-store.js";
 import { createLocalFsStore, getLocalEncryptionKey } from "./local-fs.js";
 import type { Adk } from "./config-store.js";
@@ -31,6 +32,12 @@ import { AdkError, getError, getRecentErrors } from "./adk-error.js";
 import { runInit, parseTarget } from "./init.js";
 import { materializeRef, syncAllRefs } from "./materialize.js";
 import { adkCheck } from "./adk-check.js";
+import {
+  refsRootExists,
+  renderResults,
+  searchRefs,
+  writeSearchIndex,
+} from "./search.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -38,6 +45,24 @@ const command = args[0];
 // ============================================
 // Helpers
 // ============================================
+
+/**
+ * Read the SDK's published version from the sibling package.json.
+ * Resolved at runtime so a single source-of-truth lives in the manifest.
+ * Safe for both `bun src/adk.ts` (dev) and the npm-installed bin (which
+ * still runs through bun via the shebang).
+ */
+function getCliVersion(): string {
+  try {
+    const pkgPath = join(import.meta.dir, "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+      version?: string;
+    };
+    return pkg.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 function getArg(flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -95,10 +120,12 @@ adk — Agent Development Kit
 Usage:
   adk init [--target <agent>:<path>]  Setup + install skills for coding agents
   adk sync [--ref <name>]             Materialize tool docs for all refs in config
+  adk search <query> [options]        BM25 search over materialized refs/tools
   adk registry <op> [options]        Manage registry connections
   adk ref <op> [options]             Manage agent refs
   adk config-path                    Print config directory path
   adk error [id]                     View recent errors or a specific error
+  adk version | --version | -v       Print the installed adk SDK version
 
 Registry operations:
   adk registry add <url> --name <name> [--auth-type bearer|api-key|none] [--proxy [--proxy-agent @config]]
@@ -135,6 +162,15 @@ Environment:
   ADK_TOKEN             Bearer token for authenticated registries
   ADK_ENCRYPTION_KEY    Override encryption key (default: auto from ~/.adk/.encryption-key)
 
+Search options:
+  adk search <query> [--json] [--limit N] [--ref <name>] [--tools-only] [--refs-only]
+                                      BM25 over ~/.adk/refs/* — index includes
+                                      ref names, descriptions, tool names,
+                                      tool docs, parameter names, and skill
+                                      resources. Reads ~/.adk/.search-index.json
+                                      when present (rebuilt by \`adk sync\`),
+                                      otherwise walks refs/* on the fly.
+
 Examples:
   adk init --target claude --target cursor --target codex
   adk registry add https://registry.slash.com --name public
@@ -142,6 +178,8 @@ Examples:
   adk ref add notion --registry public
   adk ref inspect notion --full
   adk ref call notion notion-search '{"query":"hello"}'
+  adk search "schedule reminder" --json
+  adk search "email unread inbox" --tools-only --limit 5
 `);
 }
 
@@ -575,6 +613,58 @@ switch (command) {
       for (const f of failed) console.log(`    ${f.name}: ${f.error}`);
     }
     console.log(`\nDocs written to: ${configDir}/refs/`);
+    // Persist the BM25 search index so `adk search` can skip the
+    // recursive ref walk on every query. Best-effort — failure here
+    // shouldn't fail `adk sync` since the search path falls back to a
+    // fresh walk.
+    try {
+      const { path, documentCount } = writeSearchIndex(configDir);
+      console.log(`Search index: ${path} (${documentCount} docs)`);
+    } catch (err) {
+      console.log(
+        `\x1b[33m!\x1b[0m Failed to write search index: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    break;
+  }
+  case "search": {
+    const configDir = process.env.ADK_CONFIG_DIR ?? join(homedir(), ".adk");
+    const refsRoot = join(configDir, "refs");
+    // Positional query — first non-flag argv after the `search` command.
+    const query = args
+      .filter((a) => !a.startsWith("--"))
+      .slice(1)
+      .join(" ")
+      .trim();
+    if (!query) {
+      console.log("Usage: adk search \"<query>\" [--json] [--limit N] [--ref name] [--tools-only] [--refs-only]");
+      process.exit(1);
+    }
+    if (!refsRootExists(refsRoot)) {
+      const msg = `No materialized refs found at ${refsRoot}. Run \`adk sync\` first.`;
+      if (hasFlag("--json")) {
+        console.log(JSON.stringify({ error: msg, results: [] }));
+      } else {
+        console.log(msg);
+      }
+      break;
+    }
+    const limitArg = getArg("--limit");
+    const limit = limitArg ? Number.parseInt(limitArg, 10) : undefined;
+    const ref = getArg("--ref");
+    const toolsOnly = hasFlag("--tools-only");
+    const refsOnly = hasFlag("--refs-only");
+    const results = searchRefs(refsRoot, query, {
+      ...(limit !== undefined && Number.isFinite(limit) && { limit }),
+      ...(ref && { ref }),
+      ...(toolsOnly && { toolsOnly: true }),
+      ...(refsOnly && { refsOnly: true }),
+    });
+    if (hasFlag("--json")) {
+      console.log(JSON.stringify(results, null, 2));
+    } else {
+      console.log(renderResults(results));
+    }
     break;
   }
   case "config-path": {
@@ -619,6 +709,11 @@ switch (command) {
     const result = await adkCheck({ file, code, run: isRun, noCheck });
     process.exit(result.exitCode);
   }
+  case "--version":
+  case "-v":
+  case "version":
+    console.log(getCliVersion());
+    break;
   case "--help":
   case "-h":
   case undefined:
