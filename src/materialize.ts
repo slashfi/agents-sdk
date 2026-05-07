@@ -294,10 +294,9 @@ export async function materializeRef(
   // to actually fetch the body. Then the per-resource field is `content`,
   // not `text` (per `CallAgentReadResourcesResponse`).
   //
-  // Response shape varies depending on the call path: direct calls return
-  // `{success, agentPath, resources}` while proxied calls return
-  // `{success, result: {success, agentPath, resources}}` (the proxy wraps
-  // the inner registry response). Unwrap both shapes the same way.
+  // The unwrap below tolerates both `{success, resources}` (direct) and
+  // `{success, result: {resources}}` (registries that wrap responses
+  // through their MCP `tools/call` envelope) without caring which.
   try {
     type ResourceListEntry = {
       uri?: string;

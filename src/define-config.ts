@@ -35,30 +35,6 @@ export type RegistryAuth =
   | { type: "jwt"; issuer?: string };
 
 /**
- * Proxy configuration for a registry.
- *
- * When set, ref operations (`auth`, `auth-status`, `call`, `inspect`,
- * `resources`, `read`, `refresh-token`) for refs sourced from this
- * registry are forwarded to a server-side agent that implements the
- * adk-tools surface. Use this for cloud-hosted registries that own
- * OAuth client credentials and/or user tokens on behalf of consumers
- * (e.g. `api.twin.slash.com/mcp`).
- *
- * - `mode: 'required'` — all ref ops MUST route through the proxy agent.
- *   Local handshake (`ref.authLocal`) is refused for refs from this
- *   registry because the local environment has no way to build an
- *   authorize URL without the server's client credentials.
- * - `mode: 'optional'` — proxy is the default; callers may opt out via
- *   `{ preferLocal: true }` on a per-op basis when they already hold
- *   local credentials.
- */
-export interface RegistryProxy {
-  mode: "required" | "optional";
-  /** Agent path to forward to. Defaults to `@config`. */
-  agent?: string;
-}
-
-/**
  * OAuth state captured after `adk registry auth` completes a dynamic-client
  * registration + authorization-code flow against a registry. Stored alongside
  * `auth.token` so the access token can be refreshed without re-prompting the
@@ -120,13 +96,6 @@ export interface RegistryEntry {
 
   /** Connection status — set by validation/test, used to filter active entries */
   status?: "active" | "inactive" | "error";
-
-  /**
-   * If set, ref ops for refs sourced from this registry are forwarded
-   * to a server-side adk-tools agent (default `@config`) instead of
-   * running locally. See {@link RegistryProxy}.
-   */
-  proxy?: RegistryProxy;
 
   /**
    * Populated by `adk registry add` when the probe returned 401. Cleared
