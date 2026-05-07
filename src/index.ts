@@ -437,7 +437,9 @@ export type {
   RegistryCache,
   RegistryCacheEntry,
   RegistryCacheToolSummary,
+  RegistryCacheAuthField,
 } from "./config-store.js";
+export { isRefAuthComplete } from "./config-store.js";
 export { createLocalFsStore, getLocalEncryptionKey } from "./local-fs.js";
 export { AdkError, getError, getRecentErrors } from "./adk-error.js";
 export {
