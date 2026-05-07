@@ -521,7 +521,73 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     return value;
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Credential resolution helpers
+  //
+  // Three callsites used to inline a `tryResolve`/`canResolve` closure
+  // (auth, authStatus, refreshToken) and two of them duplicated the
+  // client_id/client_secret lookup chain verbatim. Those chains MUST stay
+  // symmetric — if `auth` accepts a credential source, `refreshToken` has
+  // to read from the same source or refresh silently no-ops on every ref
+  // `auth` succeeded against. Centralising it here removes that drift
+  // risk.
+  // ─────────────────────────────────────────────────────────────────────
 
+  type OAuthServerMetadata = import("./mcp-client.js").OAuthServerMetadata;
+
+  interface CredentialResolverContext {
+    name: string;
+    entry: RefEntry;
+    security: SecuritySchemeSummary | null;
+  }
+
+  /**
+   * Build a `tryResolve(field, oauthMetadata?)` function bound to a
+   * specific ref + entry + security context. Wraps the host-injected
+   * `resolveCredentials` callback (e.g. atlas's env/static/tenant chain
+   * for first-party agents). Errors propagate to the caller.
+   */
+  function makeTryResolve(ctx: CredentialResolverContext) {
+    return async (
+      field: string,
+      oauthMetadata?: OAuthServerMetadata | null,
+    ): Promise<string | null> => {
+      const resolve = options.resolveCredentials;
+      if (!resolve) return null;
+      return resolve({
+        ref: ctx.name,
+        field,
+        entry: ctx.entry,
+        security: ctx.security,
+        oauthMetadata,
+      });
+    };
+  }
+
+  /**
+   * Resolve OAuth client credentials (client_id + client_secret) for a
+   * ref. Walks: `resolveCredentials` callback → per-ref VCS storage.
+   * Used by both `auth` (initial OAuth flow) and `refreshToken` (token
+   * refresh) — must be a single function so the two paths can never
+   * disagree about where credentials live.
+   *
+   * Returns null when no client_id is available anywhere; caller decides
+   * whether to attempt dynamic registration (`auth`) or bail (`refresh`).
+   */
+  async function resolveOAuthClient(
+    ctx: CredentialResolverContext & { metadata?: OAuthServerMetadata | null },
+  ): Promise<{ clientId: string; clientSecret?: string } | null> {
+    const tryResolve = makeTryResolve(ctx);
+    const clientId =
+      (await tryResolve("client_id", ctx.metadata)) ??
+      (await readRefSecret(ctx.name, "client_id"));
+    if (!clientId) return null;
+    const clientSecret =
+      (await tryResolve("client_secret", ctx.metadata)) ??
+      (await readRefSecret(ctx.name, "client_secret")) ??
+      undefined;
+    return { clientId, ...(clientSecret && { clientSecret }) };
+  }
 
   const PENDING_OAUTH_PATH = "pending-oauth.json";
 
@@ -1806,12 +1872,12 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       }
 
       const configKeys = Object.keys(entry.config ?? {});
-      const resolve = options.resolveCredentials;
-
-      async function canResolve(field: string, oauthMetadata?: import("./mcp-client.js").OAuthServerMetadata | null): Promise<boolean> {
-        if (!resolve || !entry) return false;
-        const val = await resolve({ ref: name, field, entry, security, oauthMetadata });
-        return val !== null;
+      const tryResolveField = makeTryResolve({ name, entry, security });
+      async function canResolve(
+        field: string,
+        oauthMetadata?: OAuthServerMetadata | null,
+      ): Promise<boolean> {
+        return (await tryResolveField(field, oauthMetadata)) !== null;
       }
 
       const fields: Record<string, CredentialField> = {};
@@ -1944,12 +2010,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
       const status = await ref.authStatus(name);
       const security = status.security;
-      const resolve = options.resolveCredentials;
-
-      async function tryResolve(field: string, oauthMetadata?: import("./mcp-client.js").OAuthServerMetadata | null): Promise<string | null> {
-        if (!resolve) return null;
-        return resolve({ ref: name, field, entry: entry!, security, oauthMetadata });
-      }
+      const tryResolve = makeTryResolve({ name, entry, security });
 
       if (!security || security.type === "none") {
         return { type: "none", complete: true };
@@ -2101,11 +2162,14 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         const redirectUri = callbackUrl();
 
         // Resolve client credentials: callback → stored → dynamic registration
-        let clientId = await tryResolve("client_id", metadata)
-          ?? await readRefSecret(name, "client_id");
-        let clientSecret = await tryResolve("client_secret", metadata)
-          ?? await readRefSecret(name, "client_secret")
-          ?? undefined;
+        const fromHelper = await resolveOAuthClient({
+          name,
+          entry,
+          security,
+          metadata,
+        });
+        let clientId: string | undefined = fromHelper?.clientId;
+        let clientSecret: string | undefined = fromHelper?.clientSecret;
 
         if (!clientId && metadata.registration_endpoint) {
           const supportedAuthMethods = metadata.token_endpoint_auth_methods_supported ?? ["none"];
@@ -2365,21 +2429,27 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const refreshToken = await readRefSecret(name, "refresh_token");
       if (!refreshToken) return null;
 
-      // Read client credentials
-      const clientId = await readRefSecret(name, "client_id");
-      if (!clientId) return null;
-      const clientSecret = await readRefSecret(name, "client_secret");
-
-      // Get the agent's token endpoint from its security metadata
+      // Resolve token endpoint + OAuth client via the host's
+      // `resolveCredentials` chain. Same chain `auth` uses (see
+      // `resolveOAuthClient`) — kept symmetric so refresh works on every
+      // ref `auth` works on, including first-party registry-hosted
+      // clients whose creds live in env / tenant scope, not the user's
+      // per-ref config.
       const entry = await ref.get(name);
       if (!entry) return null;
 
-      const info = await ref.inspect(name);
-      const security = (info as any)?.security as Record<string, unknown> | undefined;
-      const flows = (security?.flows as Record<string, Record<string, unknown>> | undefined);
+      const status = await ref.authStatus(name);
+      const security = status.security;
+      const flows = security && "flows" in security
+        ? (security as { flows?: Record<string, { tokenUrl?: string; refreshUrl?: string }> }).flows
+        : undefined;
       const authCodeFlow = flows?.authorizationCode;
-      const tokenUrl = (authCodeFlow?.refreshUrl ?? authCodeFlow?.tokenUrl) as string | undefined;
+      const tokenUrl = authCodeFlow?.refreshUrl ?? authCodeFlow?.tokenUrl;
       if (!tokenUrl) return null;
+
+      const oauthClient = await resolveOAuthClient({ name, entry, security });
+      if (!oauthClient) return null;
+      const { clientId, clientSecret } = oauthClient;
 
       // POST to the token endpoint with grant_type=refresh_token
       const body = new URLSearchParams({
