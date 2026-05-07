@@ -22,8 +22,9 @@
  * ```
  */
 
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { createAdk } from "./config-store.js";
 import { createLocalFsStore, getLocalEncryptionKey } from "./local-fs.js";
 import type { Adk } from "./config-store.js";
@@ -44,6 +45,24 @@ const command = args[0];
 // ============================================
 // Helpers
 // ============================================
+
+/**
+ * Read the SDK's published version from the sibling package.json.
+ * Resolved at runtime so a single source-of-truth lives in the manifest.
+ * Safe for both `bun src/adk.ts` (dev) and the npm-installed bin (which
+ * still runs through bun via the shebang).
+ */
+function getCliVersion(): string {
+  try {
+    const pkgPath = join(import.meta.dir, "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+      version?: string;
+    };
+    return pkg.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 function getArg(flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -106,6 +125,7 @@ Usage:
   adk ref <op> [options]             Manage agent refs
   adk config-path                    Print config directory path
   adk error [id]                     View recent errors or a specific error
+  adk version | --version | -v       Print the installed adk SDK version
 
 Registry operations:
   adk registry add <url> --name <name> [--auth-type bearer|api-key|none] [--proxy [--proxy-agent @config]]
@@ -689,6 +709,11 @@ switch (command) {
     const result = await adkCheck({ file, code, run: isRun, noCheck });
     process.exit(result.exitCode);
   }
+  case "--version":
+  case "-v":
+  case "version":
+    console.log(getCliVersion());
+    break;
   case "--help":
   case "-h":
   case undefined:
