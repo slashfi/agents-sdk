@@ -125,6 +125,25 @@ export interface RegistryCache {
 }
 
 /**
+ * Options for `isRefAuthComplete`.
+ */
+export interface RefAuthCompleteOptions {
+  /**
+   * Field names the consumer can resolve at call time without them
+   * being present in `entry.config` — typically OAuth client_id /
+   * client_secret resolved from environment variables or platform
+   * config by the host's `resolveCredentials` callback.
+   *
+   * Required-non-automated fields listed here count as satisfied even
+   * when missing from `entry.config`. The default behaviour (no opt
+   * passed) requires every such field to live in config, which is
+   * correct for self-hosted SDK consumers but wrong for platforms
+   * that inject OAuth client credentials at runtime.
+   */
+  resolvableFields?: ReadonlyArray<string>;
+}
+
+/**
  * "Is this ref ready to call?" answered locally using the cached
  * security-scheme requirements. Mirrors the `complete` boolean
  * `auth-status` returns, but doesn't need a network round-trip — the
@@ -138,10 +157,11 @@ export interface RegistryCache {
  *     signaling "I don't know — caller should fall back to its own
  *     heuristic or call `auth-status` to populate the cache".
  *   - Cache hit → for every required, non-automated field, checks
- *     presence in `entry.config`. Mirrors the `present || resolvable`
- *     check in `auth-status` but evaluates against current config.
- *     `automated` fields (e.g. dynamic OAuth client_id) count as
- *     satisfied even when absent — adk supplies them at call time.
+ *     presence in `entry.config` OR (if `opts.resolvableFields`
+ *     includes the field name) treats it as satisfied externally.
+ *     Mirrors the `present || resolvable` check in `auth-status`.
+ *     `automated` fields (e.g. dynamic OAuth client_id minted by the
+ *     registry) always count as satisfied.
  *
  * Returning `null` for cache miss is intentional. A boolean would
  * force callers to choose a default that's wrong half the time;
@@ -150,16 +170,23 @@ export interface RegistryCache {
 export function isRefAuthComplete(
   entry: RefEntry,
   cacheEntry: RegistryCacheEntry | undefined,
+  opts?: RefAuthCompleteOptions,
 ): boolean | null {
   if (typeof entry === "string") return false;
   if ((entry as { mode?: unknown }).mode === "proxy") return true;
   const authFields = cacheEntry?.authFields;
   if (!authFields) return null;
   const config = entry.config ?? {};
+  const resolvable =
+    opts?.resolvableFields && opts.resolvableFields.length > 0
+      ? new Set(opts.resolvableFields)
+      : null;
   for (const [field, info] of Object.entries(authFields)) {
     if (!info.required) continue;
     if (info.automated) continue;
-    if (!(field in config)) return false;
+    if (field in config) continue;
+    if (resolvable && resolvable.has(field)) continue;
+    return false;
   }
   return true;
 }
