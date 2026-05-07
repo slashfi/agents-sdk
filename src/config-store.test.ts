@@ -1307,5 +1307,61 @@ describe("isRefAuthComplete + cached authFields", () => {
     );
     expect(result).toBe(true);
   });
+
+  test("resolvableFields satisfies required, non-automated fields absent from config", async () => {
+    // Scenario: registry-hosted OAuth where the platform injects
+    // client_id / client_secret at runtime via resolveCredentials.
+    // The registry sees them as user-provided (required + non-automated)
+    // but the consumer environment satisfies them externally.
+    const { isRefAuthComplete } = await import("./config-store");
+    const result = isRefAuthComplete(
+      {
+        ref: "google-gmail",
+        name: "google-gmail",
+        scheme: "registry",
+        config: {
+          // client_id / client_secret missing — resolved from env vars.
+          access_token: "tok",
+        },
+      },
+      {
+        ref: "google-gmail",
+        fetchedAt: new Date().toISOString(),
+        authFields: {
+          client_id: { required: true, automated: false },
+          client_secret: { required: true, automated: false },
+          access_token: { required: true, automated: true },
+        },
+      },
+      { resolvableFields: ["client_id", "client_secret"] },
+    );
+    expect(result).toBe(true);
+  });
+
+  test("resolvableFields does not bypass missing fields it doesn't list", async () => {
+    const { isRefAuthComplete } = await import("./config-store");
+    const result = isRefAuthComplete(
+      {
+        ref: "@oauth",
+        name: "@oauth",
+        scheme: "https",
+        url: "http://localhost",
+        config: {
+          client_id: "abc",
+          // client_secret missing AND not listed as resolvable.
+        },
+      },
+      {
+        ref: "@oauth",
+        fetchedAt: new Date().toISOString(),
+        authFields: {
+          client_id: { required: true, automated: false },
+          client_secret: { required: true, automated: false },
+        },
+      },
+      { resolvableFields: ["client_id"] },
+    );
+    expect(result).toBe(false);
+  });
 });
 
