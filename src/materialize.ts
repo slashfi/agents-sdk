@@ -57,11 +57,24 @@ function ensureWrite(path: string, content: string): void {
   writeFileSync(path, content, "utf-8");
 }
 
-function toKebabCase(name: string): string {
-  return name
-    .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .toLowerCase();
+/**
+ * Sanitize a tool name for use as a filename — strictly conservative.
+ * Replaces only characters that would break filesystems (`/`, `\`, NUL)
+ * with `_`. Camel case, dashes, underscores, dots, and the actual tool
+ * name are preserved verbatim so:
+ *
+ *   - `find ~/.adk/refs/<ref>/tools` shows the canonical tool names
+ *     (e.g. `listMessages.tool.md`, not `listmessages.tool.md`).
+ *   - Agents copying a slug from the filename can paste it into
+ *     `adk ref call <ref> <tool>` without round-tripping through a
+ *     case-folding step.
+ *
+ * Registries already mint tool names that are valid identifiers
+ * (camelCase, snake_case, kebab-case), so this rarely substitutes
+ * anything in practice — it's a safety net for malformed names.
+ */
+function toFilenameSlug(name: string): string {
+  return name.replace(/[/\\\0]/g, "_");
 }
 
 function pascalCase(s: string): string {
@@ -257,9 +270,12 @@ export async function materializeRef(
 
       // Write .tool.md files (primary output — readable by LLMs)
       for (const tool of tools) {
-        const safeName = toKebabCase(tool.name);
-        ensureWrite(join(toolsDir, `${safeName}.tool.md`), generateToolMd(tool));
-        ensureWrite(join(toolsDir, `${safeName}.tool.json`), JSON.stringify(tool, null, 2));
+        const slug = toFilenameSlug(tool.name);
+        ensureWrite(join(toolsDir, `${slug}.tool.md`), generateToolMd(tool));
+        ensureWrite(
+          join(toolsDir, `${slug}.tool.json`),
+          JSON.stringify(tool, null, 2),
+        );
       }
       toolCount = tools.length;
 
@@ -478,11 +494,20 @@ export function generateRootTypes(
   lines.push(`  T extends _AdkToolsOf<A>,`);
   lines.push(`> = AdkAgentRegistry[A][T] extends { params: infer P } ? P : Record<string, unknown>;`);
   lines.push(``);
+  // adk.ref.call resolves to a discriminated success/error envelope.
+  // Typing this here (instead of as `Promise<unknown>`) lets scripts do
+  // `if (res.success) { res.result… }` without casting to `any`. The
+  // success.result stays `unknown` since registries don't publish output
+  // schemas — narrowing it is the script's responsibility.
+  lines.push(`type _AdkCallResult =`);
+  lines.push(`  | { success: true; result: unknown }`);
+  lines.push(`  | { success: false; error: string };`);
+  lines.push(``);
   lines.push(`declare const adk: {`);
   lines.push(`  ref: {`);
   lines.push(`    call<A extends _AdkAgentPath, T extends _AdkToolsOf<A>>(`);
   lines.push(`      name: A, tool: T, params: _AdkParamsOf<A, T>`);
-  lines.push(`    ): Promise<unknown>;`);
+  lines.push(`    ): Promise<_AdkCallResult>;`);
   lines.push(`  };`);
   lines.push(`};`);
   lines.push(``);
