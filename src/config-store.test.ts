@@ -1155,3 +1155,157 @@ describe("ADK ref registry cache", () => {
     expect(refs[0].description).toBeUndefined();
   });
 });
+
+// ─── isRefAuthComplete + authFields cache ────────────────────────
+
+describe("isRefAuthComplete + cached authFields", () => {
+  /**
+   * The core idea: `auth-status` knows what fields are required for a
+   * given security scheme (it asks the registry). Cache that answer
+   * shape per-ref so subsequent host-side "is this ref ready to call?"
+   * checks can be evaluated locally with no network round-trip, and
+   * stay accurate as the user fills in or clears credentials in the
+   * entry's config.
+   *
+   * `isRefAuthComplete(entry, cacheEntry)` returns:
+   *   - `true`  when all required fields are satisfied (present in
+   *     `entry.config` OR marked `automated`).
+   *   - `false` when at least one required, non-automated field is
+   *     missing.
+   *   - `null`  when the cache has no `authFields` for this ref yet
+   *     (caller should fall back or refresh via `auth-status`).
+   */
+
+  test("cache miss returns null", async () => {
+    const { isRefAuthComplete } = await import("./config-store");
+    const result = isRefAuthComplete(
+      {
+        ref: "@unknown",
+        name: "@unknown",
+        scheme: "https",
+        url: "http://localhost",
+      },
+      undefined,
+    );
+    expect(result).toBeNull();
+  });
+
+  test("proxy mode short-circuits to true regardless of cache", async () => {
+    const { isRefAuthComplete } = await import("./config-store");
+    const result = isRefAuthComplete(
+      {
+        ref: "slash",
+        name: "slash",
+        scheme: "registry",
+        // proxy mode set by ref.add when registry inspection includes it.
+        // biome-ignore lint/suspicious/noExplicitAny: mode isn't on the public type
+        mode: "proxy",
+      } as any,
+      undefined,
+    );
+    expect(result).toBe(true);
+  });
+
+  test("required field present → true", async () => {
+    const { isRefAuthComplete } = await import("./config-store");
+    const result = isRefAuthComplete(
+      {
+        ref: "@oauth",
+        name: "@oauth",
+        scheme: "https",
+        url: "http://localhost",
+        config: {
+          client_id: "abc",
+          client_secret: "xyz",
+          access_token: "tok",
+        },
+      },
+      {
+        ref: "@oauth",
+        fetchedAt: new Date().toISOString(),
+        authFields: {
+          client_id: { required: true, automated: false },
+          client_secret: { required: true, automated: false },
+          access_token: { required: true, automated: true },
+        },
+      },
+    );
+    expect(result).toBe(true);
+  });
+
+  test("automated field absent still counts as satisfied", async () => {
+    const { isRefAuthComplete } = await import("./config-store");
+    // dynamicRegistration: client_id is automated, so absence is fine.
+    const result = isRefAuthComplete(
+      {
+        ref: "@oauth",
+        name: "@oauth",
+        scheme: "https",
+        url: "http://localhost",
+        config: {
+          // client_id missing
+          access_token: "tok",
+        },
+      },
+      {
+        ref: "@oauth",
+        fetchedAt: new Date().toISOString(),
+        authFields: {
+          client_id: { required: true, automated: true },
+          access_token: { required: true, automated: true },
+        },
+      },
+    );
+    expect(result).toBe(true);
+  });
+
+  test("required, non-automated field missing → false", async () => {
+    const { isRefAuthComplete } = await import("./config-store");
+    const result = isRefAuthComplete(
+      {
+        ref: "@oauth",
+        name: "@oauth",
+        scheme: "https",
+        url: "http://localhost",
+        config: {
+          client_id: "abc",
+          client_secret: "xyz",
+          // access_token missing — user hasn't completed OAuth yet.
+        },
+      },
+      {
+        ref: "@oauth",
+        fetchedAt: new Date().toISOString(),
+        authFields: {
+          client_id: { required: true, automated: false },
+          client_secret: { required: true, automated: false },
+          access_token: { required: true, automated: false },
+        },
+      },
+    );
+    expect(result).toBe(false);
+  });
+
+  test("non-required field absence is fine", async () => {
+    const { isRefAuthComplete } = await import("./config-store");
+    const result = isRefAuthComplete(
+      {
+        ref: "@oauth",
+        name: "@oauth",
+        scheme: "https",
+        url: "http://localhost",
+        config: { access_token: "tok" },
+      },
+      {
+        ref: "@oauth",
+        fetchedAt: new Date().toISOString(),
+        authFields: {
+          client_id: { required: false, automated: false },
+          access_token: { required: true, automated: false },
+        },
+      },
+    );
+    expect(result).toBe(true);
+  });
+});
+

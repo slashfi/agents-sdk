@@ -68,16 +68,49 @@ export interface RegistryCacheToolSummary {
 }
 
 /**
- * Per-ref cache entry. Updated as a side-effect of `ref.add()` and
- * `ref.inspect()` whenever the registry response carries description or tool
- * information. Identity-relative (lives next to the consumer-config that
- * issued the registry call), so permission-filtered views stay consistent.
+ * Slim auth-field metadata cached so hosts can locally answer "is this
+ * ref ready to call?" without a registry round-trip. Mirrors the
+ * authoritative shape `auth-status` produces — same source of truth,
+ * just persisted.
+ *
+ * For each field name in the security scheme:
+ *   - `required`  — must end up satisfied for `ref.call` to work.
+ *   - `automated` — adk fills this in itself (e.g. dynamic OAuth
+ *                   client registration). Doesn't need to be `present`
+ *                   in the user's config to count as satisfied.
+ */
+export interface RegistryCacheAuthField {
+  required: boolean;
+  automated: boolean;
+}
+
+/**
+ * Per-ref cache entry. Updated as a side-effect of `ref.add()`,
+ * `ref.inspect()`, and `ref.authStatus()` whenever the registry
+ * response carries description / tool / security-scheme info.
+ * Identity-relative (lives next to the consumer-config that issued
+ * the registry call), so permission-filtered views stay consistent.
  */
 export interface RegistryCacheEntry {
   /** Canonical agent path (e.g. `notion`). Stored for sanity/debug. */
   ref: string;
   description?: string;
   tools?: RegistryCacheToolSummary[];
+  /**
+   * Auth field requirements derived from the registry's security
+   * scheme (extracted by `auth-status`). When present, hosts can
+   * compute "is this ref callable?" by intersecting these with the
+   * entry's `config` — no network round-trip needed. Absent when the
+   * scheme couldn't be fetched (e.g. registry was offline at add
+   * time); fall back to whatever heuristic the caller chooses.
+   *
+   * Note on proxy refs: when the entry is in `proxy` mode the
+   * security scheme is exposed by the *proxy*, and the answer to
+   * "is this callable?" lives server-side — `authFields` is omitted
+   * locally and hosts should treat proxy refs as authoritative
+   * regardless of entry-side fields.
+   */
+  authFields?: Record<string, RegistryCacheAuthField>;
   /** ISO timestamp of the most recent registry round-trip that wrote this. */
   fetchedAt: string;
 }
@@ -89,6 +122,46 @@ export interface RegistryCacheEntry {
  */
 export interface RegistryCache {
   refs: Record<string, RegistryCacheEntry>;
+}
+
+/**
+ * "Is this ref ready to call?" answered locally using the cached
+ * security-scheme requirements. Mirrors the `complete` boolean
+ * `auth-status` returns, but doesn't need a network round-trip — the
+ * cached `authFields` capture what the registry said is required, and
+ * we evaluate satisfaction against the entry's current `config`.
+ *
+ * Behavior:
+ *   - `mode: 'proxy'` refs → always true. Auth lives server-side; the
+ *     proxy is the source of truth, no entry-side fields involved.
+ *   - Cache miss (no `authFields` for this ref yet) → returns `null`,
+ *     signaling "I don't know — caller should fall back to its own
+ *     heuristic or call `auth-status` to populate the cache".
+ *   - Cache hit → for every required, non-automated field, checks
+ *     presence in `entry.config`. Mirrors the `present || resolvable`
+ *     check in `auth-status` but evaluates against current config.
+ *     `automated` fields (e.g. dynamic OAuth client_id) count as
+ *     satisfied even when absent — adk supplies them at call time.
+ *
+ * Returning `null` for cache miss is intentional. A boolean would
+ * force callers to choose a default that's wrong half the time;
+ * `null` lets them branch explicitly.
+ */
+export function isRefAuthComplete(
+  entry: RefEntry,
+  cacheEntry: RegistryCacheEntry | undefined,
+): boolean | null {
+  if (typeof entry === "string") return false;
+  if ((entry as { mode?: unknown }).mode === "proxy") return true;
+  const authFields = cacheEntry?.authFields;
+  if (!authFields) return null;
+  const config = entry.config ?? {};
+  for (const [field, info] of Object.entries(authFields)) {
+    if (!info.required) continue;
+    if (info.automated) continue;
+    if (!(field in config)) return false;
+  }
+  return true;
 }
 
 // ============================================
@@ -647,6 +720,29 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     if (!entry) return;
     const cache = await readRegistryCache();
     cache.refs[name] = entry;
+    await writeRegistryCache(cache);
+  }
+
+  /**
+   * Merge `authFields` into an existing cache entry without clobbering
+   * description/tools, or create a minimal entry if one doesn't exist
+   * yet. Called from `authStatus` so the slim {required, automated}
+   * shape is always available for `isRefAuthComplete` to answer
+   * locally on subsequent calls.
+   */
+  async function upsertRegistryCacheAuthFields(
+    name: string,
+    ref: string,
+    authFields: Record<string, RegistryCacheAuthField>,
+  ): Promise<void> {
+    const cache = await readRegistryCache();
+    const existing = cache.refs[name];
+    cache.refs[name] = {
+      ...(existing ?? { ref, fetchedAt: new Date().toISOString() }),
+      authFields,
+      // Refresh fetchedAt so freshness telemetry stays accurate.
+      fetchedAt: new Date().toISOString(),
+    };
     await writeRegistryCache(cache);
   }
 
@@ -2341,6 +2437,21 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const complete = Object.values(fields).every(
         (f) => !f.required || f.present || f.resolvable,
       );
+
+      // Persist the slim {required, automated} per-field shape into the
+      // registry cache so `isRefAuthComplete` can answer subsequent
+      // host-side "is this ref ready?" checks without re-fetching the
+      // security scheme. We deliberately omit `present`/`resolvable`
+      // because those are computed against the current entry.config and
+      // host environment — caching them would go stale immediately.
+      const authFields: Record<string, RegistryCacheAuthField> = {};
+      for (const [field, info] of Object.entries(fields)) {
+        authFields[field] = {
+          required: info.required,
+          automated: info.automated,
+        };
+      }
+      await upsertRegistryCacheAuthFields(name, entry.ref, authFields);
 
       return { name, security, complete, fields };
     },
