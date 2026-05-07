@@ -112,7 +112,12 @@ export {
 
 // Define functions
 export { defineAgent, defineTool } from "./define.js";
-export type { DefineAgentOptions, DefineToolOptions, AgentWithHooks, ToolWithHooks } from "./define.js";
+export type {
+  DefineAgentOptions,
+  DefineToolOptions,
+  AgentWithHooks,
+  ToolWithHooks,
+} from "./define.js";
 
 // Registry
 export { createAgentRegistry, agentFromSerialized } from "./registry.js";
@@ -346,10 +351,7 @@ export {
   exchangeCodeForTokens,
   refreshAccessToken as refreshMcpAccessToken,
 } from "./mcp-client.js";
-export type {
-  OAuthServerMetadata,
-} from "./mcp-client.js";
-
+export type { OAuthServerMetadata } from "./mcp-client.js";
 
 // ============================================
 // Serialized Agent Definitions
@@ -360,10 +362,6 @@ export type {
   SerializedAgentDefinition,
   SerializedTool,
 } from "./serialized.js";
-
-
-
-
 
 // ============================================
 // call_agent Schema (shared source of truth)
@@ -405,9 +403,7 @@ export type { ValidationResult } from "./validate.js";
 // BM25 Search
 // ============================================
 
-export {
-  createBM25Index,
-} from "./bm25.js";
+export { createBM25Index } from "./bm25.js";
 
 export type {
   BM25Options,
@@ -438,7 +434,14 @@ export type {
   ResolveCredentials,
   ResolveCredentialsContext,
   RegistryTestResult,
+  RegistryCache,
+  RegistryCacheEntry,
+  RegistryCacheToolSummary,
 } from "./config-store.js";
 export { createLocalFsStore, getLocalEncryptionKey } from "./local-fs.js";
 export { AdkError, getError, getRecentErrors } from "./adk-error.js";
-export { createAdkTools, type AdkToolsHooks, type CreateAdkToolsOptions } from "./adk-tools.js";
+export {
+  createAdkTools,
+  type AdkToolsHooks,
+  type CreateAdkToolsOptions,
+} from "./adk-tools.js";
