@@ -1047,6 +1047,12 @@ export async function createRegistryConsumer(
           })) as unknown as Record<string, unknown> | null;
           if (!raw) return null;
 
+          // `callRegistry` returns {success:false, ...} for upstream 401s
+          // (and other recoverable failures) instead of throwing — treat
+          // these as "this registry doesn't host the agent" so the next
+          // registry gets a chance to answer.
+          if (raw.success === false) return null;
+
           // Some endpoints (e.g. twin MCP) wrap the response in { success, result },
           // while registries return fields flat. Unwrap if needed.
           const data = (
@@ -1063,6 +1069,15 @@ export async function createRegistryConsumer(
             upstream?: string;
             mode?: string;
           };
+
+          // Skip "agent not found" responses (no tools AND no description)
+          // so they don't shadow a registry that actually hosts the agent.
+          const hasContent =
+            (data.tools && data.tools.length > 0) ||
+            (data.toolSummaries && data.toolSummaries.length > 0) ||
+            !!data.description;
+          if (!hasContent) return null;
+
           return {
             path: agentPath,
             publisher: registry.publisher,
