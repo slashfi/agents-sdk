@@ -340,8 +340,9 @@ async function runRegistry() {
   }
   } catch (err) {
     if (err instanceof AdkError) {
-      console.error(`\n\x1b[31m✗\x1b[0m ${err.message}`);
-      console.error(`  ${err.hint}`);
+      // err.message already includes the hint inline.
+      console.error(`\n\x1b[31m✗\x1b[0m ${err.summary}`);
+      if (err.hint) console.error(`  ${err.hint}`);
       console.error(`  Error ID: ${err.errorId}`);
       process.exit(1);
     }

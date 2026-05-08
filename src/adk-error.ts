@@ -21,6 +21,7 @@ function generateErrorId(): string {
 export class AdkError extends Error {
   readonly code: string;
   readonly hint: string;
+  readonly summary: string;
   readonly details: Record<string, unknown>;
   readonly errorId: string;
   readonly timestamp: string;
@@ -32,10 +33,19 @@ export class AdkError extends Error {
     details?: Record<string, unknown>;
     cause?: unknown;
   }) {
-    super(opts.message);
+    // Compose the full agent-facing message into Error.message itself so
+    // any caller that just reads `err.message` (LLM tool wrappers, generic
+    // error logs, etc.) sees the hint too — not only callers that know to
+    // call toAgentString(). Keep the bare message exposed as `summary` for
+    // the rare caller that wants only the short form.
+    const fullMessage = opts.hint
+      ? `${opts.message}\nHint: ${opts.hint}`
+      : opts.message;
+    super(fullMessage);
     this.name = "AdkError";
     this.code = opts.code;
     this.hint = opts.hint;
+    this.summary = opts.message;
     this.details = opts.details ?? {};
     this.errorId = generateErrorId();
     this.timestamp = new Date().toISOString();
@@ -45,15 +55,15 @@ export class AdkError extends Error {
     if (errorLog.length > 100) errorLog.shift();
   }
 
-  /** Agent-friendly string: message + hint + error ID */
+  /** Agent-friendly string: full message (already includes hint) + error ID */
   toAgentString(): string {
-    return `${this.message}\nHint: ${this.hint}\nError ID: ${this.errorId}`;
+    return `${this.message}\nError ID: ${this.errorId}`;
   }
 
   /** Full debug output for `adk error <id>` */
   toDebugString(): string {
     return [
-      `AdkError: ${this.message}`,
+      `AdkError: ${this.summary}`,
       `  Code: ${this.code}`,
       `  Hint: ${this.hint}`,
       `  Error ID: ${this.errorId}`,

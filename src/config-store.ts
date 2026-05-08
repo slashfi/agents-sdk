@@ -1841,8 +1841,15 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         } else {
           throw new AdkError({
             code: "REF_INVALID",
-            message: `Cannot add ref "${entry.ref}": could not determine connection type`,
-            hint: "Use --registry <name> to install from a registry, or --url <url> for a direct connection",
+            message:
+              `Cannot add ref "${entry.ref}": could not determine connection type. ` +
+              `Provide one of:\n` +
+              `  - sourceRegistry: { url: <registry URL>, agentPath?: <agent path on that registry> }  (registry-backed ref)\n` +
+              `  - url: "https://..."                                                                  (direct https/mcp ref)\n` +
+              `For registry-backed refs, run \`registry list\` to find available registry URLs.`,
+            hint:
+              "CLI: pass --registry <name> or --url <url>. " +
+              "Tool input: pass `sourceRegistry: { url, agentPath }` or `url: 'https://...'`.",
             details: { ref: entry.ref },
           });
         }
@@ -1852,18 +1859,42 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       if (entry.scheme === "registry" && !entry.sourceRegistry?.url) {
         throw new AdkError({
           code: "REF_INVALID",
-          message: `Cannot add ref "${entry.ref}": registry scheme requires a source registry`,
-          hint: "Use --registry <name> (e.g. adk ref add notion --registry public)",
-          details: { ref: entry.ref, scheme: entry.scheme },
+          message:
+            `Cannot add ref "${entry.ref}": scheme="registry" requires sourceRegistry.url. ` +
+            `Required shape:\n` +
+            `  {\n` +
+            `    operation: "add",\n` +
+            `    ref: "${entry.ref}",\n` +
+            `    scheme: "registry",\n` +
+            `    sourceRegistry: { url: <registry URL>, agentPath?: <agent path on that registry> }\n` +
+            `  }\n` +
+            `Run \`registry list\` to find the URL of a registered registry by name.`,
+          hint:
+            "CLI: adk ref add <ref> --registry <name>. " +
+            "Tool input: pass sourceRegistry.url alongside agentPath (auto-resolution by registry name only happens when calling addRef() directly with a `registry` field, not via the @config tool).",
+          details: {
+            ref: entry.ref,
+            scheme: entry.scheme,
+            received: { sourceRegistry: entry.sourceRegistry },
+            requiredShape: {
+              sourceRegistry: { url: "<registry URL>", agentPath: "<optional agent path>" },
+            },
+          },
         });
       }
 
       if ((entry.scheme === "mcp" || entry.scheme === "https") && !entry.url) {
         throw new AdkError({
           code: "REF_INVALID",
-          message: `Cannot add ref "${entry.ref}": scheme '${entry.scheme}' requires url`,
-          hint: "Provide the direct agent URL with: url: 'https://...'",
-          details: { ref: entry.ref, scheme: entry.scheme },
+          message:
+            `Cannot add ref "${entry.ref}": scheme="${entry.scheme}" requires url. ` +
+            `Required shape: { operation: "add", ref: "${entry.ref}", scheme: "${entry.scheme}", url: "https://..." }`,
+          hint: "Provide the direct agent URL with `url: 'https://...'`.",
+          details: {
+            ref: entry.ref,
+            scheme: entry.scheme,
+            requiredShape: { url: "<agent URL>" },
+          },
         });
       }
 

@@ -170,7 +170,7 @@ describe("ADK ref.add validation", () => {
 
     await expect(
       adk.ref.add({ ref: "@something", scheme: "registry" }),
-    ).rejects.toThrow("requires a source registry");
+    ).rejects.toThrow("requires sourceRegistry.url");
   });
 
   test("throws when scheme is 'mcp' without url", async () => {
