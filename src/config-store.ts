@@ -1903,7 +1903,13 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         try {
           const consumer = await buildConsumerForRef(entry);
           const agentToInspect = entry.sourceRegistry?.agentPath ?? entry.ref;
-          const info = await consumer.inspect(agentToInspect);
+          // Same multi-registry hazard as authStatus — target the ref's
+          // own sourceRegistry so an unrelated registry can't shadow the
+          // real lookup with an empty/error response.
+          const info = await consumer.inspect(
+            agentToInspect,
+            entry.sourceRegistry?.url,
+          );
 
           const requiresValidation = !!entry.sourceRegistry;
           if (requiresValidation) {
@@ -2186,8 +2192,15 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       let security: SecuritySchemeSummary | null = null;
       try {
         const consumer = await buildConsumerForRef(entry);
+        // Pass `sourceRegistry.url` so inspect targets the registry the ref
+        // came from. Without this, multi-registry consumers race every
+        // configured registry and the first fulfilled response wins —
+        // including {success:false} bodies from unrelated registries that
+        // don't host this agent — which silently nulls out `security` and
+        // makes `auth()` short-circuit to {type:"none", complete:true}.
         const info = await consumer.inspect(
           entry.sourceRegistry?.agentPath ?? entry.ref,
+          entry.sourceRegistry?.url,
         );
         if (info?.security) security = info.security;
       } catch {
