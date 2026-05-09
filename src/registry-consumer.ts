@@ -1002,7 +1002,14 @@ export async function createRegistryConsumer(
         );
       }
 
-      return callTool(registry, ref.ref, tool, params);
+      // Forward resolved per-ref headers as `_headers` so the registry
+      // injects them on the outbound REST call. Without this the
+      // `auth.headers` declared by the ref are silently dropped for
+      // registry-routed (`mode: "api"`) refs.
+      const paramsWithHeaders = resolvedHeaders
+        ? { ...params, _headers: resolvedHeaders }
+        : params;
+      return callTool(registry, ref.ref, tool, paramsWithHeaders);
     },
 
     discover(registryUrl: string) {

@@ -811,11 +811,31 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     const entry = findRef(config.refs ?? [], name);
     const value = entry?.config?.[key];
     if (typeof value !== "string") return null;
-    if (value.startsWith(SECRET_PREFIX) && options.encryptionKey) {
-      return decryptSecret(
-        value.slice(SECRET_PREFIX.length),
-        options.encryptionKey,
-      );
+    if (value.startsWith(SECRET_PREFIX)) {
+      // Encrypted credential. Refuse to forward the ciphertext verbatim;
+      // upstreams will silently reject `secret:...` as a bearer token
+      // and the cause becomes invisible.
+      if (!options.encryptionKey) {
+        throw new AdkError({
+          code: "encryption_key_missing",
+          message: `ref.call(${name}): credential "${key}" is encrypted (secret:...) but this Adk instance was constructed without an encryptionKey.`,
+          hint: "Pass `encryptionKey` when constructing the Adk (createAdk/createAdkForUser/createAdkForTenant).",
+          details: { ref: name, field: key },
+        });
+      }
+      try {
+        return await decryptSecret(
+          value.slice(SECRET_PREFIX.length),
+          options.encryptionKey,
+        );
+      } catch (err) {
+        throw new AdkError({
+          code: "encryption_key_mismatch",
+          message: `ref.call(${name}): failed to decrypt credential "${key}". The configured encryptionKey does not match the key used to encrypt this value.`,
+          hint: "Re-encrypt the ref's credentials with the current encryptionKey, or restore the previous key.",
+          details: { ref: name, field: key, cause: (err as Error)?.message },
+        });
+      }
     }
     return value;
   }
@@ -2098,16 +2118,35 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       if (rawHeaders && typeof rawHeaders === "object") {
         resolvedHeaders = {};
         for (const [k, v] of Object.entries(rawHeaders)) {
-          if (
-            typeof v === "string" &&
-            v.startsWith(SECRET_PREFIX) &&
-            options.encryptionKey
-          ) {
-            resolvedHeaders[k] = await decryptSecret(
-              v.slice(SECRET_PREFIX.length),
-              options.encryptionKey,
-            );
-          } else if (typeof v === "string") {
+          if (typeof v !== "string") continue;
+          if (v.startsWith(SECRET_PREFIX)) {
+            // Encrypted header value. Refuse to forward the ciphertext
+            // verbatim — that historically leaked literal `secret:...`
+            // strings as outbound HTTP headers, which upstreams rejected
+            // with opaque 401s. Hard-fail with a clear message so the
+            // misconfiguration surfaces instead of silently breaking auth.
+            if (!options.encryptionKey) {
+              throw new AdkError({
+                code: "encryption_key_missing",
+                message: `ref.call(${name}): header "${k}" is encrypted (secret:...) but this Adk instance was constructed without an encryptionKey, so the ciphertext cannot be resolved.`,
+                hint: "Pass `encryptionKey` when constructing the Adk (createAdk/createAdkForUser/createAdkForTenant), or strip the encrypted header from the ref config.",
+                details: { ref: name, header: k },
+              });
+            }
+            try {
+              resolvedHeaders[k] = await decryptSecret(
+                v.slice(SECRET_PREFIX.length),
+                options.encryptionKey,
+              );
+            } catch (err) {
+              throw new AdkError({
+                code: "encryption_key_mismatch",
+                message: `ref.call(${name}): failed to decrypt header "${k}". The configured encryptionKey does not match the key used to encrypt this value.`,
+                hint: "Re-encrypt the ref's headers with the current encryptionKey, or restore the previous key. Decrypting an unrelated value would have leaked ciphertext as a header before this fix.",
+                details: { ref: name, header: k, cause: (err as Error)?.message },
+              });
+            }
+          } else {
             resolvedHeaders[k] = v;
           }
         }
