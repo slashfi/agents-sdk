@@ -532,6 +532,38 @@ describe("ADK ref.call() full auto-refresh flow", () => {
     expect((result as any)?.result?.message).toBe("success");
     expect((result as any)?.result?.token).toBe("refreshed-token");
   });
+
+  test("ref.authStatus reports access_token.automated=false for authorizationCode (user must consent)", async () => {
+    // Regression: previously `access_token.automated` was hardcoded to
+    // `true` for every oauth2 scheme. That made cached-authFields
+    // callers think the ref was "connected" the moment `ref.add` ran,
+    // even when the user had never completed OAuth — because the
+    // `automated:true` flag tells `isRefAuthComplete` to skip the
+    // presence check. For authorizationCode (which requires user
+    // consent), `automated` must be `false`.
+    const fs = createMemoryFs();
+    const adk = createAdk(fs, {
+      encryptionKey: "test-key-32-chars-long-enough!!",
+    });
+
+    await adk.registry.add({
+      name: "oauth-reg",
+      url: `http://localhost:${REG_PORT}`,
+    });
+    await adk.ref.add({
+      ref: "oauth-api",
+      name: "oauth-api-unauthed",
+      sourceRegistry: {
+        url: `http://localhost:${REG_PORT}`,
+        agentPath: "oauth-api",
+      },
+    });
+
+    const status = await adk.ref.authStatus("oauth-api-unauthed");
+    expect(status.complete).toBe(false);
+    expect(status.fields?.access_token?.automated).toBe(false);
+    expect(status.fields?.access_token?.present).toBe(false);
+  });
 });
 
 // ─── Registry auth lifecycle ─────────────────────────────────────
