@@ -2265,8 +2265,27 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         const securityExt = security as {
           dynamicRegistration?: boolean;
           discoveryUrl?: string;
+          flows?: Record<string, unknown>;
         };
         const hasRegistration = !!securityExt.dynamicRegistration;
+
+        // `access_token.automated` decides whether `isRefAuthComplete`
+        // requires the token to be present in `entry.config`. It should
+        // be `true` ONLY when the SDK can mint the token with no user
+        // action — i.e. a pure machine-to-machine flow like
+        // `clientCredentials`. For `authorizationCode` / `implicit` /
+        // `password` (and the "no flows declared" fallback), the user
+        // must complete the OAuth consent step before the token lands
+        // in config, so treat it as a normal user-supplied required
+        // field. Without this, cached-authFields callers think the ref
+        // is "connected" the moment `ref.add` runs, even though the
+        // user never consented.
+        const declaredFlows = securityExt.flows
+          ? Object.keys(securityExt.flows)
+          : [];
+        const accessTokenAutomated =
+          declaredFlows.length > 0 &&
+          declaredFlows.every((f) => f === "clientCredentials");
 
         let oauthMetadata:
           | import("./mcp-client.js").OAuthServerMetadata
@@ -2297,7 +2316,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         }
         fields.access_token = {
           required: true,
-          automated: true,
+          automated: accessTokenAutomated,
           present: configKeys.includes("access_token"),
           resolvable: false,
         };
