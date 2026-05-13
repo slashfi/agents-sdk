@@ -653,6 +653,225 @@ describe("ADK ref.call() full auto-refresh flow", () => {
   });
 });
 
+describe("ADK ref.call() auto-refresh on direct MCP 401", () => {
+  // Regression: refs whose entry has a direct `url` and `mode !== "api"`
+  // (Linear, Notion, Figma, DoorDash, Houzz, etc.) take the
+  // `callMcpDirect` branch instead of the registry-mediated `callRegistry`
+  // branch. Before this fix, a 401 from the upstream MCP server was
+  // surfaced as `{ success: false, error: "MCP tools/call failed (401):
+  // ..." }` with no `httpStatus` field, so `isUnauthorized(result)` never
+  // matched and the refresh-on-401 retry path in `ref.call` was silently
+  // skipped — even when the ref had a valid `refresh_token` on hand. The
+  // fix attaches `httpStatus` to the error envelope, restoring parity
+  // with the registry-mediated path (which already gets `_httpStatus`
+  // forwarded as structured data).
+  let registryServer: AgentServer;
+  let mcpServer: ReturnType<typeof Bun.serve>;
+  let tokenServer: ReturnType<typeof Bun.serve>;
+  const REG_PORT = 19930;
+  const MCP_PORT = 19931;
+  const TOKEN_PORT = 19932;
+  let toolCallCount = 0;
+  let tokenRefreshCount = 0;
+  let serverActiveToken = "";
+
+  beforeAll(async () => {
+    // Registry exposes the agent with an oauth2 security scheme so
+    // `ref.authStatus` can discover the tokenUrl that `refreshToken`
+    // POSTs to. The agent has no tools that ever get invoked here —
+    // the actual tool call goes direct to mcpServer below.
+    const stubTool = defineTool({
+      name: "some_tool",
+      description: "Never invoked via the registry in this test",
+      inputSchema: { type: "object" as const, properties: {} },
+      execute: async () => ({ message: "unused" }),
+    });
+    const agent = defineAgent({
+      path: "direct-mcp-agent",
+      entrypoint: "Direct-MCP agent (security discovery only)",
+      tools: [stubTool],
+      visibility: "public",
+      config: {
+        description: "Direct-MCP test agent (security discovery only)",
+        security: {
+          type: "oauth2",
+          flows: {
+            authorizationCode: {
+              authorizationUrl: "http://localhost/authorize",
+              tokenUrl: `http://localhost:${TOKEN_PORT}`,
+            },
+          },
+        },
+      },
+    });
+    const registry = createAgentRegistry();
+    registry.register(agent);
+    registryServer = createAgentServer(registry, { port: REG_PORT });
+    await registryServer.start();
+
+    // Direct MCP server — returns 401 unless the bearer token matches
+    // `serverActiveToken`. Real MCP servers signal 401 with an HTTP 401
+    // (not via httpStatus on the JSON-RPC body); that's exactly what the
+    // fix has to recover.
+    mcpServer = Bun.serve({
+      port: MCP_PORT,
+      async fetch(req) {
+        const body = (await req.json()) as {
+          method?: string;
+          id?: number;
+          params?: { name?: string };
+        };
+        const respond = (status: number, payload: unknown) =>
+          new Response(JSON.stringify(payload), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          });
+
+        if (body.method === "initialize") {
+          return respond(200, {
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2024-11-05",
+              capabilities: {},
+              serverInfo: { name: "mock-mcp", version: "1.0.0" },
+            },
+          });
+        }
+        if (body.method === "notifications/initialized") {
+          return respond(200, { jsonrpc: "2.0", id: body.id, result: {} });
+        }
+        if (body.method === "tools/call") {
+          toolCallCount++;
+          const auth = req.headers.get("Authorization") ?? "";
+          const token = auth.replace(/^Bearer /, "");
+          if (token !== serverActiveToken) {
+            return respond(401, {
+              jsonrpc: "2.0",
+              id: body.id,
+              error: { code: -32001, message: "Unauthorized" },
+            });
+          }
+          return respond(200, {
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ ok: true, token }),
+                },
+              ],
+            },
+          });
+        }
+        return respond(404, {
+          jsonrpc: "2.0",
+          id: body.id,
+          error: { code: -32601, message: "Method not found" },
+        });
+      },
+    });
+
+    // OAuth token endpoint — mints a fresh access token for a known refresh
+    // token + client_id. Rejects everything else with 400.
+    tokenServer = Bun.serve({
+      port: TOKEN_PORT,
+      async fetch(req) {
+        tokenRefreshCount++;
+        const params = new URLSearchParams(await req.text());
+        if (
+          params.get("grant_type") !== "refresh_token" ||
+          params.get("refresh_token") !== "direct-refresh-token" ||
+          params.get("client_id") !== "direct-client-id"
+        ) {
+          return new Response(JSON.stringify({ error: "invalid_request" }), {
+            status: 400,
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            access_token: "refreshed-direct-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await registryServer.stop();
+    mcpServer.stop();
+    tokenServer.stop();
+  });
+
+  test("401 from direct MCP triggers refresh + retry (parity with registry-mediated refs)", async () => {
+    toolCallCount = 0;
+    tokenRefreshCount = 0;
+    // Server will only accept the refreshed token — the stale one we seed
+    // below must round-trip through refresh before the call can succeed.
+    serverActiveToken = "refreshed-direct-token";
+
+    const fs = createMemoryFs();
+    const adk = createAdk(fs, {
+      encryptionKey: "test-key-32-chars-long-enough!!",
+    });
+
+    // Point the ref at the registry for security discovery, but also set
+    // a direct `url` so `ref.call` takes the `callMcpDirect` branch (the
+    // exact code path that was broken).
+    await adk.registry.add({
+      name: "direct-mcp-registry",
+      url: `http://localhost:${REG_PORT}`,
+    });
+    await adk.ref.add({
+      ref: "direct-mcp-agent",
+      url: `http://localhost:${MCP_PORT}`,
+      sourceRegistry: {
+        url: `http://localhost:${REG_PORT}`,
+        agentPath: "direct-mcp-agent",
+      },
+    });
+
+    // Seed credentials directly. access_token is intentionally stale.
+    const config = await adk.readConfig();
+    await adk.writeConfig({
+      ...config,
+      refs: config.refs?.map((r: any) => {
+        if (r.ref === "direct-mcp-agent") {
+          return {
+            ...r,
+            // Force the direct-MCP branch: any mode that's not "api".
+            mode: "redirect",
+            config: {
+              ...r.config,
+              access_token: "stale-direct-token",
+              refresh_token: "direct-refresh-token",
+              client_id: "direct-client-id",
+            },
+          };
+        }
+        return r;
+      }),
+    });
+
+    const result = await adk.ref.call("direct-mcp-agent", "some_tool", {});
+
+    // Without the fix: tokenRefreshCount stays 0, toolCallCount === 1,
+    // result.success === false with `MCP tools/call failed (401)` in error.
+    // With the fix: 401 → refresh → retry succeeds.
+    expect(tokenRefreshCount).toBe(1);
+    expect(toolCallCount).toBe(2);
+    expect((result as any).success).toBe(true);
+    expect((result as any).result).toEqual({
+      ok: true,
+      token: "refreshed-direct-token",
+    });
+  });
+});
+
 // ─── Registry auth lifecycle ─────────────────────────────────────
 
 describe("ADK registry auth lifecycle", () => {
