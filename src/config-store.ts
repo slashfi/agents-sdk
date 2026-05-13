@@ -959,6 +959,21 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     return data;
   }
 
+  /**
+   * Error thrown by `callMcpDirect` when the upstream MCP server returns a
+   * non-2xx HTTP response. Carries the numeric `status` so the catch handler
+   * can surface it as `httpStatus` on the returned CallAgentResponse, which
+   * `isUnauthorized` (and the retry-on-401 path in `ref.call`) relies on.
+   */
+  class McpHttpError extends Error {
+    readonly status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.name = "McpHttpError";
+      this.status = status;
+    }
+  }
+
   /** Call an MCP server directly (bypasses registry). */
   async function callMcpDirect(
     serverUrl: string,
@@ -993,7 +1008,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         }),
       });
       if (!res.ok) {
-        throw new Error(
+        throw new McpHttpError(
+          res.status,
           `MCP ${method} failed (${res.status}): ${await res.text().catch(() => "unknown")}`,
         );
       }
@@ -1066,10 +1082,21 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       }
       return { success: true, result } as CallAgentResponse;
     } catch (err) {
-      return {
-        success: false,
+      // Preserve upstream HTTP status (notably 401) so `isUnauthorized`
+      // can detect it and trigger the auto-refresh-and-retry path in
+      // `ref.call`. Without this, refs that go through callMcpDirect
+      // (mode: redirect/proxy with an MCP url, e.g. Linear, Notion) see
+      // their tokens expire and fail with a raw 401 instead of silently
+      // refreshing the way API-mode refs (Google, etc.) do via the
+      // registry's structured response. We attach httpStatus as an
+      // out-of-band field on the error envelope, matching the shape
+      // `isUnauthorized` already checks for on registry-mediated calls.
+      const errorResponse = {
+        success: false as const,
         error: err instanceof Error ? err.message : String(err),
-      } as CallAgentResponse;
+        ...(err instanceof McpHttpError && { httpStatus: err.status }),
+      };
+      return errorResponse as unknown as CallAgentResponse;
     }
   }
 
