@@ -533,6 +533,93 @@ describe("ADK ref.call() full auto-refresh flow", () => {
     expect((result as any)?.result?.token).toBe("refreshed-token");
   });
 
+  test("ref.authStatus persists authFields={} in registry-cache for security:none refs (regression: isRefConnected miss-classifies auto-installed no-auth refs)", async () => {
+    // Regression: `authStatus` short-circuited at `security.type === "none"`
+    // (and at `security == null`) WITHOUT writing the slim `{required,
+    // automated}` authFields shape into `registry-cache.json`. Host-side
+    // `isRefAuthComplete` then returned `null` for those refs ("no
+    // authFields in cache"), and the LLM-facing `isRefConnected` filter
+    // in atlas-os-sdk fell back to a coarse `[access_token|api_key|token]`
+    // credential presence check — which a security:none ref like
+    // web-search/Firecrawl never has by definition. Result: auto-installed
+    // no-auth refs silently disappeared from `list_agents` and from
+    // `~/.adk/refs/` materialization.
+    //
+    // The fix: when `inspect` confirmed `security` is absent or
+    // `{type:"none"}`, persist `authFields: {}` so `isRefAuthComplete`
+    // returns `true` (no required fields to satisfy) and downstream
+    // filters treat the ref as connected.
+    //
+    // The `@math` agent registered above has no `config.security`, so it
+    // exercises the "registry returned no security field at all" path.
+    const fs = createMemoryFs();
+    const adk = createAdk(fs, {
+      encryptionKey: "test-key-32-chars-long-enough!!",
+    });
+
+    await adk.registry.add({
+      name: "oauth-reg",
+      url: `http://localhost:${REG_PORT}`,
+    });
+    await adk.ref.add({
+      ref: "@math",
+      name: "math",
+      sourceRegistry: {
+        url: `http://localhost:${REG_PORT}`,
+        agentPath: "@math",
+      },
+    });
+
+    const status = await adk.ref.authStatus("math");
+    expect(status.complete).toBe(true);
+    expect(status.fields).toEqual({});
+
+    // The cache must now carry authFields={} so isRefAuthComplete can
+    // answer "yes, ready to call" without re-fetching the security scheme.
+    const cacheRaw = await fs.readFile("registry-cache.json");
+    expect(cacheRaw).not.toBeNull();
+    const cache = JSON.parse(cacheRaw!);
+    expect(cache.refs.math).toBeDefined();
+    expect(cache.refs.math.authFields).toEqual({});
+  });
+
+  test("ref.authStatus does NOT persist authFields when inspect fails (registry unreachable)", async () => {
+    // Sibling guard: if the registry inspect call throws / returns null
+    // (network error, registry doesn't host the ref, etc.), we must NOT
+    // cache a false-positive `authFields: {}` — that would let the host
+    // treat an unreachable ref as "connected" on the next call.
+    const fs = createMemoryFs();
+    const adk = createAdk(fs, {
+      encryptionKey: "test-key-32-chars-long-enough!!",
+    });
+
+    // Point at a port that nothing is listening on.
+    await adk.registry.add({
+      name: "dead-reg",
+      url: `http://localhost:1`,
+    });
+    await adk.ref.add({
+      ref: "@phantom",
+      name: "phantom",
+      sourceRegistry: {
+        url: `http://localhost:1`,
+        agentPath: "@phantom",
+      },
+    });
+
+    const status = await adk.ref.authStatus("phantom");
+    expect(status.complete).toBe(true);
+    expect(status.security).toBeNull();
+
+    // Registry was unreachable, so we shouldn't have written a cache
+    // entry that claims this ref is no-auth.
+    const cacheRaw = await fs.readFile("registry-cache.json");
+    if (cacheRaw !== null) {
+      const cache = JSON.parse(cacheRaw);
+      expect(cache.refs?.phantom?.authFields).toBeUndefined();
+    }
+  });
+
   test("ref.authStatus reports access_token.automated=false for authorizationCode (user must consent)", async () => {
     // Regression: previously `access_token.automated` was hardcoded to
     // `true` for every oauth2 scheme. That made cached-authFields
@@ -1097,6 +1184,33 @@ describe("isRefAuthComplete + cached authFields", () => {
       undefined,
     );
     expect(result).toBeNull();
+  });
+
+  test("empty authFields object → true (security:none refs cache an empty map)", async () => {
+    // Companion to the authStatus regression: an explicit `authFields: {}`
+    // in the registry-cache (written by `authStatus` for security:none refs)
+    // means "no required fields to satisfy" — not "cache miss". The
+    // distinction matters because callers (`atlas-os-sdk` `isRefConnected`)
+    // use a different fallback strategy on null vs false. With an empty
+    // map, the required-fields loop runs zero times and we return true.
+    const { isRefAuthComplete } = await import("./config-store");
+    const result = isRefAuthComplete(
+      {
+        ref: "@web-search",
+        name: "@web-search",
+        scheme: "registry",
+        sourceRegistry: {
+          url: "http://localhost",
+          agentPath: "@web-search",
+        },
+      },
+      {
+        ref: "@web-search",
+        fetchedAt: new Date().toISOString(),
+        authFields: {},
+      },
+    );
+    expect(result).toBe(true);
   });
 
   test("required field present → true", async () => {

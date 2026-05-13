@@ -2229,6 +2229,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
       let security: SecuritySchemeSummary | null = null;
+      let inspectSucceeded = false;
       try {
         const consumer = await buildConsumerForRef(entry);
         // Pass `sourceRegistry.url` so inspect targets the registry the ref
@@ -2241,12 +2242,32 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           entry.sourceRegistry?.agentPath ?? entry.ref,
           entry.sourceRegistry?.url,
         );
-        if (info?.security) security = info.security;
+        if (info) {
+          inspectSucceeded = true;
+          if (info.security) security = info.security;
+        }
       } catch {
         // Can't reach registry
       }
 
       if (!security || security.type === "none") {
+        // Persist an empty authFields map when the registry confirmed the
+        // ref needs no auth — either an explicit `security.type === "none"`
+        // or no `security` field on the agent at all. Host-side filters
+        // that consult the registry-cache (e.g. atlas-os-sdk
+        // `isRefConnected`) need this to distinguish "registry says this
+        // ref needs no auth" from "we never warmed the cache". Without
+        // it, auto-installed no-auth refs (e.g. web-search/Firecrawl)
+        // look identical to never-inspected refs and get filtered out
+        // of LLM-facing surfaces as "not connected" even though they
+        // have nothing to connect.
+        //
+        // Gate on `inspectSucceeded` so we don't cache a false positive
+        // when the registry was unreachable (network failure / consumer
+        // error — `inspect` returned null/threw).
+        if (inspectSucceeded) {
+          await upsertRegistryCacheAuthFields(name, entry.ref, {});
+        }
         return { name, security, complete: true, fields: {} };
       }
 
