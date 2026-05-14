@@ -2442,6 +2442,21 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           present: configKeys.includes("token"),
           resolvable: await canResolve("token"),
         };
+      } else if (security.type === "form") {
+        // Form-based refs collect structured user input at connect time
+        // (for example database host/user/password), then store the encoded
+        // form payload in the canonical credential slot that `ref.call`
+        // already reads and forwards to registry executors as
+        // `params.accessToken`. Cache that derived credential requirement
+        // instead of the individual form fields so host-side connected checks
+        // answer the same question as the call path: "does this ref carry
+        // the opaque credential blob needed to invoke it?"
+        fields.access_token = {
+          required: true,
+          automated: false,
+          present: configKeys.includes("access_token"),
+          resolvable: await canResolve("access_token"),
+        };
       }
 
       const complete = Object.values(fields).every(

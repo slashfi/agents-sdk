@@ -244,6 +244,17 @@ export interface HttpSecurityScheme {
 }
 
 /**
+ * Form-based authentication. Consumers collect arbitrary structured fields
+ * (for example database connection settings), then store the encoded form
+ * payload in the ref's `access_token` credential slot. At call time ADK
+ * forwards that value as `params.accessToken` to the registry executor.
+ */
+export interface FormSecurityScheme {
+  type: "form";
+  [key: string]: unknown;
+}
+
+/**
  * No authentication required.
  */
 export interface NoneSecurityScheme {
@@ -285,6 +296,7 @@ export type SecurityScheme =
   | OAuth2SecurityScheme
   | ApiKeySecurityScheme
   | HttpSecurityScheme
+  | FormSecurityScheme
   | NoneSecurityScheme;
 
 /**

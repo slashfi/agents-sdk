@@ -583,6 +583,99 @@ describe("ADK ref.call() full auto-refresh flow", () => {
     expect(cache.refs.math.authFields).toEqual({});
   });
 
+  test("ref.authStatus maps form security to required access_token authFields", async () => {
+    // Form security (e.g. databases) asks the user for structured
+    // connection fields, but the ADK call path stores the encoded form
+    // payload under `config.access_token` and forwards it to registry
+    // executors as `params.accessToken`. The cached authFields shape must
+    // therefore require `access_token`; otherwise host-side
+    // `isRefAuthComplete` / `isRefConnected` checks treat empty form refs
+    // as connected because there are no required fields to satisfy.
+    const fs = createMemoryFs();
+    const fetch: typeof globalThis.fetch = async () =>
+      Response.json({
+        jsonrpc: "2.0",
+        id: "call-1",
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                toolSummaries: [{ name: "query", description: "Execute SQL" }],
+                description: "Form auth agent",
+                security: {
+                  type: "form",
+                  fields: [
+                    { name: "host", type: "string", required: true },
+                    { name: "password", type: "password", required: true },
+                  ],
+                },
+              }),
+            },
+          ],
+        },
+      });
+    const adk = createAdk(fs, {
+      encryptionKey: "test-key-32-chars-long-enough!!",
+      fetch,
+    });
+
+    await adk.registry.add({
+      name: "form-reg",
+      url: "http://registry.test",
+    });
+    const initialConfig = await adk.readConfig();
+    await adk.writeConfig({
+      ...initialConfig,
+      refs: [
+        ...(initialConfig.refs ?? []),
+        {
+          ref: "form-api",
+          name: "form-api-unauthed",
+          scheme: "registry",
+          sourceRegistry: {
+            url: "http://registry.test",
+            agentPath: "form-api",
+          },
+        },
+      ],
+    });
+
+    const status = await adk.ref.authStatus("form-api-unauthed");
+    expect(status.complete).toBe(false);
+    expect(status.fields?.access_token).toEqual({
+      required: true,
+      automated: false,
+      present: false,
+      resolvable: false,
+    });
+
+    const cacheRaw = await fs.readFile("registry-cache.json");
+    expect(cacheRaw).not.toBeNull();
+    if (!cacheRaw) throw new Error("registry-cache.json missing");
+    const cache = JSON.parse(cacheRaw) as {
+      refs: Record<string, { authFields?: Record<string, unknown> }>;
+    };
+    expect(cache.refs["form-api-unauthed"].authFields).toEqual({
+      access_token: { required: true, automated: false },
+    });
+
+    const config = await adk.readConfig();
+    await adk.writeConfig({
+      ...config,
+      refs: config.refs?.map((r) =>
+        r.name === "form-api-unauthed"
+          ? { ...r, config: { ...r.config, access_token: "encoded-form" } }
+          : r,
+      ),
+    });
+
+    const authedStatus = await adk.ref.authStatus("form-api-unauthed");
+    expect(authedStatus.complete).toBe(true);
+    expect(authedStatus.fields?.access_token?.present).toBe(true);
+  });
+
   test("ref.authStatus does NOT persist authFields when inspect fails (registry unreachable)", async () => {
     // Sibling guard: if the registry inspect call throws / returns null
     // (network error, registry doesn't host the ref, etc.), we must NOT

@@ -85,6 +85,7 @@ export type {
   ToolSelectionContext,
   IntegrationConfig,
   ApiKeySecurityScheme,
+  FormSecurityScheme,
   HttpSecurityScheme,
   NoneSecurityScheme,
   OAuth2SecurityScheme,
