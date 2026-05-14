@@ -215,6 +215,17 @@ export interface AdkOptions {
   /** Bearer token for authenticated registries */
   token?: string;
   /**
+   * Default result token limit to pass through for `ref.call` registry requests.
+   * Use `null` to explicitly disable remote result limiting for in-process
+   * scripting boundaries like `adk run`; omit to use the registry default.
+   */
+  refCallMaxResultTokens?: number | null;
+  /**
+   * Default overflow behavior to pass through for `ref.call` registry requests.
+   * Only applies when the remote registry enforces a result limit.
+   */
+  refCallOverflow?: "error" | "truncate" | null;
+  /**
    * OAuth callback URL. Defaults to http://localhost:8919/callback.
    * Set this to your server's callback endpoint in non-local environments
    * (e.g. atlas), then call adk.handleCallback() when it arrives.
@@ -2200,6 +2211,12 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           action: "execute_tool",
           path: entry.sourceRegistry?.agentPath ?? entry.ref,
           tool,
+          ...("refCallMaxResultTokens" in options && {
+            maxResultTokens: options.refCallMaxResultTokens,
+          }),
+          ...("refCallOverflow" in options && {
+            overflow: options.refCallOverflow,
+          }),
           params: {
             ...(params ?? {}),
             ...(token && { accessToken: token }),

@@ -119,6 +119,22 @@ const callAgentBaseSchema = z.object({
   callerId: z.string().optional().describe("Caller ID for access control"),
   callerType: callerTypeSchema.optional().describe("Caller type"),
   metadata: z.object({}).passthrough().optional().describe("Additional metadata"),
+  maxResultTokens: z
+    .number()
+    .int()
+    .min(1)
+    .nullable()
+    .optional()
+    .describe(
+      "Maximum token count for the call result. If null, result limiting is disabled. If omitted, the registry default applies.",
+    ),
+  overflow: z
+    .enum(["error", "truncate"])
+    .nullable()
+    .optional()
+    .describe(
+      'What to do when the result exceeds maxResultTokens. "error" returns an error, "truncate" returns a partial result.',
+    ),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
