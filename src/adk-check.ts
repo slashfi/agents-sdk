@@ -59,7 +59,7 @@ function makePreambleCheck(sdkPath: string): string {
 }
 
 function makePreambleRun(sdkPath: string): string {
-  return `import { createAdk, createLocalFsStore } from "${sdkPath}";\nimport { join } from "node:path";\nimport { homedir } from "node:os";\nconst adk = createAdk(\n  createLocalFsStore(process.env.ADK_CONFIG_DIR ?? join(homedir(), ".adk")),\n  { token: process.env.ATLAS_TOKEN ?? process.env.ADK_TOKEN ?? "" },\n);\n`;
+  return `import { createAdk, createLocalFsStore } from "${sdkPath}";\nimport { join } from "node:path";\nimport { homedir } from "node:os";\nconst adk = createAdk(\n  createLocalFsStore(process.env.ADK_CONFIG_DIR ?? join(homedir(), ".adk")),\n  {\n    token: process.env.ATLAS_TOKEN ?? process.env.ADK_TOKEN ?? "",\n    refCallMaxResultTokens: null,\n    refCallOverflow: "error",\n  },\n);\n`;
 }
 
 /**
