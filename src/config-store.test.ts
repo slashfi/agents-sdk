@@ -1552,6 +1552,72 @@ describe("isRefAuthComplete + cached authFields", () => {
     expect(result).toBe(true);
   });
 
+  test("apiKey header stored in config.headers satisfies cached normalized authField", async () => {
+    const { isRefAuthComplete } = await import("./config-store");
+    const result = isRefAuthComplete(
+      {
+        ref: "slash",
+        name: "slash",
+        scheme: "registry",
+        config: { headers: { "x-api-key": "secret:abc" } },
+      },
+      {
+        ref: "slash",
+        fetchedAt: new Date().toISOString(),
+        authFields: {
+          x_api_key: { required: true, automated: false },
+        },
+      },
+    );
+    expect(result).toBe(true);
+  });
+
+  test("apiKey header authFields compare case-insensitively", async () => {
+    const { isRefAuthComplete } = await import("./config-store");
+    const result = isRefAuthComplete(
+      {
+        ref: "slash",
+        name: "slash",
+        scheme: "registry",
+        config: { headers: { "X-API-Key": "secret:abc" } },
+      },
+      {
+        ref: "slash",
+        fetchedAt: new Date().toISOString(),
+        authFields: {
+          x_api_key: { required: true, automated: false },
+        },
+      },
+    );
+    expect(result).toBe(true);
+  });
+
+  test("multi-header apiKey credentials stored in config.headers satisfy cached authFields", async () => {
+    const { isRefAuthComplete } = await import("./config-store");
+    const result = isRefAuthComplete(
+      {
+        ref: "datadog",
+        name: "datadog",
+        scheme: "registry",
+        config: {
+          headers: {
+            "DD-API-KEY": "secret:api",
+            "dd-application-key": "secret:app",
+          },
+        },
+      },
+      {
+        ref: "datadog",
+        fetchedAt: new Date().toISOString(),
+        authFields: {
+          dd_api_key: { required: true, automated: false },
+          dd_application_key: { required: true, automated: false },
+        },
+      },
+    );
+    expect(result).toBe(true);
+  });
+
   test("automated field absent still counts as satisfied", async () => {
     const { isRefAuthComplete } = await import("./config-store");
     // dynamicRegistration: client_id is automated, so absence is fine.
@@ -1683,4 +1749,3 @@ describe("isRefAuthComplete + cached authFields", () => {
     expect(result).toBe(false);
   });
 });
-
