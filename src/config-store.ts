@@ -47,7 +47,12 @@ import type {
   RegistryConfiguration,
   RegistryConsumer,
 } from "./registry-consumer.js";
-import type { CallAgentResponse, SecuritySchemeSummary } from "./types.js";
+import type {
+  CallAgentErrorResponse,
+  CallAgentExecuteToolResponse,
+  CallAgentResponse,
+  SecuritySchemeSummary,
+} from "./types.js";
 
 const CONFIG_PATH = "consumer-config.json";
 const REGISTRY_CACHE_PATH = "registry-cache.json";
@@ -367,6 +372,21 @@ export interface AuthStartResult {
   fields?: AuthChallengeField[];
 }
 
+export type AdkRefCallResult =
+  | CallAgentExecuteToolResponse
+  | CallAgentErrorResponse;
+
+function toAdkRefCallResult(result: CallAgentResponse): AdkRefCallResult {
+  if (result.success === false) return result;
+  if ("result" in result) return result;
+
+  return {
+    success: false,
+    error: "Expected execute_tool response from ref.call",
+    code: "unexpected_ref_call_response",
+  };
+}
+
 /**
  * Type slot for adk.ref.call() type safety.
  * Empty by default — populated by `adk sync` which generates `adk.d.ts`.
@@ -391,13 +411,13 @@ type AdkRefCallFn = keyof AdkAgentRegistry extends never
       name: string,
       tool: string,
       params?: Record<string, unknown>,
-    ) => Promise<CallAgentResponse>
+    ) => Promise<AdkRefCallResult>
   : // Registry populated — strict typed overload
     <A extends AgentPath, T extends ToolsOf<A>>(
       name: A,
       tool: T,
       params: ParamsOf<A, T>,
-    ) => Promise<CallAgentResponse>;
+    ) => Promise<AdkRefCallResult>;
 
 export interface AdkRefApi {
   add(entry: RefAddInput): Promise<{ security: SecuritySchemeSummary | null }>;
@@ -2137,7 +2157,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       name: string,
       tool: string,
       params?: Record<string, unknown>,
-    ): Promise<CallAgentResponse> {
+    ): Promise<AdkRefCallResult> {
       const config = await readConfig();
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
@@ -2231,11 +2251,11 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       if (accessToken && isUnauthorized(result)) {
         const refreshed = await ref.refreshToken(name);
         if (refreshed) {
-          return doCall(refreshed.accessToken);
+          return toAdkRefCallResult(await doCall(refreshed.accessToken));
         }
       }
 
-      return result;
+      return toAdkRefCallResult(result);
     },
 
     async resources(name: string): Promise<CallAgentResponse> {
