@@ -166,6 +166,40 @@ export interface RefAuthCompleteOptions {
  * force callers to choose a default that's wrong half the time;
  * `null` lets them branch explicitly.
  */
+function normalizeCredentialKey(key: string): string {
+  return key
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
+function hasCredentialField(
+  config: Record<string, unknown>,
+  field: string,
+): boolean {
+  const wanted = normalizeCredentialKey(field);
+
+  // Top-level config keys cover legacy entries such as api_key/token and
+  // refs whose credentials are stored directly under the cached field name.
+  for (const key of Object.keys(config)) {
+    if (normalizeCredentialKey(key) === wanted) return true;
+  }
+
+  // API-key refs store header credentials under config.headers using the
+  // original HTTP header name (for example "x-api-key"), while authStatus
+  // caches the normalized field name ("x_api_key"). Treat header keys as
+  // case-insensitive and delimiter-insensitive so the local connected check
+  // matches authStatus/ref.call behavior.
+  const headers = config.headers;
+  if (headers && typeof headers === "object" && !Array.isArray(headers)) {
+    for (const key of Object.keys(headers as Record<string, unknown>)) {
+      if (normalizeCredentialKey(key) === wanted) return true;
+    }
+  }
+
+  return false;
+}
+
 export function isRefAuthComplete(
   entry: RefEntry,
   cacheEntry: RegistryCacheEntry | undefined,
@@ -182,8 +216,8 @@ export function isRefAuthComplete(
   for (const [field, info] of Object.entries(authFields)) {
     if (!info.required) continue;
     if (info.automated) continue;
-    if (field in config) continue;
-    if (resolvable && resolvable.has(field)) continue;
+    if (hasCredentialField(config, field)) continue;
+    if (resolvable?.has(field)) continue;
     return false;
   }
   return true;
@@ -1969,7 +2003,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             scheme: entry.scheme,
             received: { sourceRegistry: entry.sourceRegistry },
             requiredShape: {
-              sourceRegistry: { url: "<registry URL>", agentPath: "<optional agent path>" },
+              sourceRegistry: {
+                url: "<registry URL>",
+                agentPath: "<optional agent path>",
+              },
             },
           },
         });
@@ -2215,7 +2252,11 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
                 code: "encryption_key_mismatch",
                 message: `ref.call(${name}): failed to decrypt header "${k}". The configured encryptionKey does not match the key used to encrypt this value.`,
                 hint: "Re-encrypt the ref's headers with the current encryptionKey, or restore the previous key. Decrypting an unrelated value would have leaked ciphertext as a header before this fix.",
-                details: { ref: name, header: k, cause: (err as Error)?.message },
+                details: {
+                  ref: name,
+                  header: k,
+                  cause: (err as Error)?.message,
+                },
               });
             }
           } else {
