@@ -50,6 +50,8 @@ import type {
 import type {
   CallAgentErrorResponse,
   CallAgentExecuteToolResponse,
+  CallAgentListResourcesResponse,
+  CallAgentReadResourcesResponse,
   CallAgentResponse,
   SecuritySchemeSummary,
 } from "./types.js";
@@ -375,16 +377,28 @@ export interface AuthStartResult {
 export type AdkRefCallResult =
   | CallAgentExecuteToolResponse
   | CallAgentErrorResponse;
+export type AdkRefResourcesResult =
+  | CallAgentListResourcesResponse
+  | CallAgentErrorResponse;
+export type AdkRefReadResult =
+  | CallAgentReadResourcesResponse
+  | CallAgentErrorResponse;
 
-function toAdkRefCallResult(result: CallAgentResponse): AdkRefCallResult {
-  if (result.success === false) return result;
-  if ("result" in result) return result;
+type AdkRefActionResult =
+  | AdkRefCallResult
+  | AdkRefResourcesResult
+  | AdkRefReadResult;
 
-  return {
-    success: false,
-    error: "Expected execute_tool response from ref.call",
-    code: "unexpected_ref_call_response",
-  };
+function toAdkRefActionResult<T extends AdkRefActionResult>(
+  result: CallAgentResponse,
+  expectedKey: "result" | "resources",
+  code: string,
+  error: string,
+): T {
+  if (result.success === false) return result as T;
+  if (expectedKey in result) return result as T;
+
+  return { success: false, error, code } as T;
 }
 
 /**
@@ -430,8 +444,8 @@ export interface AdkRefApi {
     options?: { full?: boolean },
   ): Promise<AgentInspection | null>;
   call: AdkRefCallFn;
-  resources(name: string): Promise<CallAgentResponse>;
-  read(name: string, uris: string[]): Promise<CallAgentResponse>;
+  resources(name: string): Promise<AdkRefResourcesResult>;
+  read(name: string, uris: string[]): Promise<AdkRefReadResult>;
   /** Check auth status — what's needed vs what's stored */
   authStatus(name: string): Promise<RefAuthStatus>;
   /**
@@ -2251,14 +2265,24 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       if (accessToken && isUnauthorized(result)) {
         const refreshed = await ref.refreshToken(name);
         if (refreshed) {
-          return toAdkRefCallResult(await doCall(refreshed.accessToken));
+          return toAdkRefActionResult<AdkRefCallResult>(
+            await doCall(refreshed.accessToken),
+            "result",
+            "unexpected_ref_call_response",
+            "Expected execute_tool response from ref.call",
+          );
         }
       }
 
-      return toAdkRefCallResult(result);
+      return toAdkRefActionResult<AdkRefCallResult>(
+        result,
+        "result",
+        "unexpected_ref_call_response",
+        "Expected execute_tool response from ref.call",
+      );
     },
 
-    async resources(name: string): Promise<CallAgentResponse> {
+    async resources(name: string): Promise<AdkRefResourcesResult> {
       const config = await readConfig();
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
@@ -2266,13 +2290,18 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const consumer = await buildConsumerForRef(entry);
       const reg = resolveRegistryForRef(consumer, entry);
 
-      return consumer.callRegistry(reg, {
-        action: "list_resources",
-        path: entry.sourceRegistry?.agentPath ?? entry.ref,
-      });
+      return toAdkRefActionResult<AdkRefResourcesResult>(
+        await consumer.callRegistry(reg, {
+          action: "list_resources",
+          path: entry.sourceRegistry?.agentPath ?? entry.ref,
+        }),
+        "resources",
+        "unexpected_ref_resources_response",
+        "Expected list_resources response from ref.resources",
+      );
     },
 
-    async read(name: string, uris: string[]): Promise<CallAgentResponse> {
+    async read(name: string, uris: string[]): Promise<AdkRefReadResult> {
       const config = await readConfig();
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
@@ -2280,11 +2309,16 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const consumer = await buildConsumerForRef(entry);
       const reg = resolveRegistryForRef(consumer, entry);
 
-      return consumer.callRegistry(reg, {
-        action: "read_resources",
-        path: entry.sourceRegistry?.agentPath ?? entry.ref,
-        uris,
-      });
+      return toAdkRefActionResult<AdkRefReadResult>(
+        await consumer.callRegistry(reg, {
+          action: "read_resources",
+          path: entry.sourceRegistry?.agentPath ?? entry.ref,
+          uris,
+        }),
+        "resources",
+        "unexpected_ref_read_response",
+        "Expected read_resources response from ref.read",
+      );
     },
 
     async authStatus(name: string): Promise<RefAuthStatus> {
