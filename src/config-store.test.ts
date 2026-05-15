@@ -118,6 +118,108 @@ describe("ADK ref sourceRegistry routing", () => {
     expect(result).toBeDefined();
   });
 
+  test("runtime MCP aliased ref routes with canonical path plus local name", async () => {
+    const fs = createMemoryFs();
+    const seenPaths: string[] = [];
+    const adk = createAdk(fs, {
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        const request = body.params.arguments.request;
+        seenPaths.push(request.path);
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ success: true, result: { ok: true } }),
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+
+    await fs.writeFile(
+      "consumer-config.json",
+      JSON.stringify({
+        registries: [
+          {
+            url: "https://api.twin.slash.com/mcp",
+            name: "twin",
+            headers: { "X-Atlas-Session-Id": "branch_123" },
+          },
+        ],
+        refs: [
+          {
+            ref: "databases",
+            name: "atlasmain",
+            scheme: "registry",
+            sourceRegistry: {
+              url: "https://api.twin.slash.com/mcp",
+              agentPath: "databases",
+            },
+          },
+        ],
+      }),
+    );
+
+    await adk.ref.call("atlasmain", "get_connection_info", {});
+    expect(seenPaths).toEqual(["databases/atlasmain"]);
+  });
+
+  test("non-runtime registry aliased ref routes with canonical source agent path", async () => {
+    const fs = createMemoryFs();
+    const seenPaths: string[] = [];
+    const adk = createAdk(fs, {
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        const request = body.params.arguments.request;
+        seenPaths.push(request.path);
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ success: true, result: { ok: true } }),
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+
+    await fs.writeFile(
+      "consumer-config.json",
+      JSON.stringify({
+        registries: [{ url: "https://registry.example.com/mcp", name: "example" }],
+        refs: [
+          {
+            ref: "databases",
+            name: "atlasmain",
+            scheme: "registry",
+            sourceRegistry: {
+              url: "https://registry.example.com/mcp",
+              agentPath: "databases",
+            },
+          },
+        ],
+      }),
+    );
+
+    await adk.ref.call("atlasmain", "get_connection_info", {});
+    expect(seenPaths).toEqual(["databases"]);
+  });
+
   test("ref.inspect routes through sourceRegistry", async () => {
     const fs = createMemoryFs();
     const adk = createAdk(fs);

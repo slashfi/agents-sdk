@@ -61,6 +61,31 @@ export const REGISTRY_TYPE_HTTPS = "https";
 /** Built-in registry types that bypass normal registry resolution */
 const DIRECT_REGISTRY_TYPES = new Set([REGISTRY_TYPE_MCP, REGISTRY_TYPE_HTTPS]);
 
+function isRuntimeMcpRegistry(registry: ResolvedRegistry): boolean {
+  const headers = registry.headers ?? {};
+  return (
+    registry.url.replace(/\/+$/, "") === "https://api.twin.slash.com/mcp" ||
+    "X-Atlas-Session-Id" in headers ||
+    "X-Atlas-Agent-Id" in headers ||
+    "X-Atlas-Tenant-Id" in headers
+  );
+}
+
+function refCallAgentPath(ref: ResolvedRef, registry: ResolvedRegistry): string {
+  const canonicalPath = ref.sourceRegistry?.agentPath ?? ref.ref;
+  if (
+    !isRuntimeMcpRegistry(registry) ||
+    ref.name === canonicalPath ||
+    ref.name === ref.ref
+  ) {
+    return canonicalPath;
+  }
+
+  const base = canonicalPath.replace(/\/+$/, "");
+  const localName = ref.name.replace(/^\/+/, "");
+  return `${base}/${localName}`;
+}
+
 /** Regex for {{secret-uri}} template syntax */
 const TEMPLATE_REGEX = /\{\{(.+?)\}\}/g;
 
@@ -1009,7 +1034,7 @@ export async function createRegistryConsumer(
       const paramsWithHeaders = resolvedHeaders
         ? { ...params, _headers: resolvedHeaders }
         : params;
-      return callTool(registry, ref.ref, tool, paramsWithHeaders);
+      return callTool(registry, refCallAgentPath(ref, registry), tool, paramsWithHeaders);
     },
 
     discover(registryUrl: string) {

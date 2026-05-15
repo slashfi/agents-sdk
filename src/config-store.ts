@@ -509,6 +509,34 @@ function refNameMatches(entry: RefEntry, name: string): boolean {
   return n === alt;
 }
 
+function isRuntimeMcpRegistry(registry: ResolvedRegistry): boolean {
+  const headers = registry.headers ?? {};
+  return (
+    registry.url.replace(/\/+$/, "") === "https://api.twin.slash.com/mcp" ||
+    "X-Atlas-Session-Id" in headers ||
+    "X-Atlas-Agent-Id" in headers ||
+    "X-Atlas-Tenant-Id" in headers
+  );
+}
+
+function refCallAgentPath(entry: ResolvedRef, registry: ResolvedRegistry): string {
+  const canonicalPath = entry.sourceRegistry?.agentPath ?? entry.ref;
+  if (
+    !isRuntimeMcpRegistry(registry) ||
+    entry.name === canonicalPath ||
+    entry.name === entry.ref
+  ) {
+    return canonicalPath;
+  }
+
+  // Preserve the canonical registry agent path while carrying the local ref
+  // handle as a path selector for runtime MCP bridges that resolve
+  // connection-scoped refs server-side (e.g. `databases/atlasmain`).
+  const base = canonicalPath.replace(/\/+$/, "");
+  const localName = entry.name.replace(/^\/+/, "");
+  return `${base}/${localName}`;
+}
+
 function registryDisplayName(r: string | RegistryEntry): string {
   return typeof r === "string" ? r : (r.name ?? r.url);
 }
@@ -2118,8 +2146,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
       const consumer = await buildConsumerForRef(entry);
+      const reg = resolveRegistryForRef(consumer, entry);
       const result = await consumer.inspect(
-        entry.sourceRegistry?.agentPath ?? entry.ref,
+        refCallAgentPath(entry, reg),
         entry.sourceRegistry?.url,
         opts,
       );
@@ -2209,7 +2238,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
         return consumer.callRegistry(reg, {
           action: "execute_tool",
-          path: entry.sourceRegistry?.agentPath ?? entry.ref,
+          path: refCallAgentPath(entry, reg),
           tool,
           ...("refCallMaxResultTokens" in options && {
             maxResultTokens: options.refCallMaxResultTokens,
@@ -2248,7 +2277,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
       return consumer.callRegistry(reg, {
         action: "list_resources",
-        path: entry.sourceRegistry?.agentPath ?? entry.ref,
+        path: refCallAgentPath(entry, reg),
       });
     },
 
@@ -2262,7 +2291,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
       return consumer.callRegistry(reg, {
         action: "read_resources",
-        path: entry.sourceRegistry?.agentPath ?? entry.ref,
+        path: refCallAgentPath(entry, reg),
         uris,
       });
     },
@@ -2282,8 +2311,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         // including {success:false} bodies from unrelated registries that
         // don't host this agent — which silently nulls out `security` and
         // makes `auth()` short-circuit to {type:"none", complete:true}.
+        const reg = resolveRegistryForRef(consumer, entry);
         const info = await consumer.inspect(
-          entry.sourceRegistry?.agentPath ?? entry.ref,
+          refCallAgentPath(entry, reg),
           entry.sourceRegistry?.url,
         );
         if (info) {
