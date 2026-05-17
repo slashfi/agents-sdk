@@ -31,6 +31,7 @@
 export type RegistryAuth =
   | { type: "none" }
   | { type: "bearer"; token?: string; tokenUrl?: string }
+  | { type: "basic"; username?: string; password?: string }
   | { type: "api-key"; key?: string; header?: string }
   | { type: "jwt"; issuer?: string };
 

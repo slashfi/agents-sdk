@@ -583,6 +583,104 @@ describe("ADK ref.call() full auto-refresh flow", () => {
     expect(cache.refs.math.authFields).toEqual({});
   });
 
+
+  test("ref http basic auth-status/auth/call/cache uses token with username/password parts", async () => {
+    let receivedAccessToken: string | undefined;
+    const basicTool = defineTool({
+      name: "get_profile",
+      description: "Requires HTTP Basic token",
+      inputSchema: { type: "object" as const, properties: {} },
+      execute: async (input: any) => {
+        receivedAccessToken = input?.accessToken;
+        return { ok: input?.accessToken === Buffer.from("ashby-key:", "utf8").toString("base64") };
+      },
+    });
+    const basicAgent = defineAgent({
+      path: "basic-api",
+      entrypoint: "Basic API agent",
+      tools: [basicTool],
+      visibility: "public",
+      config: {
+        security: { type: "http", scheme: "basic" },
+      },
+    });
+
+    const registry = createAgentRegistry();
+    registry.register(basicAgent);
+    const port = 19961;
+    const server = createAgentServer(registry, { port });
+    await server.start();
+    try {
+      const fs = createMemoryFs();
+      const adk = createAdk(fs, {
+        encryptionKey: "test-key-32-chars-long-enough!!",
+      });
+
+      await adk.registry.add({ name: "basic-reg", url: `http://localhost:${port}` });
+      await adk.ref.add({
+        ref: "basic-api",
+        name: "basic-api",
+        sourceRegistry: {
+          url: `http://localhost:${port}`,
+          agentPath: "basic-api",
+        },
+      });
+
+      const statusBefore = await adk.ref.authStatus("basic-api");
+      expect(statusBefore.complete).toBe(false);
+      expect(statusBefore.fields.token).toEqual({
+        required: true,
+        automated: false,
+        present: false,
+        resolvable: false,
+        format: "basic",
+        parts: [
+          { name: "username", label: "Username", secret: false },
+          { name: "password", label: "Password", secret: true, optional: true },
+        ],
+      });
+
+      let cacheRaw = await fs.readFile("registry-cache.json");
+      expect(cacheRaw).not.toBeNull();
+      let cache = JSON.parse(cacheRaw!) as { refs: Record<string, { authFields?: Record<string, unknown> }> };
+      expect(cache.refs["basic-api"].authFields).toEqual({
+        token: {
+          required: true,
+          automated: false,
+          format: "basic",
+          parts: [
+            { name: "username", label: "Username", secret: false },
+            { name: "password", label: "Password", secret: true, optional: true },
+          ],
+        },
+      });
+
+      const authResult = await adk.ref.auth("basic-api", {
+        credentials: { username: "ashby-key", password: "" },
+      });
+      expect(authResult.complete).toBe(true);
+
+      const configAfterAuth = await adk.readConfig();
+      const refEntry = configAfterAuth.refs?.find((r) => r.name === "basic-api");
+      expect(refEntry?.config?.token).toMatch(/^secret:/);
+
+      const statusAfter = await adk.ref.authStatus("basic-api");
+      expect(statusAfter.complete).toBe(true);
+      expect(statusAfter.fields.token.present).toBe(true);
+
+      cacheRaw = await fs.readFile("registry-cache.json");
+      cache = JSON.parse(cacheRaw!) as { refs: Record<string, { authFields?: Record<string, unknown> }> };
+      const { isRefAuthComplete } = await import("./config-store");
+      expect(isRefAuthComplete(refEntry!, cache.refs["basic-api"] as any)).toBe(true);
+
+      const callResult = await adk.ref.call("basic-api", "get_profile");
+      expect((callResult as any)?.result?.ok).toBe(true);
+      expect(receivedAccessToken).toBe(Buffer.from("ashby-key:", "utf8").toString("base64"));
+    } finally {
+      await server.stop();
+    }
+  });
+
   test("ref.authStatus maps form security to required access_token authFields", async () => {
     // Form security (e.g. databases) asks the user for structured
     // connection fields, but the ADK call path stores the encoded form

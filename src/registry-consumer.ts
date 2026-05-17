@@ -144,7 +144,7 @@ function expandEnvVars(value: string): string {
 
 /**
  * Build auth headers for a registry based on its auth config and custom headers.
- * Merges typed auth (bearer, api-key) with arbitrary custom headers.
+ * Merges typed auth (bearer, basic, api-key) with arbitrary custom headers.
  * Environment variable references ($VAR or ${VAR}) in header values are expanded.
  */
 function buildRegistryAuthHeaders(
@@ -159,6 +159,15 @@ function buildRegistryAuthHeaders(
       const token = ("token" in registry.auth ? registry.auth.token : undefined) ?? fallbackToken;
       if (token) {
         headers.Authorization = `Bearer ${token}`;
+      }
+      break;
+    }
+    case "basic": {
+      if ("username" in registry.auth && registry.auth.username) {
+        const password = ("password" in registry.auth ? registry.auth.password : undefined) ?? "";
+        const credentials = `${registry.auth.username}:${password}`;
+        const encoded = Buffer.from(credentials, "utf8").toString("base64");
+        headers.Authorization = `Basic ${encoded}`;
       }
       break;
     }
