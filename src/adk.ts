@@ -74,19 +74,37 @@ function hasFlag(flag: string): boolean {
   return args.includes(flag);
 }
 
+function getCredentialArgs(startIndex: number, excludeFlags = new Set<string>()): Record<string, string> {
+  const credentials: Record<string, string> = {};
+  for (let i = startIndex; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg?.startsWith("--")) continue;
+    const key = arg.slice(2);
+    if (excludeFlags.has(key)) {
+      i++;
+      continue;
+    }
+    const value = args[i + 1];
+    if (value === undefined || value.startsWith("--")) continue;
+    credentials[key] = value;
+    i++;
+  }
+  return credentials;
+}
+
 function wantsHelp(): boolean {
   return args.includes("--help") || args.includes("-h");
 }
 
 const HELP_SECTIONS: Record<string, string> = {
   registry: `Registry operations:
-  adk registry add <url> --name <name> [--auth-type bearer|api-key|none]
+  adk registry add <url> --name <name> [--auth-type bearer|basic|api-key|none]
   adk registry remove <name>
   adk registry list
   adk registry browse <name> [--query <q>]
   adk registry inspect <name>
   adk registry test [name]
-  adk registry auth <name> [--token <t>] [--api-key <k>] [--header <h>]`,
+  adk registry auth <name> [--token <t>] [--username <u> --password <p>] [--api-key <k>] [--header <h>]`,
   ref: `Ref operations:
   adk ref add <name>                     Install from default (public) registry
   adk ref add <name> --registry <reg>    Install from a specific registry
@@ -123,18 +141,22 @@ Usage:
   adk search <query> [options]        BM25 search over materialized refs/tools
   adk registry <op> [options]        Manage registry connections
   adk ref <op> [options]             Manage agent refs
+  adk list                           List configured refs
+  adk call <name> <tool> [params]    Call a ref tool
+  adk auth <name> [--<field> <val>]  Authenticate a ref
+  adk auth-status <name>             Show ref auth status
   adk config-path                    Print config directory path
   adk error [id]                     View recent errors or a specific error
   adk version | --version | -v       Print the installed adk SDK version
 
 Registry operations:
-  adk registry add <url> --name <name> [--auth-type bearer|api-key|none]
+  adk registry add <url> --name <name> [--auth-type bearer|basic|api-key|none]
   adk registry remove <name>
   adk registry list
   adk registry browse <name> [--query <q>]
   adk registry inspect <name>
   adk registry test [name]
-  adk registry auth <name> [--token <t>] [--api-key <k>] [--header <h>]
+  adk registry auth <name> [--token <t>] [--username <u> --password <p>] [--api-key <k>] [--header <h>]
 
 Ref operations:
   adk ref add <ref> [--name <name>] [--registry <name>] [--url <url>] [--scheme mcp|https|registry]
@@ -205,9 +227,9 @@ async function runRegistry() {
         console.error("Usage: adk registry add <url> --name <name>");
         process.exit(1);
       }
-      const authType = getArg("--auth-type") as "bearer" | "api-key" | "none" | undefined;
+      const authType = getArg("--auth-type") as "bearer" | "basic" | "api-key" | "none" | undefined;
       const auth = authType && authType !== "none"
-        ? { type: authType as "bearer" | "api-key" }
+        ? { type: authType as "bearer" | "basic" | "api-key" }
         : undefined;
       const displayName = name ?? new URL(url).hostname;
       const addResult = await adk.registry.add({
@@ -290,16 +312,20 @@ async function runRegistry() {
     }
     case "auth": {
       const name = args[2];
-      if (!name) { console.error("Usage: adk registry auth <name> [--token <t>] [--api-key <k>] [--header <h>]"); process.exit(1); }
+      if (!name) { console.error("Usage: adk registry auth <name> [--token <t>] [--username <u> --password <p>] [--api-key <k>] [--header <h>]"); process.exit(1); }
       const token = getArg("--token");
+      const username = getArg("--username");
+      const password = getArg("--password");
       const apiKey = getArg("--api-key");
       const header = getArg("--header");
 
-      // Explicit credential mode — user supplied a token/key directly.
-      if (token || apiKey) {
+      // Explicit credential mode — user supplied a token/basic/key directly.
+      if (token || username || apiKey) {
         const credential = token
           ? { token }
-          : { apiKey: apiKey!, ...(header && { header }) };
+          : username
+            ? { username, ...(password !== undefined && { password }) }
+            : { apiKey: apiKey!, ...(header && { header }) };
         const updated = await adk.registry.auth(name, credential);
         if (!updated) {
           console.error(`Registry not found: ${name}`);
@@ -500,13 +526,19 @@ async function runRef() {
     }
     case "auth": {
       const name = args[2];
-      if (!name) { console.error("Usage: adk ref auth <name> [--api-key <key>]"); process.exit(1); }
+      if (!name) { console.error("Usage: adk ref auth <name> [--api-key <key>] [--<field> <value> ...]"); process.exit(1); }
       const apiKey = getArg("--api-key");
+      const credentials = getCredentialArgs(3, new Set(["api-key"]));
 
-      if (apiKey) {
-        const result = await adk.ref.auth(name, { apiKey });
+      if (apiKey || Object.keys(credentials).length > 0) {
+        const result = await adk.ref.auth(name, {
+          ...(apiKey && { apiKey }),
+          ...(Object.keys(credentials).length > 0 && { credentials }),
+        });
         if (result.complete) {
           console.log(`\x1b[32m\u2713\x1b[0m Auth complete for ${name} (${result.type})`);
+        } else if (result.fields?.length) {
+          console.log(JSON.stringify(result, null, 2));
         }
         break;
       }
@@ -662,6 +694,22 @@ switch (command) {
     }
     break;
   }
+  case "list":
+    args.splice(0, 1, "ref", "list");
+    await runRef();
+    break;
+  case "call":
+    args.splice(0, 1, "ref", "call");
+    await runRef();
+    break;
+  case "auth":
+    args.splice(0, 1, "ref", "auth");
+    await runRef();
+    break;
+  case "auth-status":
+    args.splice(0, 1, "ref", "auth-status");
+    await runRef();
+    break;
   case "registry":
     await runRegistry();
     break;

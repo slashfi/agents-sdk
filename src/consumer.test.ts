@@ -538,6 +538,60 @@ describe("Secret URI resolution", () => {
   });
 });
 
+// ─── Basic Auth Tests ────────────────────────────────────────────
+
+describe("Registry Consumer — Basic Auth", () => {
+  let server: AgentServer;
+  const PORT = 19895;
+  const USERNAME = "ashby-api-key";
+  const PASSWORD = "";
+
+  beforeAll(async () => {
+    const registry = createAgentRegistry();
+    registry.register(mathAgent);
+    registry.register(echoAgent);
+
+    server = createAgentServer(registry, {
+      port: PORT,
+      resolveAuth: async (req) => {
+        const auth = req.headers.get("authorization");
+        const expected = `Basic ${Buffer.from(`${USERNAME}:${PASSWORD}`, "utf8").toString("base64")}`;
+        if (auth === expected) {
+          return {
+            callerId: "basic-auth-user",
+            callerType: "system" as const,
+            scopes: ["*"],
+          };
+        }
+        return null;
+      },
+    });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  test("consumer with basic auth type can list agents", async () => {
+    const consumer = await createRegistryConsumer({
+      registries: [
+        {
+          url: `http://localhost:${PORT}`,
+          auth: { type: "basic", username: USERNAME, password: PASSWORD },
+        },
+      ],
+      refs: [{ ref: "@math" }],
+    });
+
+    const agents = await consumer.list();
+    expect(agents.length).toBeGreaterThanOrEqual(2);
+    const paths = agents.map((a) => a.path);
+    expect(paths).toContain("@math");
+    expect(paths).toContain("@echo");
+  });
+});
+
 // ─── API Key Auth Tests ──────────────────────────────────────────
 
 describe("Registry Consumer — API Key Auth", () => {

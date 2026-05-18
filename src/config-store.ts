@@ -86,9 +86,31 @@ export interface RegistryCacheToolSummary {
  *                   client registration). Doesn't need to be `present`
  *                   in the user's config to count as satisfied.
  */
+export type CompositeCredentialFormat = "basic";
+
+export interface RegistryCacheAuthFieldPart {
+  /** Field key callers should collect (for example "username") */
+  name: string;
+  /** Human-readable label for UI rendering */
+  label: string;
+  /** Whether this part is secret and should be masked */
+  secret: boolean;
+  /** Whether this part may be intentionally blank */
+  optional?: boolean;
+  /** Optional description / help text */
+  description?: string;
+}
+
 export interface RegistryCacheAuthField {
   required: boolean;
   automated: boolean;
+  /** How `parts` compose into this canonical stored credential. */
+  format?: CompositeCredentialFormat;
+  /**
+   * Optional structured inputs that compose this canonical stored credential.
+   * For example HTTP Basic stores one `token` but asks UI for username/password.
+   */
+  parts?: RegistryCacheAuthFieldPart[];
 }
 
 /**
@@ -329,6 +351,7 @@ export interface AdkRegistryApi {
     nameOrUrl: string,
     credential:
       | { token: string; tokenUrl?: string }
+      | { username: string; password?: string }
       | { apiKey: string; header?: string },
   ): Promise<boolean>;
 
@@ -364,6 +387,10 @@ export interface CredentialField {
   present: boolean;
   /** Available via resolveCredentials callback */
   resolvable: boolean;
+  /** How `parts` compose into this canonical stored credential */
+  format?: CompositeCredentialFormat;
+  /** Structured inputs that compose this canonical stored credential */
+  parts?: AuthChallengeField[];
 }
 
 /** Describes what auth a ref needs and what's already provided */
@@ -391,6 +418,8 @@ export interface AuthChallengeField {
   label: string;
   /** Whether this is a secret value (should be masked in UI) */
   secret: boolean;
+  /** Whether this field may be intentionally blank */
+  optional?: boolean;
   /** Optional description / help text */
   description?: string;
 }
@@ -667,7 +696,7 @@ function renderCredentialForm(
       <div class="field">
         <label for="${esc(f.name)}">${esc(f.label)}</label>
         ${f.description ? `<p class="desc">${esc(f.description)}</p>` : ""}
-        <input id="${esc(f.name)}" name="${esc(f.name)}" type="${f.secret ? "password" : "text"}" required autocomplete="off" spellcheck="false" />
+        <input id="${esc(f.name)}" name="${esc(f.name)}" type="${f.secret ? "password" : "text"}" ${f.optional ? "" : "required"} autocomplete="off" spellcheck="false" />
       </div>`,
     )
     .join("");
@@ -1320,7 +1349,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
    */
   async function updateRegistryEntry(
     nameOrUrl: string,
-    mutate: (entry: RegistryEntry) => void,
+    mutate: (entry: RegistryEntry) => void | Promise<void>,
   ): Promise<boolean> {
     const config = await readConfig();
     if (!config.registries?.length) return false;
@@ -1331,10 +1360,14 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       found = true;
       const existing: RegistryEntry =
         typeof r === "string" ? { url: r } : { ...r };
-      mutate(existing);
       return existing;
     });
     if (!found) return false;
+    for (const r of registries) {
+      if (typeof r !== "string" && (registryDisplayName(r) === nameOrUrl || registryUrl(r) === nameOrUrl)) {
+        await mutate(r);
+      }
+    }
     await writeConfig({ ...config, registries });
     return true;
   }
@@ -1433,6 +1466,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     const hasUsableAuth =
       entry.auth && entry.auth.type !== "none"
         ? (entry.auth.type === "bearer" && !!entry.auth.token) ||
+          (entry.auth.type === "basic" && !!entry.auth.username) ||
           (entry.auth.type === "api-key" && !!entry.auth.key)
         : false;
     if (hasUsableAuth) return;
@@ -1474,6 +1508,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const hasUsableAuth =
         entry.auth && entry.auth.type !== "none"
           ? (entry.auth.type === "bearer" && !!entry.auth.token) ||
+            (entry.auth.type === "basic" && !!entry.auth.username) ||
             (entry.auth.type === "api-key" && !!entry.auth.key)
           : false;
 
@@ -1584,6 +1619,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             const hasUsableAuth =
               r.auth && r.auth.type !== "none"
                 ? (r.auth.type === "bearer" && !!r.auth.token) ||
+                  (r.auth.type === "basic" && !!r.auth.username) ||
                   (r.auth.type === "api-key" && !!r.auth.key)
                 : false;
             if (!hasUsableAuth) {
@@ -1627,26 +1663,30 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       nameOrUrl: string,
       credential:
         | { token: string; tokenUrl?: string }
+        | { username: string; password?: string }
         | { apiKey: string; header?: string },
     ): Promise<boolean> {
-      // Encrypt the secret value up-front so the write path is uniform;
-      // `buildConsumer` decrypts on the read side via `decryptConfigSecrets`.
-      const protectedValue =
-        "token" in credential
-          ? await protectSecret(credential.token)
-          : await protectSecret(credential.apiKey);
-
-      const updated = await updateRegistryEntry(nameOrUrl, (existing) => {
+      // Encrypt secret values before writing. `buildConsumer` decrypts on the
+      // read side via `decryptConfigSecrets`.
+      const updated = await updateRegistryEntry(nameOrUrl, async (existing) => {
         if ("token" in credential) {
           existing.auth = {
             type: "bearer",
-            token: protectedValue,
+            token: await protectSecret(credential.token),
             ...(credential.tokenUrl && { tokenUrl: credential.tokenUrl }),
+          };
+        } else if ("username" in credential) {
+          existing.auth = {
+            type: "basic",
+            username: await protectSecret(credential.username),
+            ...(credential.password && {
+              password: await protectSecret(credential.password),
+            }),
           };
         } else {
           existing.auth = {
             type: "api-key",
-            key: protectedValue,
+            key: await protectSecret(credential.apiKey),
             ...(credential.header && { header: credential.header }),
           };
         }
@@ -1710,6 +1750,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const hasUsableAuth =
         target.auth && target.auth.type !== "none"
           ? (target.auth.type === "bearer" && !!target.auth.token) ||
+            (target.auth.type === "basic" && !!target.auth.username) ||
             (target.auth.type === "api-key" && !!target.auth.key)
           : false;
       if (hasUsableAuth && !target.authRequirement) {
@@ -2531,11 +2572,23 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           };
         }
       } else if (security.type === "http") {
+        const httpSec = security as { scheme?: string };
+        const isBasic = httpSec.scheme === "basic";
         fields.token = {
           required: true,
           automated: false,
           present: configKeys.includes("token"),
-          resolvable: await canResolve("token"),
+          resolvable: isBasic
+            ? (await canResolve("username")) &&
+              (await tryResolveField("password")) !== null
+            : await canResolve("token"),
+          ...(isBasic && {
+            format: "basic" as const,
+            parts: [
+              { name: "username", label: "Username", secret: false },
+              { name: "password", label: "Password", secret: true, optional: true },
+            ],
+          }),
         };
       } else if (security.type === "form") {
         // Form-based refs collect structured user input at connect time
@@ -2569,6 +2622,8 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         authFields[field] = {
           required: info.required,
           automated: info.automated,
+          ...(info.format && { format: info.format }),
+          ...(info.parts && { parts: info.parts }),
         };
       }
       await upsertRegistryCacheAuthFields(name, entry.ref, authFields);
@@ -2706,24 +2761,23 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           const username =
             opts?.credentials?.["username"] ?? (await tryResolve("username"));
           const password =
-            opts?.credentials?.["password"] ?? (await tryResolve("password"));
-          if (!username || !password) {
-            const missingFields: AuthChallengeField[] = [];
-            if (!username)
-              missingFields.push({
-                name: "username",
-                label: "Username",
-                secret: false,
-              });
-            if (!password)
-              missingFields.push({
-                name: "password",
-                label: "Password",
-                secret: true,
-              });
-            return { type: "http", complete: false, fields: missingFields };
+            opts?.credentials?.["password"] ?? (await tryResolve("password")) ?? "";
+          const hasUsername = username !== undefined && username !== null && username !== "";
+          if (!hasUsername) {
+            return {
+              type: "http",
+              complete: false,
+              fields: [
+                {
+                  name: "username",
+                  label: "Username",
+                  secret: false,
+                },
+              ],
+            };
           }
-          // Store as base64 encoded basic auth token
+          // Store as base64 encoded basic auth token. Password may be blank
+          // for APIs that use the Basic username slot as an API key.
           const token = btoa(`${username}:${password}`);
           await storeRefSecret(name, "token", token);
           return { type: "http", complete: true };
@@ -2951,7 +3005,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
               const credentials: Record<string, string> = {};
               for (const field of result.fields!) {
                 const val = params.get(field.name);
-                if (val) credentials[field.name] = val;
+                if (val !== null) credentials[field.name] = val;
               }
 
               try {
