@@ -2759,30 +2759,25 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
         if (isBasic) {
           const username =
-            opts?.credentials?.["username"] ??
-            opts?.apiKey ??
-            (await tryResolve("username"));
+            opts?.credentials?.["username"] ?? (await tryResolve("username"));
           const password =
-            opts?.credentials?.["password"] ?? (await tryResolve("password"));
+            opts?.credentials?.["password"] ?? (await tryResolve("password")) ?? "";
           const hasUsername = username !== undefined && username !== null && username !== "";
-          const hasPassword = password !== undefined && password !== null;
-          if (!hasUsername || !hasPassword) {
-            const missingFields: AuthChallengeField[] = [];
-            if (!hasUsername)
-              missingFields.push({
-                name: "username",
-                label: "Username",
-                secret: false,
-              });
-            if (!hasPassword)
-              missingFields.push({
-                name: "password",
-                label: "Password",
-                secret: true,
-              });
-            return { type: "http", complete: false, fields: missingFields };
+          if (!hasUsername) {
+            return {
+              type: "http",
+              complete: false,
+              fields: [
+                {
+                  name: "username",
+                  label: "Username",
+                  secret: false,
+                },
+              ],
+            };
           }
-          // Store as base64 encoded basic auth token.
+          // Store as base64 encoded basic auth token. Password may be blank
+          // for APIs that use the Basic username slot as an API key.
           const token = btoa(`${username}:${password}`);
           await storeRefSecret(name, "token", token);
           return { type: "http", complete: true };
