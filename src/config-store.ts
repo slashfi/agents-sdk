@@ -992,6 +992,133 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
   }
 
   /**
+   * Call-time credential lookup: stored ref config first, then the host
+   * `resolveCredentials` callback. Does not persist resolved values.
+   */
+  async function resolveCallCredential(
+    ctx: CredentialResolverContext,
+    field: string,
+  ): Promise<string | null> {
+    const stored = await readRefSecret(ctx.name, field);
+    if (stored) return stored;
+    return makeTryResolve(ctx)(field);
+  }
+
+  const CALL_BEARER_FIELDS = ["access_token", "api_key", "token"] as const;
+
+  /** OAuth bookkeeping — resolved for auth/refresh, not forwarded on call. */
+  const CALL_NON_OUTBOUND_FIELDS = new Set([
+    "refresh_token",
+    "client_id",
+    "client_secret",
+  ]);
+
+  function headerFieldSatisfied(
+    headers: Record<string, string>,
+    field: string,
+  ): boolean {
+    const wanted = normalizeCredentialKey(field);
+    return Object.keys(headers).some(
+      (key) => normalizeCredentialKey(key) === wanted,
+    );
+  }
+
+  function resolveHeaderNameForField(
+    field: string,
+    refConfig: Record<string, unknown>,
+  ): string {
+    const wanted = normalizeCredentialKey(field);
+    const configHeaders = refConfig.headers;
+    if (
+      configHeaders &&
+      typeof configHeaders === "object" &&
+      !Array.isArray(configHeaders)
+    ) {
+      for (const key of Object.keys(configHeaders as Record<string, unknown>)) {
+        if (normalizeCredentialKey(key) === wanted) return key;
+      }
+    }
+    // x_api_key → X-API-KEY (registry codegen declares the canonical name;
+    // env-resolved keys use the normalized storage field name).
+    return field
+      .split("_")
+      .filter(Boolean)
+      .map((part) => part.toUpperCase())
+      .join("-");
+  }
+
+  /**
+   * Supplement call-time credentials from `resolveCredentials` when they
+   * are not already present in consumer-config. Stored values and config
+   * headers win — this only fills gaps.
+   */
+  async function resolveAllCallCredentials(opts: {
+    ctx: CredentialResolverContext;
+    refConfig: Record<string, unknown>;
+    accessToken: string | null;
+    resolvedHeaders: Record<string, string> | undefined;
+  }): Promise<{
+    accessToken: string | null;
+    resolvedHeaders: Record<string, string> | undefined;
+  }> {
+    if (!options.resolveCredentials) {
+      return {
+        accessToken: opts.accessToken,
+        resolvedHeaders: opts.resolvedHeaders,
+      };
+    }
+
+    let accessToken = opts.accessToken;
+    let resolvedHeaders = opts.resolvedHeaders;
+    const { ctx, refConfig } = opts;
+
+    if (!accessToken) {
+      for (const field of CALL_BEARER_FIELDS) {
+        const value = await resolveCallCredential(ctx, field);
+        if (value) {
+          accessToken = value;
+          break;
+        }
+      }
+    }
+
+    if (!accessToken) {
+      const username = await resolveCallCredential(ctx, "username");
+      const password = await resolveCallCredential(ctx, "password");
+      if (username && password) {
+        accessToken = btoa(`${username}:${password}`);
+      }
+    }
+
+    const cache = await readRegistryCache();
+    const authFields = cache.refs[ctx.name]?.authFields;
+    if (!authFields) {
+      return { accessToken, resolvedHeaders };
+    }
+
+    for (const [field, info] of Object.entries(authFields)) {
+      if ((CALL_BEARER_FIELDS as readonly string[]).includes(field)) continue;
+      if (CALL_NON_OUTBOUND_FIELDS.has(field)) continue;
+      if (!info.required && !info.automated) continue;
+
+      if (hasCredentialField(refConfig, field)) continue;
+      if (resolvedHeaders && headerFieldSatisfied(resolvedHeaders, field)) {
+        continue;
+      }
+
+      const value = await resolveCallCredential(ctx, field);
+      if (!value) continue;
+
+      resolvedHeaders = resolvedHeaders ?? {};
+      if (!headerFieldSatisfied(resolvedHeaders, field)) {
+        resolvedHeaders[resolveHeaderNameForField(field, refConfig)] = value;
+      }
+    }
+
+    return { accessToken, resolvedHeaders };
+  }
+
+  /**
    * Resolve OAuth client credentials (client_id + client_secret) for a
    * ref. Walks: `resolveCredentials` callback → per-ref VCS storage.
    * Used by both `auth` (initial OAuth flow) and `refreshToken` (token
@@ -2254,7 +2381,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
-      const accessToken =
+      let accessToken =
         (await readRefSecret(name, "access_token")) ??
         (await readRefSecret(name, "api_key")) ??
         (await readRefSecret(name, "token"));
@@ -2304,6 +2431,17 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             resolvedHeaders[k] = v;
           }
         }
+      }
+
+      if (options.resolveCredentials) {
+        const supplemented = await resolveAllCallCredentials({
+          ctx: { name, entry, security: null },
+          refConfig,
+          accessToken,
+          resolvedHeaders,
+        });
+        accessToken = supplemented.accessToken;
+        resolvedHeaders = supplemented.resolvedHeaders;
       }
 
       const doCall = async (token: string | null) => {
