@@ -842,6 +842,79 @@ describe("ADK ref.call() full auto-refresh flow", () => {
     expect(status.fields?.access_token?.automated).toBe(false);
     expect(status.fields?.access_token?.present).toBe(false);
   });
+
+  test("ref.authStatus honors registry-declared authFields over oauth2 heuristics", async () => {
+    const platformRegPort = 19924;
+    const platformTool = defineTool({
+      name: "get_data",
+      description: "Platform minted bearer",
+      inputSchema: { type: "object" as const, properties: {} },
+      execute: async () => ({ ok: true }),
+    });
+    const platformAgent = defineAgent({
+      path: "platform-api",
+      entrypoint: "Platform bearer agent",
+      tools: [platformTool],
+      visibility: "public",
+      config: {
+        security: {
+          type: "oauth2",
+          flows: {
+            authorizationCode: {
+              authorizationUrl: "http://localhost/authorize",
+              tokenUrl: "http://localhost/token",
+            },
+          },
+          authFields: {
+            access_token: { required: true, automated: true },
+          },
+        },
+      },
+    });
+    const platformRegistry = createAgentRegistry();
+    platformRegistry.register(platformAgent);
+    const platformServer = createAgentServer(platformRegistry, {
+      port: platformRegPort,
+    });
+    await platformServer.start();
+
+    try {
+      const fs = createMemoryFs();
+      const adk = createAdk(fs, {
+        resolveCredentials: async ({ field }) =>
+          field === "access_token" ? "minted" : null,
+      });
+
+      await adk.registry.add({
+        name: "platform-reg",
+        url: `http://localhost:${platformRegPort}`,
+      });
+      await adk.ref.add({
+        ref: "platform-api",
+        name: "platform-api",
+        sourceRegistry: {
+          url: `http://localhost:${platformRegPort}`,
+          agentPath: "platform-api",
+        },
+        config: {},
+      });
+
+      const status = await adk.ref.authStatus("platform-api");
+      expect(status.fields?.access_token?.automated).toBe(true);
+      expect(status.fields?.access_token?.resolvable).toBe(true);
+      expect(status.complete).toBe(true);
+
+      const cacheRaw = await fs.readFile("registry-cache.json");
+      const cache = JSON.parse(cacheRaw!) as {
+        refs: Record<string, { authFields?: Record<string, unknown> }>;
+      };
+      expect(cache.refs["platform-api"].authFields).toEqual({
+        access_token: { required: true, automated: true },
+      });
+    } finally {
+      await platformServer.stop();
+    }
+  });
 });
 
 describe("ADK ref.call() resolveCredentials fallback", () => {
