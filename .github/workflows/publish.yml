@@ -18,10 +18,15 @@ jobs:
         with:
           bun-version: latest
 
+      # Node 24 + npm 11.5.1+ required for OIDC trusted publishing if we
+      # switch later; also keeps npm current for token-based publish.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
+
+      - name: Upgrade npm
+        run: npm install -g npm@latest
 
       # Remove workspaces before install to avoid resolving example deps
       - run: |
@@ -34,4 +39,11 @@ jobs:
 
       - run: bun run build
 
-      - run: npm publish --provenance --access public
+      - name: Verify npm auth (rotate NPM_TOKEN if this fails)
+        run: npm whoami
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
