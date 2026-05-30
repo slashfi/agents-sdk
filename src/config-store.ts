@@ -111,6 +111,11 @@ export interface RegistryCacheAuthField {
    * For example HTTP Basic stores one `token` but asks UI for username/password.
    */
   parts?: RegistryCacheAuthFieldPart[];
+  /**
+   * When `false`, connect/refresh bookkeeping only — not forwarded on
+   * `ref.call`. Omitted or `true` for bearer, header, and call-time creds.
+   */
+  outbound?: boolean;
 }
 
 /**
@@ -391,6 +396,8 @@ export interface CredentialField {
   format?: CompositeCredentialFormat;
   /** Structured inputs that compose this canonical stored credential */
   parts?: AuthChallengeField[];
+  /** Connect/refresh only — not forwarded on ref.call. */
+  outbound?: boolean;
 }
 
 /** Describes what auth a ref needs and what's already provided */
@@ -1006,15 +1013,24 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
 
   const CALL_BEARER_FIELDS = ["access_token", "api_key", "token"] as const;
 
-  /** OAuth bookkeeping — resolved for auth/refresh, not forwarded on call. */
-  const CALL_NON_OUTBOUND_FIELDS = new Set([
-    "refresh_token",
-    "client_id",
-    "client_secret",
-  ]);
-
   function isBearerAuthField(field: string): boolean {
     return (CALL_BEARER_FIELDS as readonly string[]).includes(field);
+  }
+
+  /** Legacy cache entries may omit `outbound`; these are never call-time creds. */
+  const LEGACY_CONNECT_ONLY_FIELDS = new Set([
+    "client_id",
+    "client_secret",
+    "refresh_token",
+  ]);
+
+  function isCallOutboundAuthField(
+    field: string,
+    info: RegistryCacheAuthField,
+  ): boolean {
+    if (info.outbound === false) return false;
+    if (info.outbound === true) return true;
+    return !LEGACY_CONNECT_ONLY_FIELDS.has(field);
   }
 
   function readRegistryDeclaredAuthFields(
@@ -1031,6 +1047,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         continue;
       }
       out[field] = { required: m.required, automated: m.automated };
+      if (typeof m.outbound === "boolean") {
+        out[field].outbound = m.outbound;
+      }
     }
     return Object.keys(out).length > 0 ? out : undefined;
   }
@@ -1051,6 +1070,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         present:
           configKeys.includes(field) || hasCredentialField(refConfig, field),
         resolvable: await canResolve(field),
+        ...(meta.format && { format: meta.format }),
+        ...(meta.parts && { parts: meta.parts }),
+        ...(meta.outbound === false && { outbound: false }),
       };
     }
     return next;
@@ -1138,7 +1160,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       cache.refs[ctx.name]?.authFields ?? fallbackCallAuthFields();
 
     for (const [field, info] of Object.entries(authFields)) {
-      if (CALL_NON_OUTBOUND_FIELDS.has(field)) continue;
+      if (!isCallOutboundAuthField(field, info)) continue;
       if (!info.required && !info.automated) continue;
 
       if (isBearerAuthField(field)) {
@@ -2699,6 +2721,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           automated: hasRegistration,
           present: configKeys.includes("client_id"),
           resolvable: await canResolve("client_id", oauthMetadata),
+          outbound: false,
         };
         if (needsSecret) {
           fields.client_secret = {
@@ -2706,6 +2729,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             automated: hasRegistration,
             present: configKeys.includes("client_secret"),
             resolvable: await canResolve("client_secret", oauthMetadata),
+            outbound: false,
           };
         }
         fields.access_token = {
@@ -2825,6 +2849,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           automated: info.automated,
           ...(info.format && { format: info.format }),
           ...(info.parts && { parts: info.parts }),
+          ...(info.outbound === false && { outbound: false }),
         };
       }
       await upsertRegistryCacheAuthFields(name, entry.ref, authFields);
