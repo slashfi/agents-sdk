@@ -51,6 +51,4 @@ jobs:
           echo "Published version: ${PRERELEASE_VERSION}"
 
       - name: Publish to npm
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
