@@ -842,6 +842,258 @@ describe("ADK ref.call() full auto-refresh flow", () => {
     expect(status.fields?.access_token?.automated).toBe(false);
     expect(status.fields?.access_token?.present).toBe(false);
   });
+
+  test("ref.authStatus honors registry-declared authFields over oauth2 heuristics", async () => {
+    const platformRegPort = 19924;
+    const platformTool = defineTool({
+      name: "get_data",
+      description: "Platform minted bearer",
+      inputSchema: { type: "object" as const, properties: {} },
+      execute: async () => ({ ok: true }),
+    });
+    const platformAgent = defineAgent({
+      path: "platform-api",
+      entrypoint: "Platform bearer agent",
+      tools: [platformTool],
+      visibility: "public",
+      config: {
+        security: {
+          type: "oauth2",
+          flows: {
+            authorizationCode: {
+              authorizationUrl: "http://localhost/authorize",
+              tokenUrl: "http://localhost/token",
+            },
+          },
+          authFields: {
+            access_token: { required: true, automated: true },
+          },
+        },
+      },
+    });
+    const platformRegistry = createAgentRegistry();
+    platformRegistry.register(platformAgent);
+    const platformServer = createAgentServer(platformRegistry, {
+      port: platformRegPort,
+    });
+    await platformServer.start();
+
+    try {
+      const fs = createMemoryFs();
+      const adk = createAdk(fs, {
+        resolveCredentials: async ({ field }) =>
+          field === "access_token" ? "minted" : null,
+      });
+
+      await adk.registry.add({
+        name: "platform-reg",
+        url: `http://localhost:${platformRegPort}`,
+      });
+      await adk.ref.add({
+        ref: "platform-api",
+        name: "platform-api",
+        sourceRegistry: {
+          url: `http://localhost:${platformRegPort}`,
+          agentPath: "platform-api",
+        },
+        config: {},
+      });
+
+      const status = await adk.ref.authStatus("platform-api");
+      expect(status.fields?.access_token?.automated).toBe(true);
+      expect(status.fields?.access_token?.resolvable).toBe(true);
+      expect(status.complete).toBe(true);
+
+      const cacheRaw = await fs.readFile("registry-cache.json");
+      const cache = JSON.parse(cacheRaw!) as {
+        refs: Record<string, { authFields?: Record<string, unknown> }>;
+      };
+      expect(cache.refs["platform-api"].authFields).toEqual({
+        access_token: { required: true, automated: true },
+      });
+    } finally {
+      await platformServer.stop();
+    }
+  });
+});
+
+describe("ADK ref.call() resolveCredentials fallback", () => {
+  let registryServer: AgentServer;
+  const REG_PORT = 19922;
+  let receivedToken: string | undefined;
+
+  beforeAll(async () => {
+    const apiTool = defineTool({
+      name: "get_data",
+      description: "Echo accessToken",
+      inputSchema: { type: "object" as const, properties: {} },
+      execute: async (input: any) => {
+        receivedToken = input?.accessToken;
+        if (!receivedToken) {
+          return {
+            content: [{ type: "text", text: '{"error":"401 Unauthorized"}' }],
+            _httpStatus: 401,
+          };
+        }
+        return { ok: true, token: receivedToken };
+      },
+    });
+
+    const agent = defineAgent({
+      path: "resolved-api",
+      entrypoint: "Resolved creds agent",
+      tools: [apiTool],
+      visibility: "public",
+      config: {
+        security: {
+          type: "oauth2",
+          flows: {
+            authorizationCode: {
+              authorizationUrl: "http://localhost/authorize",
+              tokenUrl: "http://localhost/token",
+            },
+          },
+        },
+      },
+    });
+
+    const registry = createAgentRegistry();
+    registry.register(agent);
+    registryServer = createAgentServer(registry, { port: REG_PORT });
+    await registryServer.start();
+  });
+
+  afterAll(async () => {
+    await registryServer.stop();
+  });
+
+  test("uses resolveCredentials when access_token is not stored", async () => {
+    receivedToken = undefined;
+    const fs = createMemoryFs();
+    const adk = createAdk(fs, {
+      resolveCredentials: async ({ field }) => {
+        if (field === "access_token") return "minted-call-token";
+        return null;
+      },
+    });
+
+    await adk.registry.add({
+      name: "resolved-reg",
+      url: `http://localhost:${REG_PORT}`,
+    });
+    await adk.ref.add({
+      ref: "resolved-api",
+      sourceRegistry: {
+        url: `http://localhost:${REG_PORT}`,
+        agentPath: "resolved-api",
+      },
+      config: {},
+    });
+
+    const result = await adk.ref.call("resolved-api", "get_data");
+    expect(receivedToken).toBe("minted-call-token");
+    expect((result as any)?.result?.ok).toBe(true);
+  });
+
+  test("stored access_token still wins over resolveCredentials", async () => {
+    receivedToken = undefined;
+    const fs = createMemoryFs();
+    const adk = createAdk(fs, {
+      resolveCredentials: async () => "should-not-be-used",
+    });
+
+    await adk.registry.add({
+      name: "resolved-reg",
+      url: `http://localhost:${REG_PORT}`,
+    });
+    await adk.ref.add({
+      ref: "resolved-api",
+      name: "resolved-api-stored",
+      sourceRegistry: {
+        url: `http://localhost:${REG_PORT}`,
+        agentPath: "resolved-api",
+      },
+      config: { access_token: "stored-token" },
+    });
+
+    await adk.ref.call("resolved-api-stored", "get_data");
+    expect(receivedToken).toBe("stored-token");
+  });
+
+  test("uses resolveCredentials for cached apiKey header fields", async () => {
+    let receivedHeaders: Record<string, string> | undefined;
+    const headerRegPort = 19923;
+    const headerServer = createAgentServer(
+      (() => {
+        const apiTool = defineTool({
+          name: "get_data",
+          description: "Echo _headers",
+          inputSchema: { type: "object" as const, properties: {} },
+          execute: async (input: any) => {
+            receivedHeaders = input?._headers;
+            return { ok: true, headers: receivedHeaders };
+          },
+        });
+        const agent = defineAgent({
+          path: "header-api",
+          entrypoint: "Header creds agent",
+          tools: [apiTool],
+          visibility: "public",
+        });
+        const registry = createAgentRegistry();
+        registry.register(agent);
+        return registry;
+      })(),
+      { port: headerRegPort },
+    );
+    await headerServer.start();
+
+    try {
+      receivedHeaders = undefined;
+      const fs = createMemoryFs();
+      const adk = createAdk(fs, {
+        resolveCredentials: async ({ field }) => {
+          if (field === "x_api_key") return "resolved-header-key";
+          return null;
+        },
+      });
+
+      await adk.registry.add({
+        name: "header-reg",
+        url: `http://localhost:${headerRegPort}`,
+      });
+      await adk.ref.add({
+        ref: "header-api",
+        name: "header-api",
+        sourceRegistry: {
+          url: `http://localhost:${headerRegPort}`,
+          agentPath: "header-api",
+        },
+        config: {},
+      });
+
+      await fs.writeFile(
+        "registry-cache.json",
+        JSON.stringify({
+          refs: {
+            "header-api": {
+              ref: "header-api",
+              fetchedAt: new Date().toISOString(),
+              authFields: {
+                x_api_key: { required: true, automated: false },
+              },
+            },
+          },
+        }),
+      );
+
+      const result = await adk.ref.call("header-api", "get_data");
+      expect(receivedHeaders?.["X-API-KEY"]).toBe("resolved-header-key");
+      expect((result as any)?.result?.ok).toBe(true);
+    } finally {
+      await headerServer.stop();
+    }
+  });
 });
 
 describe("ADK ref.call() auto-refresh on direct MCP 401", () => {

@@ -111,6 +111,11 @@ export interface RegistryCacheAuthField {
    * For example HTTP Basic stores one `token` but asks UI for username/password.
    */
   parts?: RegistryCacheAuthFieldPart[];
+  /**
+   * When `false`, connect/refresh bookkeeping only — not forwarded on
+   * `ref.call`. Omitted or `true` for bearer, header, and call-time creds.
+   */
+  outbound?: boolean;
 }
 
 /**
@@ -391,6 +396,8 @@ export interface CredentialField {
   format?: CompositeCredentialFormat;
   /** Structured inputs that compose this canonical stored credential */
   parts?: AuthChallengeField[];
+  /** Connect/refresh only — not forwarded on ref.call. */
+  outbound?: boolean;
 }
 
 /** Describes what auth a ref needs and what's already provided */
@@ -989,6 +996,203 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         oauthMetadata,
       });
     };
+  }
+
+  /**
+   * Call-time credential lookup: stored ref config first, then the host
+   * `resolveCredentials` callback. Does not persist resolved values.
+   */
+  async function resolveCallCredential(
+    ctx: CredentialResolverContext,
+    field: string,
+  ): Promise<string | null> {
+    const stored = await readRefSecret(ctx.name, field);
+    if (stored) return stored;
+    return makeTryResolve(ctx)(field);
+  }
+
+  const CALL_BEARER_FIELDS = ["access_token", "api_key", "token"] as const;
+
+  function isBearerAuthField(field: string): boolean {
+    return (CALL_BEARER_FIELDS as readonly string[]).includes(field);
+  }
+
+  /** Legacy cache entries may omit `outbound`; these are never call-time creds. */
+  const LEGACY_CONNECT_ONLY_FIELDS = new Set([
+    "client_id",
+    "client_secret",
+    "refresh_token",
+  ]);
+
+  function isCallOutboundAuthField(
+    field: string,
+    info: RegistryCacheAuthField,
+  ): boolean {
+    if (info.outbound === false) return false;
+    if (info.outbound === true) return true;
+    return !LEGACY_CONNECT_ONLY_FIELDS.has(field);
+  }
+
+  function readRegistryDeclaredAuthFields(
+    security: SecuritySchemeSummary | null,
+  ): Record<string, RegistryCacheAuthField> | undefined {
+    if (!security || typeof security !== "object") return undefined;
+    const raw = (security as { authFields?: unknown }).authFields;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const out: Record<string, RegistryCacheAuthField> = {};
+    for (const [field, meta] of Object.entries(raw as Record<string, unknown>)) {
+      if (!meta || typeof meta !== "object" || Array.isArray(meta)) continue;
+      const m = meta as Record<string, unknown>;
+      if (typeof m.required !== "boolean" || typeof m.automated !== "boolean") {
+        continue;
+      }
+      out[field] = { required: m.required, automated: m.automated };
+      if (typeof m.outbound === "boolean") {
+        out[field].outbound = m.outbound;
+      }
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
+
+  async function mergeRegistryDeclaredAuthFields(
+    fields: Record<string, CredentialField>,
+    declared: Record<string, RegistryCacheAuthField> | undefined,
+    canResolve: (field: string) => Promise<boolean>,
+    configKeys: string[],
+    refConfig: Record<string, unknown>,
+  ): Promise<Record<string, CredentialField>> {
+    if (!declared) return fields;
+    const next: Record<string, CredentialField> = {};
+    for (const [field, meta] of Object.entries(declared)) {
+      next[field] = {
+        required: meta.required,
+        automated: meta.automated,
+        present:
+          configKeys.includes(field) || hasCredentialField(refConfig, field),
+        resolvable: await canResolve(field),
+        ...(meta.format && { format: meta.format }),
+        ...(meta.parts && { parts: meta.parts }),
+        ...(meta.outbound === false && { outbound: false }),
+      };
+    }
+    return next;
+  }
+
+  function bearerFieldSatisfied(
+    accessToken: string | null,
+    refConfig: Record<string, unknown>,
+    field: string,
+  ): boolean {
+    if (accessToken) return true;
+    return hasCredentialField(refConfig, field);
+  }
+
+  function fallbackCallAuthFields(): Record<string, RegistryCacheAuthField> {
+    return {
+      access_token: { required: true, automated: true },
+      api_key: { required: false, automated: true },
+      token: { required: false, automated: true },
+    };
+  }
+
+  function headerFieldSatisfied(
+    headers: Record<string, string>,
+    field: string,
+  ): boolean {
+    const wanted = normalizeCredentialKey(field);
+    return Object.keys(headers).some(
+      (key) => normalizeCredentialKey(key) === wanted,
+    );
+  }
+
+  function resolveHeaderNameForField(
+    field: string,
+    refConfig: Record<string, unknown>,
+  ): string {
+    const wanted = normalizeCredentialKey(field);
+    const configHeaders = refConfig.headers;
+    if (
+      configHeaders &&
+      typeof configHeaders === "object" &&
+      !Array.isArray(configHeaders)
+    ) {
+      for (const key of Object.keys(configHeaders as Record<string, unknown>)) {
+        if (normalizeCredentialKey(key) === wanted) return key;
+      }
+    }
+    // x_api_key → X-API-KEY (registry codegen declares the canonical name;
+    // env-resolved keys use the normalized storage field name).
+    return field
+      .split("_")
+      .filter(Boolean)
+      .map((part) => part.toUpperCase())
+      .join("-");
+  }
+
+  /**
+   * Supplement call-time credentials from `resolveCredentials` when they
+   * are not already present in consumer-config. Stored values and config
+   * headers win — this only fills gaps. Walks cached `authFields` as the
+   * source of truth (registry-declared when auth-status has run).
+   */
+  async function resolveAllCallCredentials(opts: {
+    ctx: CredentialResolverContext;
+    refConfig: Record<string, unknown>;
+    accessToken: string | null;
+    resolvedHeaders: Record<string, string> | undefined;
+  }): Promise<{
+    accessToken: string | null;
+    resolvedHeaders: Record<string, string> | undefined;
+  }> {
+    if (!options.resolveCredentials) {
+      return {
+        accessToken: opts.accessToken,
+        resolvedHeaders: opts.resolvedHeaders,
+      };
+    }
+
+    let accessToken = opts.accessToken;
+    let resolvedHeaders = opts.resolvedHeaders;
+    const { ctx, refConfig } = opts;
+
+    const cache = await readRegistryCache();
+    const authFields =
+      cache.refs[ctx.name]?.authFields ?? fallbackCallAuthFields();
+
+    for (const [field, info] of Object.entries(authFields)) {
+      if (!isCallOutboundAuthField(field, info)) continue;
+      if (!info.required && !info.automated) continue;
+
+      if (isBearerAuthField(field)) {
+        if (bearerFieldSatisfied(accessToken, refConfig, field)) continue;
+        const value = await resolveCallCredential(ctx, field);
+        if (value) accessToken = accessToken ?? value;
+        continue;
+      }
+
+      if (hasCredentialField(refConfig, field)) continue;
+      if (resolvedHeaders && headerFieldSatisfied(resolvedHeaders, field)) {
+        continue;
+      }
+
+      const value = await resolveCallCredential(ctx, field);
+      if (!value) continue;
+
+      resolvedHeaders = resolvedHeaders ?? {};
+      if (!headerFieldSatisfied(resolvedHeaders, field)) {
+        resolvedHeaders[resolveHeaderNameForField(field, refConfig)] = value;
+      }
+    }
+
+    if (!accessToken) {
+      const username = await resolveCallCredential(ctx, "username");
+      const password = await resolveCallCredential(ctx, "password");
+      if (username && password) {
+        accessToken = btoa(`${username}:${password}`);
+      }
+    }
+
+    return { accessToken, resolvedHeaders };
   }
 
   /**
@@ -2254,7 +2458,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
-      const accessToken =
+      let accessToken =
         (await readRefSecret(name, "access_token")) ??
         (await readRefSecret(name, "api_key")) ??
         (await readRefSecret(name, "token"));
@@ -2304,6 +2508,17 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             resolvedHeaders[k] = v;
           }
         }
+      }
+
+      if (options.resolveCredentials) {
+        const supplemented = await resolveAllCallCredentials({
+          ctx: { name, entry, security: null },
+          refConfig,
+          accessToken,
+          resolvedHeaders,
+        });
+        accessToken = supplemented.accessToken;
+        resolvedHeaders = supplemented.resolvedHeaders;
       }
 
       const doCall = async (token: string | null) => {
@@ -2460,7 +2675,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         return (await tryResolveField(field, oauthMetadata)) !== null;
       }
 
-      const fields: Record<string, CredentialField> = {};
+      let fields: Record<string, CredentialField> = {};
 
       if (security.type === "oauth2") {
         const securityExt = security as {
@@ -2506,6 +2721,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           automated: hasRegistration,
           present: configKeys.includes("client_id"),
           resolvable: await canResolve("client_id", oauthMetadata),
+          outbound: false,
         };
         if (needsSecret) {
           fields.client_secret = {
@@ -2513,13 +2729,14 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             automated: hasRegistration,
             present: configKeys.includes("client_secret"),
             resolvable: await canResolve("client_secret", oauthMetadata),
+            outbound: false,
           };
         }
         fields.access_token = {
           required: true,
           automated: accessTokenAutomated,
           present: configKeys.includes("access_token"),
-          resolvable: false,
+          resolvable: await canResolve("access_token"),
         };
       } else if (security.type === "apiKey") {
         const apiKeySec = security as {
@@ -2607,8 +2824,16 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         };
       }
 
+      fields = await mergeRegistryDeclaredAuthFields(
+        fields,
+        readRegistryDeclaredAuthFields(security),
+        canResolve,
+        configKeys,
+        (entry.config ?? {}) as Record<string, unknown>,
+      );
+
       const complete = Object.values(fields).every(
-        (f) => !f.required || f.present || f.resolvable,
+        (f) => !f.required || f.automated || f.present || f.resolvable,
       );
 
       // Persist the slim {required, automated} per-field shape into the
@@ -2624,6 +2849,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           automated: info.automated,
           ...(info.format && { format: info.format }),
           ...(info.parts && { parts: info.parts }),
+          ...(info.outbound === false && { outbound: false }),
         };
       }
       await upsertRegistryCacheAuthFields(name, entry.ref, authFields);
