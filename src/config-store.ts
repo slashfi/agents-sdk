@@ -1286,6 +1286,181 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     }
   }
 
+  type McpResourceListEntry = {
+    uri?: string;
+    name?: string;
+    mimeType?: string;
+    description?: string;
+    contentLength?: number;
+  };
+
+  type McpResourceContentEntry = {
+    uri?: string;
+    name?: string;
+    mimeType?: string;
+    text?: string;
+    content?: string;
+    blob?: string;
+  };
+
+  function createMcpHeaders(
+    token?: string | null,
+    extraHeaders?: Record<string, string>,
+  ): Record<string, string> {
+    return {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      ...(token && { Authorization: `Bearer ${token}` }),
+      ...extraHeaders,
+    };
+  }
+
+  function normalizeMcpResourceContent(
+    content: McpResourceContentEntry,
+  ): string | undefined {
+    if (typeof content.content === "string") return content.content;
+    if (typeof content.text === "string") return content.text;
+    if (typeof content.blob === "string") return content.blob;
+    return undefined;
+  }
+
+  /**
+   * Call a direct MCP server's native resources/list + resources/read methods.
+   * Direct MCP refs bypass the Slash registry, so their resources are not
+   * available through call_agent list_resources/read_resources. `adk sync`
+   * still goes through adk.ref.resources/read, so those methods need to speak
+   * native MCP resources when a ref has a direct MCP `url`.
+   */
+  async function callMcpResourcesDirect(
+    serverUrl: string,
+    action: "list_resources" | "read_resources",
+    opts: {
+      uris?: string[];
+      token?: string | null;
+      extraHeaders?: Record<string, string>;
+    } = {},
+  ): Promise<CallAgentListResourcesResponse | CallAgentReadResourcesResponse> {
+    const url = serverUrl.replace(/\/$/, "");
+    const headers = createMcpHeaders(opts.token, opts.extraHeaders);
+
+    let reqId = 0;
+    let sessionId: string | undefined;
+    async function rpc(method: string, rpcParams?: Record<string, unknown>) {
+      const reqHeaders = {
+        ...headers,
+        ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
+      };
+      const res = await globalThis.fetch(url, {
+        method: "POST",
+        headers: reqHeaders,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: ++reqId,
+          method,
+          ...(rpcParams && { params: rpcParams }),
+        }),
+      });
+      if (!res.ok) {
+        throw new McpHttpError(
+          res.status,
+          `MCP ${method} failed (${res.status}): ${await res.text().catch(() => "unknown")}`,
+        );
+      }
+
+      const contentType = res.headers.get("content-type") ?? "";
+      const newSessionId = res.headers.get("mcp-session-id");
+      if (newSessionId) sessionId = newSessionId;
+
+      if (contentType.includes("text/event-stream")) {
+        const text = await res.text();
+        const lines = text.split("\n");
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const json = JSON.parse(line.slice(6));
+            if (json.id === reqId) {
+              if (json.error)
+                throw new Error(`MCP RPC error: ${json.error.message}`);
+              return json.result;
+            }
+          } catch (e) {
+            if (e instanceof Error && e.message.startsWith("MCP RPC"))
+              throw e;
+          }
+        }
+        return undefined;
+      }
+
+      const json = (await res.json()) as {
+        result?: unknown;
+        error?: { message: string };
+      };
+      if (json.error) throw new Error(`MCP RPC error: ${json.error.message}`);
+      return json.result;
+    }
+
+    try {
+      await rpc("initialize", {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "adk", version: "1.0.0" },
+      });
+      await rpc("notifications/initialized").catch(() => {});
+
+      if (action === "list_resources") {
+        const result = (await rpc("resources/list")) as { resources?: McpResourceListEntry[] } | undefined;
+        return {
+          success: true,
+          agentPath: url,
+          resources: (result?.resources ?? [])
+            .filter((r) => typeof r.uri === "string")
+            .map((r) => ({
+              uri: r.uri!,
+              ...(r.name && { name: r.name }),
+              ...(r.mimeType && { mimeType: r.mimeType }),
+              ...(r.contentLength !== undefined && { contentLength: r.contentLength }),
+            })),
+        };
+      }
+
+      const resources = await Promise.all(
+        (opts.uris ?? []).map(async (uri) => {
+          try {
+            const result = (await rpc("resources/read", { uri })) as { contents?: McpResourceContentEntry[] } | undefined;
+            const content =
+              (result?.contents ?? []).find((entry) => entry.uri === uri) ??
+              result?.contents?.[0];
+            const text = content ? normalizeMcpResourceContent(content) : undefined;
+            return {
+              uri,
+              ...(content?.name && { name: content.name }),
+              ...(content?.mimeType && { mimeType: content.mimeType }),
+              ...(text !== undefined && { content: text }),
+              ...(text === undefined && { error: "Resource returned no text/blob content" }),
+            };
+          } catch (err) {
+            return {
+              uri,
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+        }),
+      );
+
+      return {
+        success: true,
+        agentPath: url,
+        resources,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+        ...(err instanceof McpHttpError && { httpStatus: err.status }),
+      } as unknown as CallAgentListResourcesResponse | CallAgentReadResourcesResponse;
+    }
+  }
+
   /** Call an MCP server directly (bypasses registry). */
   async function callMcpDirect(
     serverUrl: string,
@@ -1295,12 +1470,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     extraHeaders?: Record<string, string>,
   ): Promise<CallAgentResponse> {
     const url = serverUrl.replace(/\/$/, "");
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
-      ...(token && !extraHeaders && { Authorization: `Bearer ${token}` }),
-      ...extraHeaders,
-    };
+    const headers = createMcpHeaders(extraHeaders ? null : token, extraHeaders);
 
     let reqId = 0;
     let sessionId: string | undefined;
@@ -2584,6 +2754,21 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
 
+      const agentMode = (entry as any).mode ?? "redirect";
+      if (entry.url && !entry.sourceRegistry && agentMode !== "api") {
+        return toAdkRefActionResult<AdkRefResourcesResult>(
+          await callMcpResourcesDirect(entry.url, "list_resources", {
+            token:
+              (await readRefSecret(name, "access_token")) ??
+              (await readRefSecret(name, "api_key")) ??
+              (await readRefSecret(name, "token")),
+          }),
+          "resources",
+          "unexpected_ref_resources_response",
+          "Expected list_resources response from ref.resources",
+        );
+      }
+
       const consumer = await buildConsumerForRef(entry);
       const reg = resolveRegistryForRef(consumer, entry);
 
@@ -2602,6 +2787,22 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       const config = await readConfig();
       const entry = findRef(config.refs ?? [], name);
       if (!entry) throw new Error(`Ref "${name}" not found`);
+
+      const agentMode = (entry as any).mode ?? "redirect";
+      if (entry.url && !entry.sourceRegistry && agentMode !== "api") {
+        return toAdkRefActionResult<AdkRefReadResult>(
+          await callMcpResourcesDirect(entry.url, "read_resources", {
+            uris,
+            token:
+              (await readRefSecret(name, "access_token")) ??
+              (await readRefSecret(name, "api_key")) ??
+              (await readRefSecret(name, "token")),
+          }),
+          "resources",
+          "unexpected_ref_read_response",
+          "Expected read_resources response from ref.read",
+        );
+      }
 
       const consumer = await buildConsumerForRef(entry);
       const reg = resolveRegistryForRef(consumer, entry);
