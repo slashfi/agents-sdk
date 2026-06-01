@@ -380,6 +380,50 @@ describe("type generation", () => {
     expect(dts).toContain('"get:users.list"');
   });
 
+  test("materializes resources into resources and skills directories", async () => {
+    const configDir = join(TEST_DIR, "resources-test");
+
+    const adk = {
+      ref: {
+        inspect: async () => ({
+          description: "Resource test agent",
+          tools: [{ name: "tool1", description: "A tool" }],
+        }),
+        resources: async () => ({
+          resources: [
+            { uri: "AUTH.md", name: "Auth instructions", mimeType: "text/markdown" },
+            { uri: "agent://resource-agent/docs/AUTH.md", name: "Nested auth", mimeType: "text/markdown" },
+            { uri: "agent://resource-agent/admin/AUTH.md", name: "Admin auth", mimeType: "text/markdown" },
+          ],
+        }),
+        read: async (_name: string, uris: string[]) => ({
+          resources: uris.map((uri) => ({
+            uri,
+            mimeType: "text/markdown",
+            content: `# ${uri}\n\nConnect first.`,
+          })),
+        }),
+      },
+    } as unknown as Adk;
+
+    const result = await materializeRef(adk, "resource-agent", configDir);
+
+    expect(result.skillCount).toBe(3);
+    const refDir = join(configDir, "refs", "resource-agent");
+    expect(readFileSync(join(refDir, "resources", "AUTH.md"), "utf-8")).toBe(
+      "# AUTH.md\n\nConnect first.",
+    );
+    expect(readFileSync(join(refDir, "resources", "docs", "AUTH.md"), "utf-8")).toBe(
+      "# agent://resource-agent/docs/AUTH.md\n\nConnect first.",
+    );
+    expect(readFileSync(join(refDir, "resources", "admin", "AUTH.md"), "utf-8")).toBe(
+      "# agent://resource-agent/admin/AUTH.md\n\nConnect first.",
+    );
+    expect(readFileSync(join(refDir, "skills", "docs", "AUTH.md"), "utf-8")).toBe(
+      "# agent://resource-agent/docs/AUTH.md\n\nConnect first.",
+    );
+  });
+
   test("handles inspect failure gracefully", async () => {
     const configDir = join(TEST_DIR, "fail-test");
 

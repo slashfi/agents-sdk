@@ -2099,3 +2099,222 @@ describe("isRefAuthComplete + cached authFields", () => {
     expect(result).toBe(false);
   });
 });
+
+describe("ADK ref.resources/read direct MCP support", () => {
+  let mcpServer: ReturnType<typeof Bun.serve>;
+  const MCP_RESOURCE_PORT = 19933;
+  const calls: string[] = [];
+
+  beforeAll(() => {
+    mcpServer = Bun.serve({
+      port: MCP_RESOURCE_PORT,
+      async fetch(req) {
+        const body = await req.json() as {
+          id: number;
+          method: string;
+          params?: { uri?: string };
+        };
+        calls.push(body.method);
+
+        if (body.method === "initialize") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2024-11-05",
+              serverInfo: { name: "resource-mcp", version: "1.0.0" },
+              capabilities: { resources: {} },
+            },
+          });
+        }
+
+        if (body.method === "notifications/initialized") {
+          return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+        }
+
+        if (body.method === "resources/list") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              resources: [
+                {
+                  uri: "AUTH.md",
+                  name: "Auth instructions",
+                  mimeType: "text/markdown",
+                },
+              ],
+            },
+          });
+        }
+
+        if (body.method === "resources/read") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              contents: [
+                {
+                  uri: body.params?.uri ?? "AUTH.md",
+                  mimeType: "text/markdown",
+                  text: "# Auth instructions\n\nConnect this MCP server first.",
+                },
+              ],
+            },
+          });
+        }
+
+        return Response.json({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: { code: -32601, message: `Unknown method ${body.method}` },
+        });
+      },
+    });
+  });
+
+  afterAll(() => {
+    mcpServer.stop(true);
+  });
+
+  test("ref.resources/read use native MCP resources for direct MCP refs", async () => {
+    calls.length = 0;
+    const fs = createMemoryFs();
+    const adk = createAdk(fs);
+    await adk.writeConfig({
+      refs: [
+        {
+          ref: "resource-mcp",
+          name: "resource-mcp",
+          scheme: "mcp",
+          url: `http://localhost:${MCP_RESOURCE_PORT}/mcp`,
+        },
+      ],
+    });
+
+    const listed = await adk.ref.resources("resource-mcp");
+    expect(listed.success).toBe(true);
+    expect((listed as any).resources).toEqual([
+      {
+        uri: "AUTH.md",
+        name: "Auth instructions",
+        mimeType: "text/markdown",
+      },
+    ]);
+
+    const read = await adk.ref.read("resource-mcp", ["AUTH.md"]);
+    expect(read.success).toBe(true);
+    expect((read as any).resources[0]).toMatchObject({
+      uri: "AUTH.md",
+      mimeType: "text/markdown",
+      content: "# Auth instructions\n\nConnect this MCP server first.",
+    });
+    expect(calls).toContain("resources/list");
+    expect(calls).toContain("resources/read");
+  });
+
+  test("registry refs with upstream urls still use registry resources", async () => {
+    calls.length = 0;
+    const fs = createMemoryFs();
+    const registryCalls: string[] = [];
+    const adk = createAdk(fs, {
+      fetch: async (_url, init) => {
+        const rpc = JSON.parse(String(init?.body ?? "{}"));
+        const request = rpc.params?.arguments?.request;
+        registryCalls.push(request?.action);
+
+        if (request?.action === "list_resources") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: rpc.id,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    success: true,
+                    agentPath: "resource-registry",
+                    resources: [
+                      {
+                        uri: "REGISTRY.md",
+                        name: "Registry instructions",
+                        mimeType: "text/markdown",
+                        contentLength: "# Registry instructions\n\nUse the registry proxy.".length,
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          });
+        }
+
+        if (request?.action === "read_resources") {
+          return Response.json({
+            jsonrpc: "2.0",
+            id: rpc.id,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    success: true,
+                    agentPath: "resource-registry",
+                    resources: [
+                      {
+                        uri: "REGISTRY.md",
+                        name: "Registry instructions",
+                        mimeType: "text/markdown",
+                        content: "# Registry instructions\n\nUse the registry proxy.",
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          });
+        }
+
+        return new Response("unexpected registry request", { status: 500 });
+      },
+    });
+    await adk.writeConfig({
+      registries: [{ name: "resource-registry", url: "https://registry.example.test" }],
+      refs: [
+        {
+          ref: "resource-registry",
+          name: "resource-registry",
+          scheme: "registry",
+          mode: "redirect",
+          url: `http://localhost:${MCP_RESOURCE_PORT}/mcp`,
+          sourceRegistry: {
+            url: "https://registry.example.test",
+            agentPath: "resource-registry",
+          },
+        },
+      ],
+    });
+
+    const listed = await adk.ref.resources("resource-registry");
+    expect(listed.success).toBe(true);
+    expect((listed as any).resources).toEqual([
+      {
+        uri: "REGISTRY.md",
+        name: "Registry instructions",
+        mimeType: "text/markdown",
+        contentLength: "# Registry instructions\n\nUse the registry proxy.".length,
+      },
+    ]);
+
+    const read = await adk.ref.read("resource-registry", ["REGISTRY.md"]);
+    expect(read.success).toBe(true);
+    expect((read as any).resources[0]).toMatchObject({
+      uri: "REGISTRY.md",
+      mimeType: "text/markdown",
+      content: "# Registry instructions\n\nUse the registry proxy.",
+    });
+    expect(registryCalls).toEqual(["list_resources", "read_resources"]);
+    expect(calls).not.toContain("resources/list");
+    expect(calls).not.toContain("resources/read");
+  });
+});

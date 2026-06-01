@@ -11,7 +11,8 @@
  *     tools/<tool>.tool.md  — per-tool docs with parameter tables
  *     tools/<tool>.tool.json — raw JSON schemas
  *     types/<name>.d.ts     — TypeScript type stubs
- *     skills/               — resources from the agent
+ *     resources/            — resources from the agent
+ *     skills/               — resource compatibility mirror
  *
  * The .tool.md files are the primary output — designed for LLMs to read.
  */
@@ -75,6 +76,38 @@ function ensureWrite(path: string, content: string): void {
  */
 function toFilenameSlug(name: string): string {
   return name.replace(/[/\\\0]/g, "_");
+}
+
+/**
+ * Convert a resource URI to a safe path below `resources/` / `skills/`.
+ *
+ * `agent://notion/docs/AUTH.md` becomes `docs/AUTH.md` so nested resource
+ * paths are preserved. Path traversal, empty segments, and characters that
+ * break filesystems are replaced with `_`.
+ */
+function resourceUriToRelativePath(uri: string, fallbackName?: string): string {
+  let rawPath = uri;
+  try {
+    const parsed = new URL(uri);
+    const path = decodeURIComponent(parsed.pathname).replace(/^\/+/g, "");
+    if (parsed.protocol === "agent:") {
+      rawPath = path;
+    } else {
+      rawPath = [parsed.hostname, path].filter(Boolean).join("/");
+    }
+  } catch {
+    rawPath = uri.split(/[?#]/, 1)[0].replace(/^\/+/g, "");
+  }
+
+  const fallback = fallbackName || "resource.md";
+  const segments = rawPath
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+    .map((segment) => segment.replace(/[\\\0]/g, "_").replace(/^\.+$/, "_"));
+
+  if (segments.length === 0) return toFilenameSlug(fallback);
+  return segments.join("/");
 }
 
 function pascalCase(s: string): string {
@@ -245,6 +278,7 @@ export async function materializeRef(
 ): Promise<MaterializeResult> {
   const refDir = join(configDir, "refs", refName);
   const toolsDir = join(refDir, "tools");
+  const resourcesDir = join(refDir, "resources");
   const skillsDir = join(refDir, "skills");
   const typesDir = join(refDir, "types");
 
@@ -347,8 +381,13 @@ export async function materializeRef(
       for (const resource of fetched) {
         if (!resource.uri) continue;
         if (typeof resource.content !== "string") continue;
-        const filename = resource.uri.split("/").pop() || "resource.md";
-        ensureWrite(join(skillsDir, filename), resource.content);
+        const resourcePath = resourceUriToRelativePath(resource.uri, resource.name);
+        ensureWrite(join(resourcesDir, resourcePath), resource.content);
+        // Compatibility mirror: `adk search` and older prompts historically
+        // referred to synced resources as skills. Keep writing this path so
+        // existing consumers continue to see the same files while MCP-native
+        // resources also get a literal `resources/` directory.
+        ensureWrite(join(skillsDir, resourcePath), resource.content);
         skillCount++;
       }
     }
