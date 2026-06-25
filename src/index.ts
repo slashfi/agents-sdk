@@ -352,7 +352,10 @@ export {
   exchangeCodeForTokens,
   refreshAccessToken as refreshMcpAccessToken,
 } from "./mcp-client.js";
-export type { OAuthServerMetadata } from "./mcp-client.js";
+export type {
+  OAuthClientAuthMethod,
+  OAuthServerMetadata,
+} from "./mcp-client.js";
 
 // ============================================
 // Serialized Agent Definitions

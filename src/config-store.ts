@@ -33,6 +33,7 @@ import type { RegistryAuthRequirement } from "./define-config.js";
 import type { FetchFn } from "./fetch-types.js";
 import type { Logger } from "./logger.js";
 import {
+  type OAuthClientAuthMethod,
   buildOAuthAuthorizeUrl,
   discoverOAuthMetadata,
   dynamicClientRegistration,
@@ -1040,7 +1041,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     const raw = (security as { authFields?: unknown }).authFields;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
     const out: Record<string, RegistryCacheAuthField> = {};
-    for (const [field, meta] of Object.entries(raw as Record<string, unknown>)) {
+    for (const [field, meta] of Object.entries(
+      raw as Record<string, unknown>,
+    )) {
       if (!meta || typeof meta !== "object" || Array.isArray(meta)) continue;
       const m = meta as Record<string, unknown>;
       if (typeof m.required !== "boolean" || typeof m.automated !== "boolean") {
@@ -1227,6 +1230,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     codeVerifier: string;
     clientId: string;
     clientSecret?: string;
+    clientAuthMethod?: OAuthClientAuthMethod;
     tokenEndpoint: string;
     redirectUri: string;
     createdAt: number;
@@ -1460,8 +1464,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     };
     const authCodeFlow = securityExt.flows?.authorizationCode;
 
-    const explicitEndpoint =
-      authCodeFlow?.refreshUrl ?? authCodeFlow?.tokenUrl;
+    const explicitEndpoint = authCodeFlow?.refreshUrl ?? authCodeFlow?.tokenUrl;
     if (explicitEndpoint) {
       const flowScopes = (authCodeFlow as Record<string, unknown> | undefined)
         ?.scopes as Record<string, string> | undefined;
@@ -1504,6 +1507,38 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     }
 
     return null;
+  }
+
+  function resolveClientAuthMethod(
+    security: SecuritySchemeSummary | null | undefined,
+    metadata: OAuthServerMetadata | null,
+  ): OAuthClientAuthMethod {
+    const flowAuth = (
+      security as {
+        flows?: {
+          authorizationCode?: { clientAuth?: OAuthClientAuthMethod };
+        };
+      }
+    ).flows?.authorizationCode?.clientAuth;
+    if (flowAuth) return flowAuth;
+
+    const supported = metadata?.token_endpoint_auth_methods_supported;
+    if (supported?.length === 1 && supported[0] === "client_secret_basic") {
+      return "client_secret_basic";
+    }
+
+    const tokenEndpoint = metadata?.token_endpoint;
+    if (tokenEndpoint) {
+      try {
+        if (new URL(tokenEndpoint).hostname === "api.x.com") {
+          return "client_secret_basic";
+        }
+      } catch {
+        /* ignore malformed token endpoint */
+      }
+    }
+
+    return "client_secret_post";
   }
 
   /**
@@ -1640,7 +1675,10 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     });
     if (!found) return false;
     for (const r of registries) {
-      if (typeof r !== "string" && (registryDisplayName(r) === nameOrUrl || registryUrl(r) === nameOrUrl)) {
+      if (
+        typeof r !== "string" &&
+        (registryDisplayName(r) === nameOrUrl || registryUrl(r) === nameOrUrl)
+      ) {
         await mutate(r);
       }
     }
@@ -2875,7 +2913,12 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             format: "basic" as const,
             parts: [
               { name: "username", label: "Username", secret: false },
-              { name: "password", label: "Password", secret: true, optional: true },
+              {
+                name: "password",
+                label: "Password",
+                secret: true,
+                optional: true,
+              },
             ],
           }),
         };
@@ -3059,8 +3102,11 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           const username =
             opts?.credentials?.["username"] ?? (await tryResolve("username"));
           const password =
-            opts?.credentials?.["password"] ?? (await tryResolve("password")) ?? "";
-          const hasUsername = username !== undefined && username !== null && username !== "";
+            opts?.credentials?.["password"] ??
+            (await tryResolve("password")) ??
+            "";
+          const hasUsername =
+            username !== undefined && username !== null && username !== "";
           if (!hasUsername) {
             return {
               type: "http",
@@ -3234,11 +3280,13 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           });
 
         // Persist pending state so handleCallback works across processes
+        const clientAuthMethod = resolveClientAuthMethod(security, metadata);
         await storePendingOAuth(state, {
           refName: name,
           codeVerifier,
           clientId,
           clientSecret,
+          clientAuthMethod,
           tokenEndpoint: metadata.token_endpoint,
           redirectUri,
           createdAt: Date.now(),
@@ -3423,6 +3471,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       });
       if (!oauthClient) return null;
 
+      const clientAuthMethod = resolveClientAuthMethod(security, metadata);
       const fetchFn = options.fetch ?? globalThis.fetch;
       let tokens: Awaited<ReturnType<typeof refreshAccessToken>>;
       try {
@@ -3432,6 +3481,7 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             refreshToken,
             clientId: oauthClient.clientId,
             clientSecret: oauthClient.clientSecret,
+            clientAuthMethod,
           },
           fetchFn,
         );
@@ -3471,13 +3521,19 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
       throw new Error(`No pending OAuth flow for state "${params.state}".`);
     }
 
-    const tokens = await exchangeCodeForTokens(pending.tokenEndpoint, {
-      code: params.code,
-      codeVerifier: pending.codeVerifier,
-      clientId: pending.clientId,
-      clientSecret: pending.clientSecret,
-      redirectUri: pending.redirectUri,
-    });
+    const fetchFn = options.fetch ?? globalThis.fetch;
+    const tokens = await exchangeCodeForTokens(
+      pending.tokenEndpoint,
+      {
+        code: params.code,
+        codeVerifier: pending.codeVerifier,
+        clientId: pending.clientId,
+        clientSecret: pending.clientSecret,
+        redirectUri: pending.redirectUri,
+        clientAuthMethod: pending.clientAuthMethod,
+      },
+      fetchFn,
+    );
 
     await storeRefSecret(pending.refName, "access_token", tokens.accessToken);
     if (tokens.refreshToken) {
