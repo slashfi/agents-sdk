@@ -2099,3 +2099,136 @@ describe("isRefAuthComplete + cached authFields", () => {
     expect(result).toBe(false);
   });
 });
+
+describe("ADK ref.refreshToken() manifest-aware token endpoint", () => {
+  let registryServer: AgentServer;
+  let discoveryServer: ReturnType<typeof Bun.serve>;
+  let tokenServer: ReturnType<typeof Bun.serve>;
+  const REG_PORT = 19950;
+  const AS_PORT = 19951;
+  const TOKEN_PORT = 19952;
+  let tokenRefreshCount = 0;
+
+  beforeAll(async () => {
+    tokenServer = Bun.serve({
+      port: TOKEN_PORT,
+      async fetch(req) {
+        tokenRefreshCount++;
+        const params = new URLSearchParams(await req.text());
+        if (
+          params.get("grant_type") !== "refresh_token" ||
+          params.get("refresh_token") !== "discovery-refresh-token" ||
+          params.get("client_id") !== "discovery-client-id"
+        ) {
+          return new Response(JSON.stringify({ error: "invalid_grant" }), {
+            status: 400,
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            access_token: "discovery-refreshed-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+
+    discoveryServer = Bun.serve({
+      port: AS_PORT,
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/.well-known/oauth-authorization-server") {
+          return Response.json({
+            issuer: `http://localhost:${AS_PORT}`,
+            authorization_endpoint: `http://localhost:${AS_PORT}/oauth/authorize`,
+            token_endpoint: `http://localhost:${TOKEN_PORT}`,
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+
+    const stubTool = defineTool({
+      name: "noop",
+      description: "Unused in this test",
+      inputSchema: { type: "object" as const, properties: {} },
+      execute: async () => ({ ok: true }),
+    });
+    const agent = defineAgent({
+      path: "discovery-oauth-agent",
+      entrypoint: "Discovery OAuth agent",
+      tools: [stubTool],
+      visibility: "public",
+      config: {
+        security: {
+          type: "oauth2",
+          discoveryUrl: `http://localhost:${AS_PORT}/.well-known/oauth-authorization-server`,
+          flows: {
+            authorizationCode: {
+              authorizationUrl: `http://localhost:${AS_PORT}/oauth/authorize`,
+            },
+          },
+        },
+      },
+    });
+    const registry = createAgentRegistry();
+    registry.register(agent);
+    registryServer = createAgentServer(registry, { port: REG_PORT });
+    await registryServer.start();
+  });
+
+  afterAll(async () => {
+    await registryServer.stop();
+    discoveryServer.stop();
+    tokenServer.stop();
+  });
+
+  test("ref.refreshToken() discovers token endpoint from discoveryUrl when tokenUrl is absent", async () => {
+    tokenRefreshCount = 0;
+
+    const fs = createMemoryFs();
+    const adk = createAdk(fs, {
+      encryptionKey: "test-key-32-chars-long-enough!!",
+    });
+
+    await adk.registry.add({
+      name: "discovery-reg",
+      url: `http://localhost:${REG_PORT}`,
+    });
+    await adk.ref.add({
+      ref: "discovery-oauth-agent",
+      sourceRegistry: {
+        url: `http://localhost:${REG_PORT}`,
+        agentPath: "discovery-oauth-agent",
+      },
+    });
+
+    const config = await adk.readConfig();
+    await adk.writeConfig({
+      ...config,
+      refs: config.refs?.map((r: any) => {
+        if (r.ref === "discovery-oauth-agent") {
+          return {
+            ...r,
+            config: {
+              ...r.config,
+              access_token: "stale-token",
+              refresh_token: "discovery-refresh-token",
+              client_id: "discovery-client-id",
+            },
+          };
+        }
+        return r;
+      }),
+    });
+
+    const refreshed = await adk.ref.refreshToken("discovery-oauth-agent");
+    expect(refreshed).toEqual({ accessToken: "discovery-refreshed-token" });
+    expect(tokenRefreshCount).toBe(1);
+
+    const updated = await adk.ref.get("discovery-oauth-agent");
+    expect(typeof updated?.config?.expires_at).toBe("string");
+  });
+});

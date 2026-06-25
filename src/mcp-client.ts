@@ -13,9 +13,9 @@
  * by registry-consumer — this module only provides auth primitives.
  */
 
-import { generatePkcePair } from "./pkce.js";
 import type { RegistryAuthRequirement } from "./define-config.js";
 import type { FetchFn } from "./fetch-types.js";
+import { generatePkcePair } from "./pkce.js";
 
 // ============================================
 // Types
@@ -82,8 +82,7 @@ export async function dynamicClientRegistration(
       client_name: params.clientName,
       redirect_uris: params.redirectUris,
       grant_types: params.grantTypes ?? ["authorization_code"],
-      token_endpoint_auth_method:
-        params.tokenEndpointAuthMethod ?? "none",
+      token_endpoint_auth_method: params.tokenEndpointAuthMethod ?? "none",
     }),
   });
   if (!res.ok) {
@@ -148,6 +147,69 @@ export async function buildOAuthAuthorizeUrl(params: {
 // Token Exchange
 // ============================================
 
+export type OAuthClientAuthMethod =
+  | "client_secret_post"
+  | "client_secret_basic";
+
+const TOKEN_EXCHANGE_BODY_PARAMS: Record<OAuthClientAuthMethod, string[]> = {
+  client_secret_post: [
+    "grant_type",
+    "code",
+    "code_verifier",
+    "redirect_uri",
+    "client_id",
+    "client_secret",
+  ],
+  client_secret_basic: ["grant_type", "code", "code_verifier", "redirect_uri"],
+};
+
+const TOKEN_REFRESH_BODY_PARAMS: Record<OAuthClientAuthMethod, string[]> = {
+  client_secret_post: [
+    "grant_type",
+    "refresh_token",
+    "client_id",
+    "client_secret",
+  ],
+  client_secret_basic: ["grant_type", "refresh_token"],
+};
+
+function buildBasicAuth(clientId: string, clientSecret: string): string {
+  return `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
+}
+
+function buildOAuthTokenRequest(params: {
+  allParams: Record<string, string>;
+  bodyParamKeys: string[];
+  clientId: string;
+  clientSecret?: string;
+  clientAuthMethod: OAuthClientAuthMethod;
+}): { headers: Record<string, string>; body: string } {
+  const body = new URLSearchParams();
+  for (const key of params.bodyParamKeys) {
+    const value = params.allParams[key];
+    if (value) body.set(key, value);
+  }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    Accept: "application/json",
+  };
+
+  if (
+    params.clientAuthMethod === "client_secret_basic" &&
+    params.clientSecret
+  ) {
+    headers.Authorization = buildBasicAuth(
+      params.clientId,
+      params.clientSecret,
+    );
+  } else if (params.clientSecret) {
+    body.set("client_secret", params.clientSecret);
+  }
+
+  return { headers, body: body.toString() };
+}
+
 /**
  * Exchange an authorization code for tokens (with PKCE).
  */
@@ -159,29 +221,35 @@ export async function exchangeCodeForTokens(
     clientId: string;
     clientSecret?: string;
     redirectUri: string;
+    clientAuthMethod?: OAuthClientAuthMethod;
   },
-  fetchFn: typeof globalThis.fetch = globalThis.fetch,
+  fetchFn: FetchFn = globalThis.fetch,
 ): Promise<{
   accessToken: string;
   refreshToken?: string;
   expiresIn?: number;
   tokenType?: string;
 }> {
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code: params.code,
-    code_verifier: params.codeVerifier,
-    client_id: params.clientId,
-    redirect_uri: params.redirectUri,
+  const method = params.clientAuthMethod ?? "client_secret_post";
+  const { headers, body } = buildOAuthTokenRequest({
+    allParams: {
+      grant_type: "authorization_code",
+      code: params.code,
+      code_verifier: params.codeVerifier,
+      redirect_uri: params.redirectUri,
+      client_id: params.clientId,
+      ...(params.clientSecret && { client_secret: params.clientSecret }),
+    },
+    bodyParamKeys: TOKEN_EXCHANGE_BODY_PARAMS[method],
+    clientId: params.clientId,
+    clientSecret: params.clientSecret,
+    clientAuthMethod: method,
   });
-  if (params.clientSecret) {
-    body.set("client_secret", params.clientSecret);
-  }
 
   const res = await fetchFn(tokenEndpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
-    body: body.toString(),
+    headers,
+    body,
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "unknown");
@@ -209,26 +277,32 @@ export async function refreshAccessToken(
     refreshToken: string;
     clientId: string;
     clientSecret?: string;
+    clientAuthMethod?: OAuthClientAuthMethod;
   },
-  fetchFn: typeof globalThis.fetch = globalThis.fetch,
+  fetchFn: FetchFn = globalThis.fetch,
 ): Promise<{
   accessToken: string;
   refreshToken?: string;
   expiresIn?: number;
 }> {
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: params.refreshToken,
-    client_id: params.clientId,
+  const method = params.clientAuthMethod ?? "client_secret_post";
+  const { headers, body } = buildOAuthTokenRequest({
+    allParams: {
+      grant_type: "refresh_token",
+      refresh_token: params.refreshToken,
+      client_id: params.clientId,
+      ...(params.clientSecret && { client_secret: params.clientSecret }),
+    },
+    bodyParamKeys: TOKEN_REFRESH_BODY_PARAMS[method],
+    clientId: params.clientId,
+    clientSecret: params.clientSecret,
+    clientAuthMethod: method,
   });
-  if (params.clientSecret) {
-    body.set("client_secret", params.clientSecret);
-  }
 
   const res = await fetchFn(tokenEndpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
-    body: body.toString(),
+    headers,
+    body,
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "unknown");
@@ -252,14 +326,17 @@ export async function refreshAccessToken(
  * Returns the scheme and any `key="value"` params. Tolerant of
  * single-value headers and missing params.
  */
-export function parseWwwAuthenticate(
-  header: string,
-): { scheme: string; params: Record<string, string> } {
+export function parseWwwAuthenticate(header: string): {
+  scheme: string;
+  params: Record<string, string>;
+} {
   const spaceIdx = header.indexOf(" ");
   const scheme = (spaceIdx === -1 ? header : header.slice(0, spaceIdx)).trim();
   const rest = spaceIdx === -1 ? "" : header.slice(spaceIdx + 1);
   const params: Record<string, string> = {};
-  for (const match of rest.matchAll(/([a-zA-Z_][a-zA-Z0-9_-]*)\s*=\s*"([^"]*)"/g)) {
+  for (const match of rest.matchAll(
+    /([a-zA-Z_][a-zA-Z0-9_-]*)\s*=\s*"([^"]*)"/g,
+  )) {
     params[match[1]!.toLowerCase()] = match[2]!;
   }
   return { scheme, params };
@@ -315,7 +392,10 @@ export async function probeRegistryAuth(
   try {
     res = await fetchFn(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
@@ -344,7 +424,10 @@ export async function probeRegistryAuth(
   const metadataUrl = params.resource_metadata;
   if (metadataUrl) {
     requirement.resourceMetadataUrl = metadataUrl;
-    const metadata = await discoverProtectedResourceMetadata(metadataUrl, fetchFn);
+    const metadata = await discoverProtectedResourceMetadata(
+      metadataUrl,
+      fetchFn,
+    );
     if (metadata) {
       if (metadata.authorization_servers?.length) {
         requirement.authorizationServers = metadata.authorization_servers;
