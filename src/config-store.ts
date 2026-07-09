@@ -1464,6 +1464,18 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
     };
     const authCodeFlow = securityExt.flows?.authorizationCode;
 
+    // Prefer discovery metadata over explicit flow endpoints. Discovery is the
+    // only source that carries DCR metadata such as `registration_endpoint`;
+    // if we synthesize metadata from `tokenUrl` first, OAuth/DCR refs that
+    // include both `tokenUrl` and `discoveryUrl` incorrectly fall back to a
+    // manual client_id/client_secret prompt.
+    if (securityExt.discoveryUrl) {
+      const fromDiscovery =
+        (await tryFetchOAuthMetadata(securityExt.discoveryUrl)) ??
+        (await discoverOAuthMetadata(securityExt.discoveryUrl));
+      if (fromDiscovery) return fromDiscovery;
+    }
+
     const explicitEndpoint = authCodeFlow?.refreshUrl ?? authCodeFlow?.tokenUrl;
     if (explicitEndpoint) {
       const flowScopes = (authCodeFlow as Record<string, unknown> | undefined)
@@ -1477,13 +1489,6 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
         token_endpoint: explicitEndpoint,
         scopes_supported: flowScopes ? Object.keys(flowScopes) : undefined,
       };
-    }
-
-    if (securityExt.discoveryUrl) {
-      const fromDiscovery =
-        (await tryFetchOAuthMetadata(securityExt.discoveryUrl)) ??
-        (await discoverOAuthMetadata(securityExt.discoveryUrl));
-      if (fromDiscovery) return fromDiscovery;
     }
 
     const authUrl = authCodeFlow?.authorizationUrl;
@@ -2793,7 +2798,6 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
           discoveryUrl?: string;
           flows?: Record<string, unknown>;
         };
-        const hasRegistration = !!securityExt.dynamicRegistration;
 
         // `access_token.automated` decides whether `isRefAuthComplete`
         // requires the token to be present in `entry.config`. It should
@@ -2825,6 +2829,9 @@ export function createAdk(fs: FsStore, options: AdkOptions = {}): Adk {
             needsSecret = !authMethods.includes("none");
           }
         }
+        const hasRegistration =
+          !!securityExt.dynamicRegistration ||
+          !!oauthMetadata?.registration_endpoint;
 
         fields.client_id = {
           required: true,

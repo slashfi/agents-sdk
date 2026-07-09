@@ -811,6 +811,116 @@ describe("ADK ref.call() full auto-refresh flow", () => {
     }
   });
 
+
+  test("ref.auth prefers discovery/DCR when oauth2 has both tokenUrl and discoveryUrl", async () => {
+    const asPort = 19962;
+    const regPort = 19963;
+    let registrationCount = 0;
+
+    const asServer = Bun.serve({
+      port: asPort,
+      async fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/.well-known/oauth-authorization-server") {
+          return Response.json({
+            issuer: `http://localhost:${asPort}`,
+            authorization_endpoint: `http://localhost:${asPort}/oauth/authorize`,
+            token_endpoint: `http://localhost:${asPort}/oauth/token`,
+            registration_endpoint: `http://localhost:${asPort}/oauth/register`,
+            token_endpoint_auth_methods_supported: ["none"],
+          });
+        }
+        if (path === "/oauth/register" && req.method === "POST") {
+          registrationCount++;
+          return Response.json({
+            client_id: "dcr-client-id",
+            token_endpoint_auth_method: "none",
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+
+    const stubTool = defineTool({
+      name: "noop",
+      description: "Unused in this test",
+      inputSchema: { type: "object" as const, properties: {} },
+      execute: async () => ({ ok: true }),
+    });
+    const agent = defineAgent({
+      path: "dcr-oauth-agent",
+      entrypoint: "DCR OAuth agent",
+      tools: [stubTool],
+      visibility: "public",
+      config: {
+        security: {
+          type: "oauth2",
+          discoveryUrl: `http://localhost:${asPort}/.well-known/oauth-authorization-server`,
+          flows: {
+            authorizationCode: {
+              authorizationUrl: `http://localhost:${asPort}/oauth/authorize`,
+              // Mintlify-style shape: explicit tokenUrl plus discoveryUrl.
+              // The SDK must still use discovery so it sees registration_endpoint.
+              tokenUrl: `http://localhost:${asPort}/oauth/token`,
+            },
+          },
+        },
+      },
+    });
+    const registry = createAgentRegistry();
+    registry.register(agent);
+    const registryServer = createAgentServer(registry, { port: regPort });
+    await registryServer.start();
+
+    try {
+      const fs = createMemoryFs();
+      const adk = createAdk(fs, {
+        encryptionKey: "test-key-32-chars-long-enough!!",
+      });
+
+      await adk.registry.add({
+        name: "dcr-reg",
+        url: `http://localhost:${regPort}`,
+      });
+      await adk.ref.add({
+        ref: "dcr-oauth-agent",
+        name: "dcr-oauth-agent",
+        sourceRegistry: {
+          url: `http://localhost:${regPort}`,
+          agentPath: "dcr-oauth-agent",
+        },
+      });
+
+      const status = await adk.ref.authStatus("dcr-oauth-agent");
+      expect(status.complete).toBe(false);
+      expect(status.fields?.client_id?.automated).toBe(true);
+      expect(status.fields?.client_id?.resolvable).toBe(false);
+      expect(status.fields?.client_secret).toBeUndefined();
+      expect(status.fields?.access_token?.automated).toBe(false);
+
+      const cacheRaw = await fs.readFile("registry-cache.json");
+      expect(cacheRaw).not.toBeNull();
+      const cache = JSON.parse(cacheRaw!) as {
+        refs: Record<string, { authFields?: Record<string, unknown> }>;
+      };
+      expect(cache.refs["dcr-oauth-agent"].authFields).toMatchObject({
+        client_id: { required: true, automated: true, outbound: false },
+        access_token: { required: true, automated: false },
+      });
+
+      const auth = await adk.ref.auth("dcr-oauth-agent");
+      expect(auth.complete).toBe(false);
+      expect(auth.type).toBe("oauth2");
+      expect(auth.fields).toBeUndefined();
+      expect(auth.authorizeUrl).toContain("/oauth/authorize");
+      expect(auth.authorizeUrl).toContain("client_id=dcr-client-id");
+      expect(registrationCount).toBe(1);
+    } finally {
+      await registryServer.stop();
+      asServer.stop();
+    }
+  });
+
   test("ref.authStatus reports access_token.automated=false for authorizationCode (user must consent)", async () => {
     // Regression: previously `access_token.automated` was hardcoded to
     // `true` for every oauth2 scheme. That made cached-authFields
