@@ -853,9 +853,39 @@ export async function createRegistryConsumer(
       if (res.status === 401) {
         // Still try to parse the body for context
         const body = await res.text().catch(() => "");
-        let parsed: Record<string, unknown> = { success: false, error: "unauthorized" };
-        try { parsed = JSON.parse(body); } catch {}
-        return { ...parsed, success: false, httpStatus: 401 } as unknown as CallAgentResponse;
+        let parsed: Record<string, unknown> = {};
+        try {
+          const candidate: unknown = JSON.parse(body);
+          if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+            parsed = candidate as Record<string, unknown>;
+          }
+        } catch {}
+
+        // Preserve a human-readable reason. The parsed body is merged *over* a
+        // default rather than replacing it: a 401 body that is valid JSON but
+        // carries no `error` key used to wipe out the default entirely, so
+        // callers rendered the useless fallback "Tool execution failed".
+        const parsedError =
+          typeof parsed.error === "string" && parsed.error.trim()
+            ? parsed.error
+            : undefined;
+        const parsedMessage =
+          typeof parsed.message === "string" && parsed.message.trim()
+            ? parsed.message
+            : undefined;
+        const rawSnippet = body.trim() ? body.trim().slice(0, 500) : undefined;
+
+        return {
+          ...parsed,
+          success: false,
+          error:
+            parsedError ??
+            parsedMessage ??
+            (rawSnippet
+              ? `unauthorized (401) from ${registry.url}: ${rawSnippet}`
+              : `unauthorized (401) from ${registry.url}`),
+          httpStatus: 401,
+        } as unknown as CallAgentResponse;
       }
       const text = await res.text().catch(() => "unknown error");
       throw new Error(
